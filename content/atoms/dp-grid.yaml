@@ -1,0 +1,267 @@
+id: dp-grid
+title: Grid DP
+summary: "dp[r][c] built from the cell above and the cell to the left: path counting, min path sum, obstacles, squares."
+links:
+  - to: dp-1d
+    kind: prereq
+    note: Same idea with two indices; each row is a 1D DP that reads the previous row.
+  - to: graph-bfs
+    kind: contrast
+    note: "Moves only right/down make the grid a DAG, so one DP pass works; with moves in all 4 directions you need BFS (or Dijkstra for weights)."
+lesson: |
+  **Shape:** an `m × n` grid, you move only **right or down** (or another set of moves that never goes back).
+  So every cell's answer depends only on cells already visited in row-major order.
+
+  **Recognition signals**
+  - "Robot moves only down or right", "number of unique paths" → **sum** of top and left.
+  - "Minimum path sum / cost from top-left to bottom-right" → **min** of top and left, plus the cell.
+  - "Obstacles" → a blocked cell's value is 0 paths (or `inf` cost).
+  - "Largest square of 1s" → **min** of top, left *and diagonal*, plus 1.
+  - Moves in 4 directions, or "shortest path" with cycles possible → not DP, it's a graph search.
+
+  **The five answers for Unique Paths**
+
+  | Question | Answer |
+  |---|---|
+  | State | `dp[r][c]` = number of paths from `(0, 0)` to `(r, c)` |
+  | Transition | `dp[r][c] = dp[r-1][c] + dp[r][c-1]` (came from above or from the left) |
+  | Base | first row and first column are all `1` (only one straight way) |
+  | Order | rows top to bottom, columns left to right |
+  | Answer | `dp[m-1][n-1]` |
+
+  ```python
+  dp = [[1] * n for _ in range(m)]          # NOT [[1] * n] * m: that's m aliases of one row
+  for r in range(1, m):
+      for c in range(1, n):
+          dp[r][c] = dp[r - 1][c] + dp[r][c - 1]
+  answer = dp[-1][-1]
+  ```
+
+  **Three ways to handle the borders**
+  1. **Init the first row and column** explicitly (above), then loop from `(1, 1)`.
+  2. **Pad** with an extra row and column: a `(m+1) × (n+1)` table, cell `(r, c)` of the grid is `dp[r+1][c+1]`.
+     Pad with `0` for counting, `inf` for min. Set one seed (e.g. `dp[0][1] = 1`) so the start gets its value.
+  3. **Guard in the loop**: `top = dp[r-1][c] if r > 0 else ...`. Most flexible, most verbose.
+
+  **Min path sum, in place** (reuse `grid` as the table: fine on LeetCode, but say so in an interview):
+
+  ```python
+  for r in range(m):
+      for c in range(n):
+          if r == 0 and c == 0:
+              continue
+          top = grid[r - 1][c] if r > 0 else float("inf")
+          left = grid[r][c - 1] if c > 0 else float("inf")
+          grid[r][c] += min(top, left)
+  answer = grid[-1][-1]
+  ```
+
+  **Space optimisation: one row.** Row `r` only reads row `r-1`. Keep a single list `dp` of length `n`:
+  before you overwrite `dp[c]` it still holds the value from the row **above**, and `dp[c-1]` already holds
+  the **left** value of the current row.
+
+  ```python
+  # unique paths with obstacles, O(n) space
+  dp = [0] * n
+  dp[0] = 1
+  for r in range(m):
+      for c in range(n):
+          if grid[r][c] == 1:
+              dp[c] = 0                 # blocked: no path ends here
+          elif c > 0:
+              dp[c] += dp[c - 1]        # dp[c] (above) + dp[c-1] (left)
+  answer = dp[-1]
+  ```
+
+  **Pitfalls**
+  - With obstacles, the first row/column is **not** all 1: everything after an obstacle on the border is 0.
+    The one-row loop above handles this for free; an explicit init must stop at the first obstacle.
+  - If the start cell is blocked, the answer is 0.
+  - `[[0] * n] * m` creates `m` references to the same row. Use a comprehension.
+  - Mixing up `m` (rows, `len(grid)`) and `n` (columns, `len(grid[0])`).
+
+  **Complexity:** O(m·n) time; O(m·n) space, O(n) with one row, O(1) extra if you overwrite the grid.
+drills:
+  - id: table-init
+    prompt: |
+      Unique Paths on an `m × n` grid. Create the table `dp` (m rows, n columns) so the
+      first row and first column are already correct and the given loop can fill the rest.
+      Replace the `dp = None` line.
+    setup: |
+      m, n = 3, 7
+    starter: |
+      dp = None  # TODO: m x n table, first row and column correct
+      for r in range(1, m):
+          for c in range(1, n):
+              dp[r][c] = dp[r - 1][c] + dp[r][c - 1]
+      res = dp[-1][-1]
+    solution: |
+      dp = [[1] * n for _ in range(m)]
+      for r in range(1, m):
+          for c in range(1, n):
+              dp[r][c] = dp[r - 1][c] + dp[r][c - 1]
+      res = dp[-1][-1]
+    check: |
+      assert res == 28, f"res = {res!r}  (did you alias rows with [[1]*n]*m?)"
+      assert len(dp) == m and all(len(row) == n for row in dp), f"shape = {len(dp)} x {[len(r) for r in dp]}"
+  - id: min-path-transition
+    prompt: |
+      Minimum path sum. `dp[r][c]` = cheapest cost from `(0, 0)` to `(r, c)`, including both ends.
+      The first row and column are filled. Write the **transition line**. The skeleton puts the answer in `res`.
+    setup: |
+      grid = [[1, 2, 5],
+              [3, 2, 1]]
+      m, n = len(grid), len(grid[0])
+      dp = [[0] * n for _ in range(m)]
+      dp[0][0] = grid[0][0]
+      for c in range(1, n):
+          dp[0][c] = dp[0][c - 1] + grid[0][c]
+      for r in range(1, m):
+          dp[r][0] = dp[r - 1][0] + grid[r][0]
+    starter: |
+      for r in range(1, m):
+          for c in range(1, n):
+              pass  # transition
+      res = dp[-1][-1]
+    solution: |
+      for r in range(1, m):
+          for c in range(1, n):
+              dp[r][c] = grid[r][c] + min(dp[r - 1][c], dp[r][c - 1])
+      res = dp[-1][-1]
+    check: |
+      assert res == 6, f"res = {res!r}  (best path 1 -> 2 -> 2 -> 1)"
+      assert dp[1] == [4, 5, 6], f"dp[1] = {dp[1]!r}"
+  - id: obstacles-one-row
+    prompt: |
+      Unique paths with obstacles (`1` = blocked) using a **single row** `dp`.
+      Inside the loops, write the update for `dp[c]`: 0 if blocked, otherwise add the left neighbour
+      (when there is one). The skeleton puts the answer in `res`.
+    setup: |
+      grid = [[0, 0, 0, 0],
+              [1, 0, 1, 0],
+              [0, 0, 0, 0]]
+      m, n = len(grid), len(grid[0])
+    starter: |
+      dp = [0] * n
+      dp[0] = 1
+      for r in range(m):
+          for c in range(n):
+              pass
+      res = dp[-1]
+    solution: |
+      dp = [0] * n
+      dp[0] = 1
+      for r in range(m):
+          for c in range(n):
+              if grid[r][c] == 1:
+                  dp[c] = 0
+              elif c > 0:
+                  dp[c] += dp[c - 1]
+      res = dp[-1]
+    check: |
+      assert res == 2, f"res = {res!r}"
+      assert dp == [0, 1, 1, 2], f"last row dp = {dp!r}"
+  - id: maximal-square
+    prompt: |
+      Largest square of `"1"`s. Padded table: `dp[r][c]` = side of the largest all-1 square whose
+      **bottom-right corner** is grid cell `(r-1, c-1)`. Write the transition (only for `"1"` cells:
+      1 + min of top, left and top-left diagonal) and keep the max side in `best`.
+    setup: |
+      matrix = ["10100",
+                "10111",
+                "11111",
+                "10010"]
+      m, n = len(matrix), len(matrix[0])
+    starter: |
+      dp = [[0] * (n + 1) for _ in range(m + 1)]
+      best = 0
+      for r in range(1, m + 1):
+          for c in range(1, n + 1):
+              pass
+    solution: |
+      dp = [[0] * (n + 1) for _ in range(m + 1)]
+      best = 0
+      for r in range(1, m + 1):
+          for c in range(1, n + 1):
+              if matrix[r - 1][c - 1] == "1":
+                  dp[r][c] = 1 + min(dp[r - 1][c], dp[r][c - 1], dp[r - 1][c - 1])
+                  best = max(best, dp[r][c])
+    check: |
+      assert best == 2, f"best = {best!r}"
+      assert dp[3][4] == 2 and dp[3][5] == 2, f"row 3 = {dp[3]!r}"
+classics:
+  - id: unique-paths-ii
+    title: Unique Paths II
+    url: https://leetcode.com/problems/unique-paths-ii/
+    difficulty: Medium
+    prompt: |
+      A robot starts at the top-left of `obstacleGrid` and moves only right or down to the bottom-right.
+      Cells with `1` are obstacles. Return the number of unique paths.
+    starter: |
+      def uniquePathsWithObstacles(obstacleGrid):
+          pass
+    hints:
+      - "State: paths reaching (r, c). Transition: from above + from the left. Blocked cells hold 0."
+      - Watch the borders: after an obstacle in the first row or column, everything beyond it is unreachable.
+      - "A single row works: dp[c] is 'above' before you update it, dp[c-1] is 'left'."
+    solution: |
+      def uniquePathsWithObstacles(obstacleGrid):
+          n = len(obstacleGrid[0])
+          dp = [0] * n
+          dp[0] = 1
+          for row in obstacleGrid:
+              for c in range(n):
+                  if row[c] == 1:
+                      dp[c] = 0
+                  elif c > 0:
+                      dp[c] += dp[c - 1]
+          return dp[-1]
+    check: |
+      r = uniquePathsWithObstacles([[0, 0, 0], [0, 1, 0], [0, 0, 0]])
+      assert r == 2, f"center obstacle -> {r!r}"
+      r = uniquePathsWithObstacles([[0, 1], [0, 0]])
+      assert r == 1, f"[[0,1],[0,0]] -> {r!r}"
+      r = uniquePathsWithObstacles([[1]])
+      assert r == 0, f"blocked start -> {r!r}"
+      r = uniquePathsWithObstacles([[0]])
+      assert r == 1, f"[[0]] -> {r!r}"
+      r = uniquePathsWithObstacles([[0, 0], [0, 1]])
+      assert r == 0, f"blocked target -> {r!r}"
+      r = uniquePathsWithObstacles([[0], [1], [0]])
+      assert r == 0, f"blocked single column -> {r!r}"
+    takeaway: "Grid path counting: dp = top + left, obstacles force 0; one rolling row is enough."
+  - id: minimum-path-sum
+    title: Minimum Path Sum
+    url: https://leetcode.com/problems/minimum-path-sum/
+    difficulty: Medium
+    prompt: |
+      Given an `m × n` grid of non-negative numbers, find a path from top-left to bottom-right
+      (moving only right or down) that minimises the sum of the numbers on it. Return that sum.
+    starter: |
+      def minPathSum(grid):
+          pass
+    hints:
+      - "State: cheapest cost to reach (r, c), including grid[r][c]."
+      - "First row: only reachable from the left. First column: only from above. Elsewhere: min of both."
+    solution: |
+      def minPathSum(grid):
+          m, n = len(grid), len(grid[0])
+          dp = [float("inf")] * n
+          dp[0] = 0
+          for r in range(m):
+              for c in range(n):
+                  left = dp[c - 1] if c > 0 else float("inf")
+                  dp[c] = grid[r][c] + min(dp[c], left)
+          return dp[-1]
+    check: |
+      r = minPathSum([[1, 3, 1], [1, 5, 1], [4, 2, 1]])
+      assert r == 7, f"3x3 -> {r!r}"
+      r = minPathSum([[1, 2, 3], [4, 5, 6]])
+      assert r == 12, f"2x3 -> {r!r}"
+      r = minPathSum([[5]])
+      assert r == 5, f"[[5]] -> {r!r}"
+      r = minPathSum([[1], [2], [3]])
+      assert r == 6, f"single column -> {r!r}"
+      r = minPathSum([[1, 2, 3]])
+      assert r == 6, f"single row -> {r!r}"
+    takeaway: "Grid min-cost: dp = cell + min(top, left), borders have one parent; roll it into one row."

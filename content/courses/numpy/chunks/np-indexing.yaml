@@ -1,0 +1,131 @@
+id: np-indexing
+title: Indexing, masks and np.where
+intro: |
+  Selecting the right rows, columns and entries: slices for contiguous parts, boolean masks to filter,
+  integer arrays to pick (e.g. the logit of each row's label), and `np.where` to choose elementwise.
+problems:
+  - Split features and labels, inputs and next-step targets
+  - Keep only the positive examples, or the confident predictions
+  - Pick the probability of the true class in each row
+atoms: []
+skills:
+  - id: np-indexing.slice
+    name: a[i, j], a[:, j], slices and steps, ..., views vs copy
+    teach: |
+      ```python
+      a = np.array([[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]])     # (3, 4)
+      a[1, 2]               # one element: 6;  a[1] is row 1, (4,)
+      a[:, 0]               # column, axis dropped: (3,) [0, 4, 8];  a[:, 0:1] keeps it: (3, 1)
+      a[-1, ::2]            # start:stop:step on any axis, negative counts from the end: [8, 10];  ::-1 reverses
+      a[..., -1]            # ... = all leading axes, so this indexes the last axis: (3,) [3, 7, 11]
+      v = a[0].copy()       # independent row; a plain slice is a VIEW (writing into it changes a)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Slice the arrays `a` (3, 4) and `t` (2, 3, 4).
+          - `el`: the element of `a` at row 2, column 1
+          - `col` (3,): column 1 of `a`; `colk` (3, 1): the same column, keeping the axis
+          - `evens`: every other entry of `a`'s last row, starting at index 0
+          - `last` (2, 3): the last entry along `t`'s last axis, using `...`
+          - `first` (4,): an independent copy of `a`'s row 0; then set `first[0] = -1` (`a` must not change)
+        setup: |
+          import numpy as np
+          a = np.array([[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]])
+          t = np.arange(24).reshape(2, 3, 4)
+        solution: |
+          el = a[2, 1]
+          col = a[:, 1]
+          colk = a[:, 1:2]
+          evens = a[-1, ::2]
+          last = t[..., -1]
+          first = a[0].copy()
+          first[0] = -1
+        check: |
+          assert el == 9, f"el = {el!r}"
+          assert isinstance(col, np.ndarray) and col.shape == (3,) and col.tolist() == [1, 5, 9], f"col = {col!r}"
+          assert isinstance(colk, np.ndarray) and colk.shape == (3, 1) and colk.ravel().tolist() == [1, 5, 9], f"colk = {colk!r}"
+          assert isinstance(evens, np.ndarray) and evens.tolist() == [8, 10], f"evens = {evens!r}"
+          assert isinstance(last, np.ndarray) and last.shape == (2, 3) and last.tolist() == [[3, 7, 11], [15, 19, 23]], f"last = {last!r}"
+          assert isinstance(first, np.ndarray) and first.tolist() == [-1, 1, 2, 3], f"first = {first!r}"
+          assert a[0, 0] == 0, f"a[0, 0] = {a[0, 0]}: first is a view of a, not a copy"
+      - id: b
+        prompt: |
+          Build next-step training pairs from the sequence `seq` (T, D) = (5, 2).
+          - `inputs` (T-1, D): every step except the last
+          - `targets` (T-1, D): every step except the first
+          - `rev` (T, D): the steps in reverse order
+        setup: |
+          import numpy as np
+          seq = np.arange(10).reshape(5, 2)
+        solution: |
+          inputs = seq[:-1]
+          targets = seq[1:]
+          rev = seq[::-1]
+        check: |
+          assert isinstance(inputs, np.ndarray) and inputs.tolist() == [[0, 1], [2, 3], [4, 5], [6, 7]], f"inputs = {inputs!r}"
+          assert isinstance(targets, np.ndarray) and targets.tolist() == [[2, 3], [4, 5], [6, 7], [8, 9]], f"targets = {targets!r}"
+          assert isinstance(rev, np.ndarray) and rev.tolist() == [[8, 9], [6, 7], [4, 5], [2, 3], [0, 1]], f"rev = {rev!r}"
+
+  - id: np-indexing.mask-fancy
+    name: boolean masks, & | ~, integer-array indexing, np.where
+    teach: |
+      ```python
+      x = np.array([3, -1, 0, 5, -2])
+      x[x > 0]                     # bool mask -> 1-D array of entries where True: [3, 5]
+      x[(x > -2) & (x < 4)]        # & and, | or, ~ not; parenthesize each comparison: [3, -1, 0]
+      x[x < 0] = 0                 # writes in place where True: x == [3, 0, 0, 5, 0]
+      x[[3, 0]]                    # int list -> those entries in that order (a copy): [5, 3]
+      a = np.array([[1, 2], [3, 4], [5, 6]])                    # (3, 2)
+      a[np.arange(3), [1, 0, 1]]   # paired int arrays -> [a[0, 1], a[1, 0], a[2, 1]] = [2, 3, 6]
+      np.where(a > 2, a, 0)        # elementwise: a where True, else 0 -> [[0, 0], [3, 4], [5, 6]]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Filter and pick entries of `x` (6,) and `P` (4, 3) with boolean masks, integer arrays and `np.where`.
+          - `pos`: the entries of `x` that are > 0; `mid`: the entries of `x` in `[-1, 2]` (both ends included)
+          - `notzero`: the entries of `x` that are not 0, using `~` on `x == 0`
+          - `picked` (3,): `[x[4], x[0], x[4]]`, with one integer-list index
+          - `py` (4,): `py[i] = P[i, y[i]]`
+          - `relu` (4, 3): `P` with negative entries replaced by 0, using `np.where`
+          - finally, set the negative entries of `x` to 0 in place
+        setup: |
+          import numpy as np
+          x = np.array([4, -1, 0, 2, -3, 7])
+          P = np.array([[0.1, -0.7, 0.2], [-0.5, 0.3, 0.2], [0.9, 0.05, -0.05], [0.0, 0.4, 0.6]])
+          y = np.array([1, 0, 0, 2])
+        solution: |
+          pos = x[x > 0]
+          mid = x[(x >= -1) & (x <= 2)]
+          notzero = x[~(x == 0)]
+          picked = x[[4, 0, 4]]
+          py = P[np.arange(4), y]
+          relu = np.where(P > 0, P, 0)
+          x[x < 0] = 0
+        check: |
+          assert isinstance(pos, np.ndarray) and pos.tolist() == [4, 2, 7], f"pos = {pos!r}"
+          assert isinstance(mid, np.ndarray) and mid.tolist() == [-1, 0, 2], f"mid = {mid!r}"
+          assert isinstance(notzero, np.ndarray) and notzero.tolist() == [4, -1, 2, -3, 7], f"notzero = {notzero!r}"
+          assert isinstance(picked, np.ndarray) and picked.tolist() == [-3, 4, -3], f"picked = {picked!r}"
+          assert isinstance(py, np.ndarray) and np.allclose(py, [-0.7, -0.5, 0.9, 0.6]), f"py = {py!r}"
+          assert isinstance(relu, np.ndarray) and relu.shape == (4, 3) and np.allclose(relu, np.maximum(P, 0)), f"relu = {relu!r}"
+          assert x.tolist() == [4, 0, 0, 2, 0, 7], f"x = {x!r}"
+      - id: b
+        prompt: |
+          Select and threshold predictions: `scores` (N,) are predicted probabilities, `labels` (N,) the true 0 / 1 labels.
+          - `pos_scores`: the scores whose label is 1
+          - `false_pos`: the scores with label 0 and score > 0.5
+          - `pred` (N,) int: 1 where score > 0.5, else 0, using `np.where`
+        setup: |
+          import numpy as np
+          scores = np.array([0.9, 0.2, 0.7, 0.4, 0.6, 0.1])
+          labels = np.array([1, 0, 0, 1, 1, 0])
+        solution: |
+          pos_scores = scores[labels == 1]
+          false_pos = scores[(labels == 0) & (scores > 0.5)]
+          pred = np.where(scores > 0.5, 1, 0)
+        check: |
+          assert isinstance(pos_scores, np.ndarray) and np.allclose(pos_scores, [0.9, 0.4, 0.6]) and len(pos_scores) == 3, f"pos_scores = {pos_scores!r}"
+          assert isinstance(false_pos, np.ndarray) and np.allclose(false_pos, [0.7]) and len(false_pos) == 1, f"false_pos = {false_pos!r}"
+          assert isinstance(pred, np.ndarray) and pred.tolist() == [1, 0, 1, 0, 1, 0], f"pred = {pred!r}"

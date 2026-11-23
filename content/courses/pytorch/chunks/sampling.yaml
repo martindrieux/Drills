@@ -1,0 +1,357 @@
+id: sampling
+title: Sampling from a language model
+intro: |
+  "Write the generate function" is a standard follow-up to "write a transformer". You turn the
+  last position's logits into the next token with greedy decoding, temperature, top-k or top-p, append
+  it, and loop. Everything here works on `(B, V)` logits and `(B, T)` token ids.
+problems:
+  - Write generate() for a GPT-style model
+  - Implement top-k and nucleus (top-p) sampling
+  - What does temperature do?
+  - Greedy vs sampling decoding
+atoms: []
+skills:
+  - id: sampling.softmax-temperature
+    name: Temperature-scaled softmax
+    teach: |
+      ```python
+      # F.softmax(logits / T, dim=-1): T < 1 sharpens (T -> 0 is greedy), T > 1 flattens (T -> inf is uniform)
+      F.softmax(torch.tensor([2., 0.]) / 0.5, dim=-1)     # tensor([0.9820, 0.0180]); T = 1 gives [0.8808, 0.1192]
+      ```
+      Pitfall: divide the **logits**, not the probabilities.
+    cards:
+      - id: a
+        prompt: Set `probs` to the softmax of `logits` at temperature `0.5`.
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          logits = torch.tensor([[2.0, 1.0, 0.5, 0.0]])
+        solution: |
+          probs = F.softmax(logits / 0.5, dim=-1)
+        check: |
+          ref = torch.softmax(logits * 2, dim=-1)
+          assert torch.allclose(probs, ref), f"probs = {probs}, expected {ref}"
+      - id: b
+        prompt: Set `p_cold` (T = `0.1`) and `p_hot` (T = `10`) from the same `logits`. Note which one is almost one-hot.
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          logits = torch.tensor([[2.0, 1.0, 0.5, 0.0]])
+        solution: |
+          p_cold = F.softmax(logits / 0.1, dim=-1)
+          p_hot = F.softmax(logits / 10, dim=-1)
+        check: |
+          assert torch.allclose(p_cold, torch.softmax(logits * 10, -1)), f"p_cold = {p_cold}"
+          assert torch.allclose(p_hot, torch.softmax(logits / 10, -1)), f"p_hot = {p_hot}"
+          assert p_cold.max() > 0.99 and p_hot.max() < 0.3, "cold should be ~one-hot, hot ~uniform"
+
+  - id: sampling.greedy
+    name: Greedy next token and appending
+    teach: |
+      ```python
+      # t.argmax(dim, keepdim=True) -> int64 index of the max, keeping the reduced dim as size 1
+      torch.tensor([[0.1, 2.0, -1.0]]).argmax(dim=-1, keepdim=True)   # tensor([[1]])
+      # model output (B, T, V): the next token comes from the last position
+      next_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)          # (B, 1)
+      # torch.cat([idx, next_id], dim=1) appends it as a new column
+      idx = torch.cat([idx, next_id], dim=1)                            # (B, T) -> (B, T + 1)
+      ```
+      Pitfall: `argmax` without `keepdim` gives `(B,)` and the `cat` fails. Use `keepdim=True` or `.unsqueeze(-1)`.
+    cards:
+      - id: a
+        prompt: |
+          `logits` is a model output `(B, T, V) = (2, 2, 4)`. Set: `next_id` `(B, 1)` = the greedy choice at the last position ·
+          `idx2` = `idx` `(B, T)` with `next_id` appended as a new column.
+        setup: |
+          import torch
+          logits = torch.tensor([[[5.0, 0.0, 0.0, 0.0], [0.1, 2.0, -1.0, 0.5]],
+                                 [[0.0, 0.0, 0.0, 5.0], [3.0, 0.0, 0.2, 2.9]]])
+          idx = torch.tensor([[4, 2], [6, 1]])
+        solution: |
+          next_id = logits[:, -1, :].argmax(dim=-1, keepdim=True)
+          idx2 = torch.cat([idx, next_id], dim=1)
+        check: |
+          assert next_id.shape == (2, 1), f"next_id.shape = {tuple(next_id.shape)}"
+          assert next_id.tolist() == [[1], [0]], f"next_id = {next_id.tolist()} (use the last position)"
+          assert idx2.tolist() == [[4, 2, 1], [6, 1, 0]], f"idx2 = {idx2.tolist()}"
+      - id: b
+        prompt: "`next_id` has shape `(B,)`. Append it to `idx` `(B, T)` as a new column, so `idx` becomes `(2, 4)`."
+        setup: |
+          import torch
+          idx = torch.tensor([[1, 2, 3], [4, 5, 6]])
+          next_id = torch.tensor([7, 8])
+        solution: |
+          idx = torch.cat([idx, next_id.unsqueeze(-1)], dim=1)
+        check: |
+          assert idx.tolist() == [[1, 2, 3, 7], [4, 5, 6, 8]], f"idx = {idx.tolist()}"
+
+  - id: sampling.multinomial
+    name: torch.multinomial sampling
+    teach: |
+      ```python
+      # torch.multinomial(probs, num_samples) -> (B, num_samples) int64 indices drawn per row
+      # (weights must be >= 0 and need not sum to 1)
+      torch.multinomial(torch.tensor([[0., 3., 0.]]), 1)                      # tensor([[1]])
+      # generator=g: a seeded torch.Generator makes the draws reproducible
+      g = torch.Generator().manual_seed(0)
+      next_id = torch.multinomial(probs, 1, generator=g)
+      ```
+      Pitfall: pass **probabilities**, not logits. Negative entries raise an error.
+    cards:
+      - id: a
+        prompt: |
+          `w` holds non-negative weights that do **not** sum to 1 (no need to normalize). Using the generator `g`,
+          set `next_id` `(B, 1)` = one index drawn per row of `w`.
+        setup: |
+          import torch
+          w = torch.tensor([[1.0, 6.0, 3.0], [2.0, 1.0, 1.0]])
+          g = torch.Generator().manual_seed(0)
+        solution: |
+          next_id = torch.multinomial(w, num_samples=1, generator=g)
+        check: |
+          ref = torch.multinomial(w, 1, generator=torch.Generator().manual_seed(0))
+          assert next_id.shape == (2, 1), f"next_id.shape = {tuple(next_id.shape)}"
+          assert torch.equal(next_id, ref), f"next_id = {next_id.tolist()}, expected {ref.tolist()} (pass generator=g)"
+      - id: b
+        prompt: "`logits` `(B, V)` are raw scores. Sample `next_id` `(B, 1)` at temperature `0.8` with the generator `g`."
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          logits = torch.tensor([[1.0, -2.0, 0.5, 3.0, 0.0], [0.0, 2.0, 2.0, -1.0, 1.0]])
+          g = torch.Generator().manual_seed(123)
+        solution: |
+          next_id = torch.multinomial(F.softmax(logits / 0.8, dim=-1), 1, generator=g)
+        check: |
+          ref = torch.multinomial(torch.softmax(logits / 0.8, -1), 1, generator=torch.Generator().manual_seed(123))
+          assert next_id.shape == (2, 1), f"next_id.shape = {tuple(next_id.shape)}"
+          assert torch.equal(next_id, ref), f"next_id = {next_id.tolist()}, expected {ref.tolist()}"
+
+  - id: sampling.top-k
+    name: Top-k filtering
+    teach: |
+      ```python
+      # torch.topk(t, k, dim=-1) -> (values, indices) of the k largest, sorted descending
+      v, ix = torch.topk(torch.tensor([[0.5, 3.0, 2.0]]), 2)     # v [[3., 2.]], ix [[1, 2]]
+      # keep the k largest: below the k-th value -> -inf, so softmax gives them exactly 0
+      logits = logits.masked_fill(logits < v[:, [-1]], float("-inf"))
+      # alternative: sample a position among the k, then ix.gather(-1, pos) maps it back to vocab ids (B, 1)
+      next_id = ix.gather(-1, torch.multinomial(F.softmax(v, dim=-1), 1))
+      ```
+      Pitfall: `v[:, [-1]]` keeps shape `(B, 1)` and broadcasts per row; `v[:, -1]` is `(B,)` and broadcasts wrongly.
+    cards:
+      - id: a
+        prompt: |
+          Set: `v, ix` = the top-2 values and indices of `logits` · `masked` = `logits` with all but the top 2 set to `-inf` ·
+          `next_id` `(1, 1)` = a vocab id sampled among the top 2: draw a position from `softmax(v)` with `g`, map it back through `ix`.
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          logits = torch.tensor([[0.5, 3.0, -1.0, 2.0, 0.0]])
+          g = torch.Generator().manual_seed(0)
+        solution: |
+          v, ix = torch.topk(logits, 2)
+          masked = logits.masked_fill(logits < v[:, [-1]], float("-inf"))
+          next_id = ix.gather(-1, torch.multinomial(F.softmax(v, dim=-1), 1, generator=g))
+        check: |
+          assert v.tolist() == [[3.0, 2.0]], f"v = {v.tolist()}"
+          assert ix.tolist() == [[1, 3]], f"ix = {ix.tolist()}"
+          inf = float("-inf")
+          assert masked.tolist() == [[inf, 3.0, inf, 2.0, inf]], f"masked = {masked.tolist()}"
+          ref = ix.gather(-1, torch.multinomial(torch.softmax(v, -1), 1, generator=torch.Generator().manual_seed(0)))
+          assert next_id.shape == (1, 1) and torch.equal(next_id, ref), f"next_id = {next_id.tolist()}, expected {ref.tolist()}"
+      - id: b
+        prompt: Write `top_k_filter(logits, k)` that returns a copy of `logits` `(B, V)` with everything but the top `k` of each row set to `-inf`.
+        setup: |
+          import torch
+        starter: |
+          def top_k_filter(logits, k):
+              return logits
+        solution: |
+          def top_k_filter(logits, k):
+              v, _ = torch.topk(logits, k)
+              return logits.masked_fill(logits < v[:, [-1]], float("-inf"))
+        check: |
+          logits = torch.tensor([[0.5, 3.0, -1.0, 2.0, 0.0], [1.0, 0.0, 4.0, -2.0, 5.0]])
+          for k, exp in [(3, [[True, True, False, True, False], [True, False, True, False, True]]),
+                         (1, [[False, True, False, False, False], [False, False, False, False, True]]),
+                         (5, [[True] * 5, [True] * 5])]:
+              out = top_k_filter(logits.clone(), k)
+              keep = torch.isfinite(out)
+              assert keep.tolist() == exp, f"k={k}: kept = {keep.tolist()}, expected {exp}"
+              assert torch.equal(out[keep], logits[keep]), f"k={k}: kept logits must be unchanged"
+
+  - id: sampling.top-p
+    name: Top-p (nucleus) filtering
+    teach: |
+      Keep the smallest set of top tokens whose probabilities sum to at least `p`.
+
+      ```python
+      # torch.sort(t, descending=True, dim=-1) -> (sorted values, their original indices)
+      sorted_logits, sorted_ix = torch.sort(logits, descending=True, dim=-1)
+      probs = F.softmax(sorted_logits, dim=-1)
+      # t.cumsum(dim) -> running sums; minus probs = mass BEFORE each token (so the top token is always kept)
+      remove = probs.cumsum(dim=-1) - probs > p          # ps [0.5, 0.3, 0.2], p 0.7 -> [F, F, T]
+      sorted_logits[remove] = float("-inf")
+      # out.scatter_(dim, index, src): out[..., index[j]] = src[..., j], back to vocab order
+      logits = torch.empty_like(logits).scatter_(-1, sorted_ix, sorted_logits)
+      ```
+      Pitfall: `cumsum > p` without subtracting `probs` also drops the token that crosses `p`.
+    cards:
+      - id: a
+        prompt: |
+          Top-p with `p = 0.6`. Set: `sorted_logits, sorted_ix` = `logits` sorted descending ·
+          `remove` = bool mask on the sorted tokens, True outside the nucleus (keep the token that crosses `p`) ·
+          `filtered` = `logits` in the **original** vocab order with the removed tokens at `-inf`.
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          logits = torch.log(torch.tensor([[0.1, 0.4, 0.2, 0.3]]))
+          p = 0.6
+        solution: |
+          sorted_logits, sorted_ix = torch.sort(logits, descending=True, dim=-1)
+          probs = F.softmax(sorted_logits, dim=-1)
+          remove = probs.cumsum(dim=-1) - probs > p
+          sorted_logits[remove] = float("-inf")
+          filtered = torch.empty_like(logits).scatter_(-1, sorted_ix, sorted_logits)
+        check: |
+          assert sorted_ix.tolist() == [[1, 3, 2, 0]], f"sorted_ix = {sorted_ix.tolist()}"
+          assert remove.tolist() == [[False, False, True, True]], f"remove = {remove.tolist()}"
+          removed = torch.isinf(filtered).tolist()
+          assert removed == [[True, False, True, False]], f"-inf positions of filtered = {removed} (scatter back to vocab order)"
+          keep = ~torch.isinf(filtered)
+          assert torch.allclose(filtered[keep], logits[keep]), "kept logits must be unchanged and in vocab order"
+      - id: c
+        prompt: Write `top_p_filter(logits, p)` that returns `logits` `(B, V)` in the **original** vocab order, with tokens outside each row's nucleus set to `-inf`.
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def top_p_filter(logits, p):
+              return logits
+        solution: |
+          def top_p_filter(logits, p):
+              sorted_logits, sorted_ix = torch.sort(logits, descending=True, dim=-1)
+              probs = F.softmax(sorted_logits, dim=-1)
+              sorted_logits[probs.cumsum(dim=-1) - probs > p] = float("-inf")
+              return torch.empty_like(logits).scatter_(-1, sorted_ix, sorted_logits)
+        check: |
+          logits = torch.log(torch.tensor([[0.1, 0.4, 0.05, 0.3, 0.15], [0.5, 0.05, 0.2, 0.05, 0.2]]))
+          for p, exp in [(0.75, [[True, False, True, False, False], [False, True, False, True, False]]),
+                         (0.05, [[True, False, True, True, True], [False, True, True, True, True]]),
+                         (1.0, [[False] * 5, [False] * 5])]:
+              out = top_p_filter(logits.clone(), p)
+              removed = torch.isinf(out).tolist()
+              assert removed == exp, f"p={p}: removed = {removed}, expected {exp}"
+              keep = ~torch.isinf(out)
+              assert torch.allclose(out[keep], logits[keep]), f"p={p}: kept logits must be unchanged and in vocab order"
+
+  - id: sampling.generate-loop
+    name: The autoregressive generate loop
+    teach: |
+      ```python
+      @torch.no_grad()                                    # call model.eval() first so dropout is off
+      def generate(model, idx, max_new_tokens, block_size, T=1.0, top_k=None):
+          for _ in range(max_new_tokens):
+              logits = model(idx[:, -block_size:])        # crop to the context window
+              logits = logits[:, -1, :] / T               # (B, V): last position only
+              if top_k is not None:
+                  v, _ = torch.topk(logits, top_k)
+                  logits[logits < v[:, [-1]]] = float("-inf")
+              probs = F.softmax(logits, dim=-1)
+              nxt = torch.multinomial(probs, num_samples=1)   # (B, 1)
+              idx = torch.cat([idx, nxt], dim=1)
+          return idx
+      ```
+      Pitfall: without the crop, positional embeddings run out of positions once `idx` is longer than `block_size`.
+    cards:
+      - id: a
+        prompt: |
+          Write `generate(model, idx, n, block_size, T=1.0, top_k=None)`: without autograd, `n` times crop `idx` to the last
+          `block_size` tokens, take the last position's logits divided by `T`, mask all but the `top_k` largest to `-inf` if
+          `top_k` is given, sample with `torch.multinomial(probs, 1)` and append. Return the extended `idx`.
+        starter: |
+          def generate(model, idx, n, block_size, T=1.0, top_k=None):
+              return idx
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          class Tiny(nn.Module):
+              def __init__(self, V=10, block_size=4):
+                  super().__init__()
+                  self.tok, self.pos = nn.Embedding(V, V), nn.Embedding(block_size, V)
+              def forward(self, idx):
+                  self.grad_seen = torch.is_grad_enabled()
+                  return self.tok(idx) + self.pos(torch.arange(idx.shape[1]))
+          torch.manual_seed(0)
+          model = Tiny().eval()
+        solution: |
+          @torch.no_grad()
+          def generate(model, idx, n, block_size, T=1.0, top_k=None):
+              for _ in range(n):
+                  logits = model(idx[:, -block_size:])[:, -1, :] / T
+                  if top_k is not None:
+                      v, _ = torch.topk(logits, top_k)
+                      logits[logits < v[:, [-1]]] = float("-inf")
+                  probs = F.softmax(logits, dim=-1)
+                  nxt = torch.multinomial(probs, num_samples=1)
+                  idx = torch.cat([idx, nxt], dim=1)
+              return idx
+        check: |
+          def ref_gen(n, T, top_k):
+              ref = torch.tensor([[1], [7]])
+              with torch.no_grad():
+                  for _ in range(n):
+                      lg = model(ref[:, -4:])[:, -1] / T
+                      if top_k is not None:
+                          lg = lg.masked_fill(lg < torch.topk(lg, top_k).values[:, [-1]], float("-inf"))
+                      ref = torch.cat([ref, torch.multinomial(torch.softmax(lg, -1), 1)], 1)
+              return ref
+          for n, T, top_k in [(6, 1.0, None), (5, 0.8, 3), (0, 1.0, None)]:
+              torch.manual_seed(3)
+              out = generate(model, torch.tensor([[1], [7]]), n, 4, T=T, top_k=top_k)
+              torch.manual_seed(3)
+              ref = ref_gen(n, T, top_k)
+              assert out.shape == (2, 1 + n), f"n={n}, T={T}, top_k={top_k}: out.shape = {tuple(out.shape)}"
+              assert torch.equal(out, ref), f"n={n}, T={T}, top_k={top_k}: out = {out.tolist()}, expected {ref.tolist()}"
+          model.grad_seen = None
+          generate(model, torch.tensor([[1]]), 1, 4)
+          assert model.grad_seen is False, "run the model under torch.no_grad()"
+      - id: b
+        prompt: |
+          Greedy decoding. Write `generate(model, idx, n, block_size)`: without autograd, `n` times crop `idx` to the last
+          `block_size` tokens, append the **argmax** of the last position's logits. Return the extended `idx`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          class Tiny(nn.Module):
+              def __init__(self, V=10, block_size=4):
+                  super().__init__()
+                  self.tok, self.pos = nn.Embedding(V, V), nn.Embedding(block_size, V)
+              def forward(self, idx):
+                  self.grad_seen = torch.is_grad_enabled()
+                  return self.tok(idx) + self.pos(torch.arange(idx.shape[1]))
+          torch.manual_seed(0)
+          model = Tiny().eval()
+        starter: |
+          def generate(model, idx, n, block_size):
+              return idx
+        solution: |
+          @torch.no_grad()
+          def generate(model, idx, n, block_size):
+              for _ in range(n):
+                  logits = model(idx[:, -block_size:])[:, -1, :]
+                  idx = torch.cat([idx, logits.argmax(dim=-1, keepdim=True)], dim=1)
+              return idx
+        check: |
+          for n in [6, 1, 0]:
+              out = generate(model, torch.tensor([[1], [7]]), n, 4)
+              ref = torch.tensor([[1], [7]])
+              with torch.no_grad():
+                  for _ in range(n):
+                      ref = torch.cat([ref, model(ref[:, -4:])[:, -1].argmax(-1, keepdim=True)], 1)
+              assert out.shape == (2, 1 + n), f"n={n}: out.shape = {tuple(out.shape)}"
+              assert torch.equal(out, ref), f"n={n}: out = {out.tolist()}, expected {ref.tolist()}"
+          model.grad_seen = None
+          generate(model, torch.tensor([[1]]), 1, 4)
+          assert model.grad_seen is False, "run the model under torch.no_grad()"

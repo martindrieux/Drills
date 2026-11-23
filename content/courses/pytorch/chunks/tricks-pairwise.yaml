@@ -1,0 +1,851 @@
+id: tricks-pairwise
+title: "Tricks: pairwise ops, kNN, k-means, contrastive loss"
+intro: |
+  Problems built on an all-pairs score matrix: squared distances without the `(N, M, D)` blow-up, kNN indices
+  that scale, a fully vectorized k-means and a SimCLR-style contrastive loss with masked self-similarity.
+  (Broadcasting distances, cosine similarity and a kNN vote are in the NumPy page `np-ml`; loop-based k-means,
+  the kNN vote and CLIP loss are in `ml-problems`.)
+problems:
+  - Pairwise distances without an (N, M, D) intermediate
+  - Vectorized k-nearest-neighbour search
+  - Implement k-means without loops over points or clusters
+  - Implement the SimCLR NT-Xent loss
+  - Implement the supervised contrastive loss
+atoms: []
+skills:
+  - id: tricks-pairwise.sq-dists
+    name: Pairwise squared distances at scale (Medium)
+    teach: |
+      Squared Euclidean distance between every row of `x` `(N, D)` and every row of `y` `(M, D)`:
+      `out[i, j] = ||x[i] - y[j]||²` -> `(N, M)`.
+
+      ```python
+      x = torch.tensor([[0., 0.], [1., 1.]]); y = torch.tensor([[3., 4.], [1., 0.]])   # (2, 2), (2, 2)
+      # out -> [[25., 1.], [13., 1.]]                                                  # (2, 2)
+      ```
+      Constraints: no loops, no `torch.cdist`, no `(N, M, D)` tensor (200 GB at `N = M = 10⁴`, `D = 512`).
+      Never negative, even for points far from the origin.
+    cards:
+      - id: a
+        prompt: |
+          Write `sq_dists(x, y)`: the squared Euclidean distance between every row of `x` and every row of `y`, without ever building an `(N, M, D)` tensor.
+          - `x` `(N, D)` float, `y` `(M, D)` same dtype: two point sets (`N` or `M` may be 0; points may be far from the origin)
+          - returns `out` `(N, M)`, dtype of `x`: `out[i, j] = ||x[i] - y[j]||²`, every entry `>= 0`
+          - No Python loops, no `torch.cdist`.
+
+          <details><summary>Hint 1</summary>Expand the square: terms in one point only, plus one cross term.</details>
+          <details><summary>Hint 2</summary>`||a - b||² = ||a||² + ||b||² - 2 a·b`; all cross terms are one matmul.</details>
+          <details><summary>Hint 3</summary>`xx[:, None] + yy[None, :] - 2 * x @ y.T`, then `clamp_(min=0)`.</details>
+        setup: |
+          import torch
+        starter: |
+          def sq_dists(x, y):
+              raise NotImplementedError
+        solution: |
+          def sq_dists(x, y):
+              xx = (x * x).sum(dim=1)                          # (N,)
+              yy = (y * y).sum(dim=1)                          # (M,)
+              d = xx[:, None] + yy[None, :] - 2 * (x @ y.T)    # (N, 1) + (1, M) - (N, M) -> (N, M)
+              return d.clamp_(min=0)                           # rounding can give -1e-3 instead of 0
+
+          # Trick: ||a - b||² = ||a||² + ||b||² - 2 a·b; cross terms = one GEMM. Memory O(NM), not O(NMD).
+          # Clamp: with ||x||² ~ 1e6 in float32, rounding can make a ~0 distance negative (sqrt -> NaN).
+          # torch.cdist(x, y) ** 2 does the same (matmul form when N or M > 25).
+          # NumPy: identical, with np.maximum(d, 0).
+          # Follow-up: cosine distance = 1 - (normalized x) @ (normalized y).T; batched with torch.baddbmm.
+        check: |
+          import dis
+          import torch
+          from cardtest import against, rand_cases
+
+          def _scan(fn):
+              names, loops, todo = set(), False, [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  names |= set(c.co_names)
+                  loops |= any(i.opname.startswith(("FOR_ITER", "JUMP_BACKWARD")) for i in dis.get_instructions(c))
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return names, loops
+
+          _names, _loops = _scan(sq_dists)
+          assert "cdist" not in _names, "don't use torch.cdist"
+          assert not _loops, "no Python loops (for / while / comprehensions)"
+
+          class _Exp:
+              def __init__(s, t, tol, dtype): s.t, s.tol, s.dtype = t, tol, dtype
+              def __repr__(s): return repr(s.t)
+
+          def _ref(x, y):
+              d = torch.cdist(x.double(), y.double(), compute_mode="donot_use_mm_for_euclid_dist") ** 2
+              scale = float((x.double() ** 2).sum(1).max()) if len(x) else 0.0
+              scale += float((y.double() ** 2).sum(1).max()) if len(y) else 0.0
+              eps = 2e-6 if x.dtype == torch.float32 else 1e-12
+              return _Exp(d, eps * (scale + 1), x.dtype)
+
+          def _same(got, e):
+              return (isinstance(got, torch.Tensor) and got.shape == e.t.shape and got.dtype == e.dtype
+                      and bool((got >= 0).all()) and torch.allclose(got.double(), e.t, rtol=1e-4, atol=e.tol))
+
+          def _show(*a):
+              return "(" + ", ".join(f"{tuple(t.shape)} {str(t.dtype)[6:]}{'' if t.is_contiguous() else ' non-contiguous'}" for t in a) + ")"
+
+          def _t(rows, dt=torch.float64):
+              return torch.tensor(rows, dtype=dt)
+
+          g = torch.Generator().manual_seed(0)
+          _far = 1000 + 0.01 * torch.randn(6, 3, generator=g)               # float32, ||x||² ~ 3e6
+          _edge = [
+              (_t([[0., 0.], [1., 1.]]), _t([[3., 4.], [1., 0.]])),
+              (torch.zeros(0, 3, dtype=torch.float64), torch.randn(4, 3, generator=g, dtype=torch.float64)),
+              (torch.randn(4, 3, generator=g, dtype=torch.float64), torch.zeros(0, 3, dtype=torch.float64)),
+              (_t([[2.]]), _t([[-1.]])),
+              (_t([[1.], [5.], [5.]]), _t([[5.], [0.]])),
+              (_far, _far.clone()),
+              (_far, _far[[3, 0, 5]] + 0.001),
+              (torch.randn(5, 7, generator=g).T, torch.randn(5, 4, generator=g).T),
+              (torch.randn(3, 2, generator=g, dtype=torch.float64), torch.randn(3, 2, generator=g, dtype=torch.float64)),
+          ]
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              n, m, d = r.randint(0, 30), r.randint(0, 30), r.randint(1, 8)
+              dt = r.choice([torch.float32, torch.float64])
+              x = torch.randn(n, d, generator=gg, dtype=dt) * r.choice([0.1, 1, 10]) + r.choice([0, 5])
+              y = torch.randn(m, d, generator=gg, dtype=dt) * r.choice([0.1, 1, 10])
+              if r.random() < 0.3:
+                  x = x.T.contiguous().T
+              return (x, y)
+
+          against(sq_dists, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Write `self_sq_dists(x)`: the squared Euclidean distances between all pairs of rows of one point set, without an `(N, N, D)` tensor.
+          - `x` `(N, D)` float: points (`N` may be 0; points may be far from the origin)
+          - returns `out` `(N, N)`, dtype of `x`: `out[i, j] = ||x[i] - x[j]||²`, every entry `>= 0`, diagonal **exactly** `0`, **exactly** symmetric (`torch.equal(out, out.T)`)
+          - No Python loops, no `cdist` / `pdist`.
+
+          <details><summary>Hint 1</summary>Everything is in the Gram matrix `G = x @ x.T`: the squared norms are its diagonal.</details>
+          <details><summary>Hint 2</summary>Norms from `(x * x).sum(1)` round differently from `G[i, i]`, so the diagonal is not 0; rounding also breaks symmetry.</details>
+          <details><summary>Hint 3</summary>`n = G.diagonal()`, then `(d + d.T) / 2`, `clamp_(min=0)`, `fill_diagonal_(0)`.</details>
+        setup: |
+          import torch
+        starter: |
+          def self_sq_dists(x):
+              raise NotImplementedError
+        solution: |
+          def self_sq_dists(x):
+              G = x @ x.T                                   # (N, N) Gram matrix
+              n = G.diagonal()                              # (N,) squared norms, a view of G
+              d = n[:, None] + n[None, :] - 2 * G           # (N, N)
+              d = (d + d.T) / 2                             # exactly symmetric: a + b == b + a in floats
+              return d.clamp_(min=0).fill_diagonal_(0)
+
+          # Trick: one GEMM gives cross terms and norms (its diagonal): half the work of sq_dists(x, x).
+          # Rounding breaks the invariants: d[i, i] ~ 1e-1 in float32 at ||x||² ~ 1e6, and a GEMM may compute
+          #   G[i, j] and G[j, i] in different orders -> symmetrize, clamp, zero the diagonal.
+          # NumPy: np.fill_diagonal(d, 0) (in place, returns None), np.maximum(d, 0).
+          # Follow-up: RBF kernel matrix exp(-d / (2 sigma²)).
+        check: |
+          import dis
+          import torch
+          from cardtest import against, rand_cases
+
+          def _scan(fn):
+              names, loops, todo = set(), False, [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  names |= set(c.co_names)
+                  loops |= any(i.opname.startswith(("FOR_ITER", "JUMP_BACKWARD")) for i in dis.get_instructions(c))
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return names, loops
+
+          _names, _loops = _scan(self_sq_dists)
+          assert not {"cdist", "pdist"} & _names, "don't use torch.cdist / torch.pdist"
+          assert not _loops, "no Python loops (for / while / comprehensions)"
+
+          class _Exp:
+              def __init__(s, t, tol, dtype): s.t, s.tol, s.dtype = t, tol, dtype
+              def __repr__(s): return repr(s.t)
+
+          def _ref(x):
+              d = torch.cdist(x.double(), x.double(), compute_mode="donot_use_mm_for_euclid_dist") ** 2
+              scale = 2 * float((x.double() ** 2).sum(1).max()) if len(x) else 0.0
+              eps = 2e-6 if x.dtype == torch.float32 else 1e-12
+              return _Exp(d, eps * (scale + 1), x.dtype)
+
+          def _same(got, e):
+              return (isinstance(got, torch.Tensor) and got.shape == e.t.shape and got.dtype == e.dtype
+                      and bool((got >= 0).all()) and torch.equal(got, got.T)
+                      and bool((got.diagonal() == 0).all())
+                      and torch.allclose(got.double(), e.t, rtol=1e-4, atol=e.tol))
+
+          def _show(x):
+              return f"({tuple(x.shape)} {str(x.dtype)[6:]}{'' if x.is_contiguous() else ' non-contiguous'})"
+
+          g = torch.Generator().manual_seed(0)
+          _far = 1000 + 0.01 * torch.randn(8, 3, generator=g)
+          _edge = [
+              (torch.tensor([[0., 0.], [3., 4.], [1., 0.]], dtype=torch.float64),),
+              (torch.zeros(0, 3, dtype=torch.float64),),
+              (torch.tensor([[7.]]),),
+              (torch.tensor([[1., 2.], [1., 2.], [0., 0.]]),),
+              (_far,),
+              (torch.cat([_far, _far[:3]]),),
+              (torch.randn(5, 9, generator=g).T,),
+          ]
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              n, d = r.randint(0, 30), r.randint(1, 8)
+              dt = r.choice([torch.float32, torch.float64])
+              x = torch.randn(n, d, generator=gg, dtype=dt) * r.choice([0.1, 1, 10]) + r.choice([0, 3, 300])
+              if r.random() < 0.3:
+                  x = x.T.contiguous().T
+              return (x,)
+
+          against(self_sq_dists, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show)
+
+  - id: tricks-pairwise.knn-indices
+    name: Vectorized kNN indices (Medium)
+    teach: |
+      Indices of the `k` nearest rows of `ref` `(N, D)` for each row of `queries` `(M, D)`, nearest first -> `(M, k)` int64.
+
+      ```python
+      ref = torch.tensor([[0.], [10.], [3.]]); queries = torch.tensor([[2.], [9.]])   # (3, 1), (2, 1)
+      # k = 2 -> [[2, 0], [1, 2]]                                                     # (2, 2)
+      ```
+      Ties: any order. Constraints: no loops, no `(M, N, D)` tensor, no full sort, no `torch.cdist`.
+    cards:
+      - id: a
+        prompt: |
+          Write `knn_indices(ref, queries, k)`: for each query, the indices of its `k` nearest reference points (Euclidean distance).
+          - `ref` `(N, D)` float: reference points; `queries` `(M, D)` same dtype: query points (`M` may be 0); `k` (int, `1 <= k <= N`)
+          - returns `idx` `(M, k)` int64: `idx[i]` = `k` distinct indices into `ref` of the points nearest to `queries[i]`, nearest first (ties in any order)
+          - No Python loops, no `sort` / `argsort` / `msort`, no `cdist`.
+
+          <details><summary>Hint 1</summary>Two parts: all distances without the 3-D tensor, then the `k` smallest per row without a full sort.</details>
+          <details><summary>Hint 2</summary>Matmul identity for the distances; a partial selection costs about `O(N)` per row.</details>
+          <details><summary>Hint 3</summary>`d = ||r||² - 2 q @ ref.T` (drop `||q||²`), then `d.topk(k, dim=1, largest=False).indices`.</details>
+        setup: |
+          import torch
+        starter: |
+          def knn_indices(ref, queries, k):
+              raise NotImplementedError
+        solution: |
+          def knn_indices(ref, queries, k):
+              rr = (ref * ref).sum(dim=1)                      # (N,)
+              d = rr[None, :] - 2 * (queries @ ref.T)          # (M, N): ||r||² - 2 q·r (+ ||q||², same for the whole row)
+              return d.topk(k, dim=1, largest=False).indices   # (M, k) int64, sorted nearest first
+
+          # Trick: distances via one GEMM; topk(largest=False) selects k in ~O(N) per row vs O(N log N) for argsort.
+          # Dropping ||q||² keeps each row's ranking, but the values are no longer distances.
+          # NumPy: np.argpartition(d, k - 1, axis=1)[:, :k] (unsorted!) then sort those k.
+          # Mistakes: largest=True default (farthest); ranking by q @ r.T (similarity, not distance).
+          # Follow-up: M x N too big -> chunk (card b); millions of points -> FAISS (IVF / HNSW).
+        check: |
+          import dis
+          import torch
+          from cardtest import against, rand_cases
+
+          def _scan(fn):
+              names, loops, todo = set(), False, [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  names |= set(c.co_names)
+                  loops |= any(i.opname.startswith(("FOR_ITER", "JUMP_BACKWARD")) for i in dis.get_instructions(c))
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return names, loops
+
+          _names, _loops = _scan(knn_indices)
+          assert not {"cdist", "sort", "argsort", "msort"} & _names, "don't use cdist / sort / argsort / msort"
+          assert not _loops, "no Python loops (for / while / comprehensions)"
+
+          class _Exp:
+              def __init__(s, D, kd, k): s.D, s.kd, s.k = D, kd, k
+              def __repr__(s): return f"indices whose distances are {s.kd!r}"
+
+          def _ref(ref, queries, k):
+              D = [[sum((a - b) ** 2 for a, b in zip(q, r)) for r in ref.double().tolist()] for q in queries.double().tolist()]
+              D = torch.tensor(D, dtype=torch.float64).reshape(len(queries), len(ref))
+              return _Exp(D, torch.tensor([sorted(row)[:k] for row in D.tolist()], dtype=torch.float64).reshape(len(queries), k), k)
+
+          def _same(got, e):
+              M, N = e.D.shape
+              if not (isinstance(got, torch.Tensor) and got.shape == (M, e.k) and got.dtype == torch.int64):
+                  return False
+              if M == 0:
+                  return True
+              if bool(((got < 0) | (got >= N)).any()):
+                  return False
+              if bool((got.sort(dim=1).values.diff(dim=1) == 0).any()):     # an index repeated in a row
+                  return False
+              gd = e.D.gather(1, got)
+              return torch.allclose(gd, e.kd, rtol=1e-5, atol=1e-6 * (1 + float(e.D.max())))
+
+          def _show(ref, q, k):
+              return f"(ref {tuple(ref.shape)}, queries {tuple(q.shape)}, k={k})"
+
+          g = torch.Generator().manual_seed(0)
+          _R = torch.randn(7, 3, generator=g, dtype=torch.float64)
+          _edge = [
+              (torch.tensor([[0.], [10.], [3.]]), torch.tensor([[2.], [9.]]), 2),
+              (_R, torch.randn(4, 3, generator=g, dtype=torch.float64), 7),
+              (_R, torch.randn(4, 3, generator=g, dtype=torch.float64), 1),
+              (_R[:1], torch.randn(3, 3, generator=g, dtype=torch.float64), 1),
+              (_R, torch.zeros(0, 3, dtype=torch.float64), 2),
+              (torch.cat([_R, _R[:3], _R[:1]]), _R[[0, 2]] + 1e-3, 4),
+              (_R, _R[[5, 1, 6]].clone(), 3),
+              (torch.tensor([[1.], [1.], [1.], [5.]]), torch.tensor([[0.]]), 2),
+              (torch.randn(3, 9, generator=g).T, torch.randn(3, 5, generator=g).T, 4),
+          ]
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              n, m, d = r.randint(1, 40), r.randint(0, 12), r.randint(1, 6)
+              dt = r.choice([torch.float32, torch.float64])
+              ref = torch.randn(n, d, generator=gg, dtype=dt) * r.choice([0.5, 1, 5])
+              if r.random() < 0.3:
+                  ref = torch.cat([ref, ref[: r.randint(1, n)]])
+              q = torch.randn(m, d, generator=gg, dtype=dt) * r.choice([0.5, 1, 5])
+              if r.random() < 0.3:
+                  ref = ref.T.contiguous().T
+              return (ref, q, r.randint(1, len(ref)))
+
+          against(knn_indices, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Write `knn_chunked(ref, queries, k, chunk)`: the `k` nearest reference points of each query when the full `(M, N)` distance matrix does not fit in memory, so `ref` is processed in blocks `ref[s : s + chunk]`.
+          - `ref` `(N, D)` float: reference points; `queries` `(M, D)` same dtype (`M` may be 0); `k` (int, `1 <= k <= N`); `chunk` (int ≥ 1): block size, may be smaller than `k` or larger than `N`
+          - returns `idx` `(M, k)` int64: `idx[i]` = `k` distinct indices into the **whole** `ref` of the points nearest to `queries[i]` (Euclidean), nearest first (ties in any order)
+          - Never build the full `(M, N)` matrix; one Python loop over blocks allowed; no `sort` / `argsort` / `msort`, no `cdist`.
+
+          <details><summary>Hint 1</summary>The `k` nearest of A ∪ B are among (the `k` nearest of A) ∪ B.</details>
+          <details><summary>Hint 2</summary>Start with `k` dummies at `+inf`; per block, concatenate the best `(M, k)` with the block's `(M, c)` and reselect.</details>
+          <details><summary>Hint 3</summary>Concatenate distances and global indices (`s + j`), `topk(k, dim=1, largest=False)`, then `gather` the indices.</details>
+        setup: |
+          import torch
+        starter: |
+          def knn_chunked(ref, queries, k, chunk):
+              raise NotImplementedError
+        solution: |
+          def knn_chunked(ref, queries, k, chunk):
+              M = len(queries)
+              best_d = torch.full((M, k), float("inf"), dtype=queries.dtype)    # (M, k)
+              best_i = torch.full((M, k), -1, dtype=torch.long)                 # (M, k)
+              for s in range(0, len(ref), chunk):
+                  blk = ref[s:s + chunk]                                        # (c, D)
+                  d = (blk * blk).sum(1)[None, :] - 2 * (queries @ blk.T)      # (M, c), ranking only
+                  idx = torch.arange(s, s + len(blk)).expand(M, -1)             # (M, c) global indices
+                  cand_d = torch.cat([best_d, d], dim=1)                        # (M, k + c)
+                  cand_i = torch.cat([best_i, idx], dim=1)
+                  best_d, pos = cand_d.topk(k, dim=1, largest=False)            # (M, k)
+                  best_i = cand_i.gather(1, pos)
+              return best_i
+
+          # Trick: top-k is mergeable -> stream over ref with a running (M, k) best list (as FAISS brute force).
+          # Memory O(M (k + chunk)) instead of O(MN), same O(MND) time; +inf / -1 sentinels handle k > chunk.
+          # NumPy: same loop with np.argpartition + np.take_along_axis.
+          # Mistakes: local indices j instead of s + j; topk over the block only (forgets the old best).
+          # Follow-up: also chunk the queries when M is large.
+        check: |
+          import dis
+          import torch
+          from cardtest import against, rand_cases
+
+          def _scan(fn):
+              names, todo = set(), [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  names |= set(c.co_names)
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return names
+
+          assert not {"cdist", "sort", "argsort", "msort"} & _scan(knn_chunked), "don't use cdist / sort / argsort / msort"
+
+          class _Exp:
+              def __init__(s, D, kd, k): s.D, s.kd, s.k = D, kd, k
+              def __repr__(s): return f"indices whose distances are {s.kd!r}"
+
+          def _ref(ref, queries, k, chunk):
+              D = [[sum((a - b) ** 2 for a, b in zip(q, r)) for r in ref.double().tolist()] for q in queries.double().tolist()]
+              D = torch.tensor(D, dtype=torch.float64).reshape(len(queries), len(ref))
+              return _Exp(D, torch.tensor([sorted(row)[:k] for row in D.tolist()], dtype=torch.float64).reshape(len(queries), k), k)
+
+          def _same(got, e):
+              M, N = e.D.shape
+              if not (isinstance(got, torch.Tensor) and got.shape == (M, e.k) and got.dtype == torch.int64):
+                  return False
+              if M == 0:
+                  return True
+              if bool(((got < 0) | (got >= N)).any()):
+                  return False
+              if bool((got.sort(dim=1).values.diff(dim=1) == 0).any()):
+                  return False
+              return torch.allclose(e.D.gather(1, got), e.kd, rtol=1e-5, atol=1e-6 * (1 + float(e.D.max())))
+
+          def _show(ref, q, k, chunk):
+              return f"(ref {tuple(ref.shape)}, queries {tuple(q.shape)}, k={k}, chunk={chunk})"
+
+          g = torch.Generator().manual_seed(1)
+          _R = torch.randn(10, 3, generator=g, dtype=torch.float64)
+          _Q = torch.randn(4, 3, generator=g, dtype=torch.float64)
+          _edge = [
+              (torch.tensor([[0.], [10.], [3.]]), torch.tensor([[2.], [9.]]), 2, 1),
+              (_R, _Q, 3, 1),
+              (_R, _Q, 3, 50),
+              (_R, _Q, 4, 3),
+              (_R, _Q, 7, 2),
+              (_R, _Q, 10, 4),
+              (_R, torch.zeros(0, 3, dtype=torch.float64), 2, 3),
+              (torch.cat([_R, _R[:4]]), _R[[1, 2]] + 1e-3, 5, 3),
+              (_R[:1], _Q, 1, 1),
+          ]
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              n, m, d = r.randint(1, 40), r.randint(0, 10), r.randint(1, 6)
+              dt = r.choice([torch.float32, torch.float64])
+              ref = torch.randn(n, d, generator=gg, dtype=dt) * r.choice([0.5, 1, 5])
+              if r.random() < 0.3:
+                  ref = torch.cat([ref, ref[: r.randint(1, n)]])
+              q = torch.randn(m, d, generator=gg, dtype=dt) * r.choice([0.5, 1, 5])
+              return (ref, q, r.randint(1, len(ref)), r.randint(1, len(ref) + 3))
+
+          against(knn_chunked, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show)
+
+  - id: tricks-pairwise.kmeans
+    name: Vectorized k-means (Hard)
+    teach: |
+      One k-means step: assign each point to its nearest center (squared Euclidean, ties -> lowest index), then move
+      each center to the mean of its points; a center with no point stays. `data` `(N, D)`, `centers` `(K, D)`.
+
+      ```python
+      data = torch.tensor([[0.], [1.], [10.]]); centers = torch.tensor([[0.], [9.], [100.]])
+      # assign -> [0, 0, 1] (N,) int64; new_centers -> [[0.5], [10.], [100.]] (K, D)   (center 2 empty: stays)
+      ```
+      Follow-up: full k-means with a stopping rule and the clustering cost (SSE).
+      Constraints: no loops over points or clusters, no `torch.cdist`.
+    cards:
+      - id: a
+        prompt: |
+          Write `kmeans_step(data, centers)`: one k-means step: assign each point to its nearest center (squared Euclidean), then move each center to the mean of its points.
+          - `data` `(N, D)` float: points; `centers` `(K, D)` same dtype: current centers
+          - returns `(new_centers, assign)`: `new_centers` `(K, D)`, dtype of `data`: mean of the points assigned to each center, the old center if it has none; `assign` `(N,)` int64: index of each point's nearest center in `centers` (ties -> lowest index)
+          - No Python loops, no `cdist`; don't modify `centers`.
+
+          <details><summary>Hint 1</summary>Assignment = pairwise distances + argmin; update = a group-by mean keyed by `assign`.</details>
+          <details><summary>Hint 2</summary>Distances with one matmul; sums by scatter-adding rows into their cluster; sizes by counting cluster ids.</details>
+          <details><summary>Hint 3</summary>`index_add_(0, assign, data)`, `bincount(assign, minlength=K)`, `torch.where(counts > 0, means, centers)`.</details>
+        setup: |
+          import torch
+        starter: |
+          def kmeans_step(data, centers):
+              raise NotImplementedError
+        solution: |
+          def kmeans_step(data, centers):
+              K = len(centers)
+              cc = (centers * centers).sum(dim=1)                          # (K,)
+              d = cc[None, :] - 2 * (data @ centers.T)                     # (N, K), ranking only (||x||² dropped)
+              assign = d.argmin(dim=1)                                     # (N,) int64, first index on ties
+              sums = torch.zeros_like(centers).index_add_(0, assign, data) # (K, D): sums[c] += data[i] if assign[i] == c
+              counts = torch.bincount(assign, minlength=K)                 # (K,) int64
+              means = sums / counts.clamp(min=1)[:, None].to(data.dtype)   # (K, D); clamp avoids 0 / 0
+              return torch.where(counts[:, None] > 0, means, centers), assign
+
+          # Trick: assignment = GEMM + argmin; update = index_add_ + bincount (group-by mean, no cluster loop).
+          # O(NKD) time, O(NK + KD) memory. Empty cluster: 0/0 = NaN without the clamp; where() keeps the old center.
+          # NumPy: np.add.at(sums, assign, data) + np.bincount; sums[assign] += data is WRONG (repeats written once).
+          # Follow-up: k-means++ init (sample proportional to d²).
+        check: |
+          import dis
+          import torch
+          from cardtest import against, rand_cases
+
+          def _scan(fn):
+              names, loops, todo = set(), False, [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  names |= set(c.co_names)
+                  loops |= any(i.opname.startswith(("FOR_ITER", "JUMP_BACKWARD")) for i in dis.get_instructions(c))
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return names, loops
+
+          _names, _loops = _scan(kmeans_step)
+          assert "cdist" not in _names, "don't use torch.cdist"
+          assert not _loops, "no Python loops (for / while / comprehensions)"
+
+          def _ref(data, centers):
+              X, C = data.double().tolist(), centers.double().tolist()
+              assign = []
+              for x in X:
+                  ds = [sum((a - b) ** 2 for a, b in zip(x, c)) for c in C]
+                  assign.append(ds.index(min(ds)))
+              new = []
+              for k, c in enumerate(C):
+                  pts = [x for x, a in zip(X, assign) if a == k]
+                  new.append([sum(col) / len(pts) for col in zip(*pts)] if pts else c)
+              return torch.tensor(new, dtype=data.dtype).reshape(centers.shape), torch.tensor(assign, dtype=torch.long)
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 2):
+                  return False
+              c, a = got
+              return (isinstance(c, torch.Tensor) and c.shape == exp[0].shape and c.dtype == exp[0].dtype
+                      and isinstance(a, torch.Tensor) and a.dtype == torch.int64 and torch.equal(a, exp[1])
+                      and torch.allclose(c, exp[0], rtol=1e-5, atol=1e-6))
+
+          def _show(data, centers):
+              return f"(data {tuple(data.shape)}, centers {tuple(centers.shape)})"
+
+          def _t(rows):
+              return torch.tensor(rows, dtype=torch.float64)
+
+          _C0 = _t([[0., 0.], [5., 5.]])
+          _orig = _C0.clone()
+          kmeans_step(_t([[0., 1.], [1., 0.], [6., 5.]]), _C0)
+          assert torch.equal(_C0, _orig), "kmeans_step modified `centers` in place"
+
+          g = torch.Generator().manual_seed(0)
+          _X = torch.randn(12, 2, generator=g, dtype=torch.float64)
+          _edge = [
+              (_t([[0.], [1.], [10.]]), _t([[0.], [9.], [100.]])),
+              (_X, _X[:1].clone()),
+              (_X[:3], _X[[0, 1, 2]] + _t([[0.1, 0.], [0., 0.1], [0.1, 0.1]])),
+              (_X[:2], torch.cat([_X[:2], _t([[50., 50.], [-50., 0.]])])),
+              (_X[:1], _t([[3., 3.], [-1., 2.]])),
+              (_X, torch.cat([_X[:2], _t([[100., 100.]])])),
+              (_X, torch.cat([_X[:1], _X[:1], _X[5:6]])),
+              (_t([[0.], [2.], [4.]]), _t([[-1.], [1.], [3.], [5.]])),
+              (_t([[0., 0.], [2., 0.]]), _t([[1., 1.], [1., -1.]])),
+              (torch.randn(2, 8, generator=g).T, torch.randn(3, 2, generator=g)),
+          ]
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              n, k, d = r.randint(1, 40), r.randint(1, 8), r.randint(1, 5)
+              dt = r.choice([torch.float32, torch.float64])
+              data = torch.randn(n, d, generator=gg, dtype=dt) * r.choice([1, 3]) + r.choice([0, 2])
+              centers = torch.randn(k, d, generator=gg, dtype=dt) * r.choice([1, 3, 20])
+              if r.random() < 0.3:
+                  data = data.T.contiguous().T
+              return (data, centers)
+
+          against(kmeans_step, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Write `kmeans(data, init, max_iters, tol)`: full k-means (Lloyd's algorithm) from `init`, repeating assign-to-nearest-center + move-centers-to-means steps.
+          - `data` `(N, D)` float: points; `init` `(K, D)` same dtype: initial centers; `max_iters` (int ≥ 0): maximum number of steps; `tol` (float): stop right after a step whose largest Euclidean center move is `< tol`
+          - returns `(C, assign, sse)`: `C` `(K, D)`, dtype of `data`: final centers; `assign` `(N,)` int64: index of each point's nearest center in the **final** `C`; `sse` 0-dim float: `Σ_i ||data[i] - C[assign[i]]||²` (not square-rooted)
+          - Each step: a center with no points keeps its position; ties -> lowest center index
+          - A Python loop over iterations is fine; no `cdist`; don't modify `init`.
+
+          <details><summary>Hint 1</summary>A vectorized step (assign + update) inside a thin loop over iterations.</details>
+          <details><summary>Hint 2</summary>`shift = (new - C).norm(dim=1).max()`; after the loop, recompute `assign` from the final `C`.</details>
+          <details><summary>Hint 3</summary>`sse = ((data - C[assign]) ** 2).sum()`.</details>
+        setup: |
+          import torch
+        starter: |
+          def kmeans(data, init, max_iters, tol):
+              raise NotImplementedError
+        solution: |
+          def _assign(data, C):
+              d = (C * C).sum(1)[None, :] - 2 * (data @ C.T)               # (N, K), ranking only
+              return d.argmin(dim=1)                                        # (N,)
+
+          def kmeans(data, init, max_iters, tol):
+              C = init.clone()
+              K = len(C)
+              for _ in range(max_iters):
+                  a = _assign(data, C)
+                  sums = torch.zeros_like(C).index_add_(0, a, data)         # (K, D)
+                  counts = torch.bincount(a, minlength=K)[:, None]          # (K, 1)
+                  new = torch.where(counts > 0, sums / counts.clamp(min=1).to(C.dtype), C)
+                  shift = (new - C).norm(dim=1).max()                       # largest center move
+                  C = new
+                  if shift < tol:
+                      break
+              assign = _assign(data, C)
+              sse = ((data - C[assign]) ** 2).sum()                         # (N, D) -> scalar
+              return C, assign, sse
+
+          # Each iteration: O(NKD) GEMM + O(ND) scatter. Lloyd's never increases the SSE -> converges to a local
+          #   minimum that depends on init (run several inits).
+          # NumPy: np.add.at / np.bincount / np.where; sklearn.cluster.KMeans(init=..., n_init=1).
+          # Mistakes: the stale assignment of the last step; shift as a sum or mean; sqrt in sse.
+          # Follow-up: choosing K (elbow on sse); mini-batch k-means.
+        check: |
+          import dis
+          import torch
+          from cardtest import against, rand_cases
+
+          _names, _todo = set(), [kmeans.__code__]
+          while _todo:
+              _c = _todo.pop()
+              _names |= set(_c.co_names)
+              _todo += [k for k in _c.co_consts if hasattr(k, "co_code")]
+          assert "cdist" not in _names, "don't use torch.cdist"
+
+          def _step(X, C):
+              assign = []
+              for x in X:
+                  ds = [sum((a - b) ** 2 for a, b in zip(x, c)) for c in C]
+                  assign.append(ds.index(min(ds)))
+              new = []
+              for k, c in enumerate(C):
+                  pts = [x for x, a in zip(X, assign) if a == k]
+                  new.append([sum(col) / len(pts) for col in zip(*pts)] if pts else c)
+              return new, assign
+
+          def _ref(data, init, max_iters, tol):
+              X, C = data.double().tolist(), init.double().tolist()
+              for _ in range(max_iters):
+                  new, _a = _step(X, C)
+                  shift = max(sum((a - b) ** 2 for a, b in zip(u, v)) ** 0.5 for u, v in zip(new, C))
+                  C = new
+                  if shift < tol:
+                      break
+              _, assign = _step(X, C)
+              sse = sum(sum((a - b) ** 2 for a, b in zip(x, C[k])) for x, k in zip(X, assign))
+              return (torch.tensor(C, dtype=data.dtype).reshape(init.shape), torch.tensor(assign, dtype=torch.long),
+                      torch.tensor(sse, dtype=torch.float64))
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 3):
+                  return False
+              c, a, s = got
+              return (isinstance(c, torch.Tensor) and c.shape == exp[0].shape and c.dtype == exp[0].dtype
+                      and isinstance(a, torch.Tensor) and a.dtype == torch.int64 and torch.equal(a, exp[1])
+                      and torch.allclose(c, exp[0], rtol=1e-5, atol=1e-5)
+                      and isinstance(s, torch.Tensor) and s.dim() == 0
+                      and torch.allclose(s.double(), exp[2], rtol=1e-5, atol=1e-5))
+
+          def _show(data, init, max_iters, tol):
+              return f"(data {tuple(data.shape)}, init {tuple(init.shape)}, max_iters={max_iters}, tol={tol})"
+
+          def _t(rows):
+              return torch.tensor(rows, dtype=torch.float64)
+
+          _I0 = _t([[0., 0.], [5., 5.]])
+          _orig = _I0.clone()
+          kmeans(_t([[0., 1.], [1., 0.], [6., 5.]]), _I0, 3, 0.0)
+          assert torch.equal(_I0, _orig), "kmeans modified `init` in place"
+
+          g = torch.Generator().manual_seed(0)
+          _blobs = torch.cat([torch.randn(15, 2, generator=g, dtype=torch.float64) * 0.6 + c
+                              for c in (_t([0., 0.]), _t([4., 0.]), _t([0., 4.]))])
+          _bad = _t([[0., 0.], [0.5, 0.], [0., 0.5]])
+          _edge = [
+              (_t([[0.], [1.], [10.]]), _t([[0.], [9.], [100.]]), 5, 1e-6),
+              (_blobs, _bad, 0, 1e-6),
+              (_blobs, _bad, 1, 0.0),
+              (_blobs, _bad, 2, 0.0),
+              (_blobs, _bad, 100, 1e9),
+              (_blobs, _bad, 100, 1e-8),
+              (_blobs[:2], torch.cat([_blobs[:2], _t([[30., 30.]])]), 10, 1e-6),
+              (_blobs[:1], _t([[1., 1.], [-1., -1.]]), 3, 0.0),
+              (_blobs, torch.cat([_bad, _t([[50., -50.]])]), 50, 1e-6),
+          ]
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              n, k, d = r.randint(1, 30), r.randint(1, 6), r.randint(1, 4)
+              dt = r.choice([torch.float32, torch.float64])
+              data = torch.randn(n, d, generator=gg, dtype=dt) * r.choice([1, 3])
+              init = data[torch.randint(0, n, (k,), generator=gg)] + 0.1 * torch.randn(k, d, generator=gg, dtype=dt)
+              return (data, init, r.randint(0, 12), r.choice([0.0, 1e-6, 0.05, 1.0]))
+
+          against(kmeans, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show)
+
+  - id: tricks-pairwise.nt-xent
+    name: Contrastive loss on one batch, NT-Xent (Hard)
+    teach: |
+      Batch `z` `(N, D)`, `N` even: rows `2i`, `2i+1` are a positive pair, every other row is a negative.
+      With `s[i, j] = cos(z[i], z[j]) / τ`, anchor `i` costs `-log( exp(s[i, p(i)]) / Σ_{j ≠ i} exp(s[i, j]) )`; return the mean over the `N` anchors.
+
+      ```python
+      # N = 4 -> partners p = [1, 0, 3, 2]; row 0's denominator sums columns 1, 2, 3 (never itself)
+      ```
+      Supervised variant: `labels` `(N,)`; every `j ≠ i` with the same label is a positive.
+      Constraints: no loops, scale-invariant, stable for `τ = 0.01` in float32.
+    cards:
+      - id: a
+        prompt: |
+          Write `nt_xent(z, temperature)`: the SimCLR contrastive loss of a batch where rows `2i` and `2i+1` are a positive pair and every other row is a negative.
+          - `z` `(N, D)` float, `N` even: embeddings (any scale); `temperature` (float > 0, may be 0.01)
+          - returns `loss` 0-dim, dtype of `z`: with `s[i, j] = cos(z[i], z[j]) / temperature` and `p(i)` the partner of `i`, `loss = mean_i -log( exp(s[i, p(i)]) / Σ_{j ≠ i} exp(s[i, j]) )`; finite even at `temperature = 0.01` in float32
+          - No Python loops.
+
+          <details><summary>Hint 1</summary>Per row, a classification: pick the partner among the `N - 1` other rows.</details>
+          <details><summary>Hint 2</summary>Normalize rows, one matmul, diagonal -> `-inf`, then a stable log-softmax; the partner of `i` is `i ^ 1`.</details>
+          <details><summary>Hint 3</summary>`F.cross_entropy(s.masked_fill(eye, float("-inf")), torch.arange(N) ^ 1)`.</details>
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def nt_xent(z, temperature):
+              raise NotImplementedError
+        solution: |
+          def nt_xent(z, temperature):
+              N = len(z)
+              u = F.normalize(z, dim=1)                                     # (N, D), unit rows
+              s = u @ u.T / temperature                                     # (N, N) cosine / τ
+              s = s.masked_fill(torch.eye(N, dtype=torch.bool), float("-inf"))   # drop j == i
+              target = torch.arange(N) ^ 1                                  # (N,) partners 1, 0, 3, 2, ...
+              return F.cross_entropy(s, target)                             # mean of -log_softmax[i, p(i)]
+
+          # Trick: a cross-entropy over the other N - 1 rows; the -inf diagonal removes exp(1/τ) (the largest term).
+          #   cross_entropy uses logsumexp, so 1/τ = 100 does not overflow (exp(100) > float32 max).
+          # O(N² D) time, O(N²) memory. Pairs (i, i + N/2) instead: target = (arange(N) + N // 2) % N.
+          # NumPy: np.fill_diagonal(s, -np.inf), then s - logsumexp by hand with a max-shift.
+          # Mistakes: masking with 0 instead of -inf; forgetting to normalize.
+          # Follow-up: learnable temperature (CLIP's logit_scale).
+        check: |
+          import dis
+          import math
+          import torch
+          from cardtest import against, rand_cases
+
+          _names, _loops, _todo = set(), False, [nt_xent.__code__]
+          while _todo:
+              _c = _todo.pop()
+              _loops |= any(i.opname.startswith(("FOR_ITER", "JUMP_BACKWARD")) for i in dis.get_instructions(_c))
+              _todo += [k for k in _c.co_consts if hasattr(k, "co_code")]
+          assert not _loops, "no Python loops (for / while / comprehensions)"
+
+          def _ref(z, t):
+              Z = z.double().tolist()
+              U = [[v / math.sqrt(sum(w * w for w in r)) for v in r] for r in Z]
+              N, tot = len(U), 0.0
+              for i in range(N):
+                  s = [sum(a * b for a, b in zip(U[i], U[j])) / t for j in range(N)]
+                  others = [s[j] for j in range(N) if j != i]
+                  m = max(others)
+                  lse = m + math.log(sum(math.exp(v - m) for v in others))
+                  tot += lse - s[i ^ 1]
+              return (torch.tensor(tot / N, dtype=torch.float64), z.dtype)
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.dim() == 0 and got.dtype == exp[1]
+                      and bool(torch.isfinite(got)) and math.isclose(got.item(), exp[0].item(), rel_tol=1e-4, abs_tol=1e-4))
+
+          def _show(z, t):
+              return f"(z {tuple(z.shape)} {str(z.dtype)[6:]}{'' if z.is_contiguous() else ' non-contiguous'}, temperature={t})"
+
+          g = torch.Generator().manual_seed(0)
+          _z = torch.randn(8, 5, generator=g)
+          _edge = [
+              (torch.tensor([[1., 0.], [0., 1.]], dtype=torch.float64), 1.0),
+              (torch.tensor([[1., 2.], [1., 2.], [1., 2.], [1., 2.]]), 0.5),
+              (5 * _z, 0.1),
+              (_z, 0.01),
+              (_z[[0, 0, 1, 1, 2, 2]] + 0.01 * torch.randn(6, 5, generator=g), 0.01),
+              (torch.randn(5, 6, generator=g).T, 0.2),
+              (torch.randn(10, 3, generator=g, dtype=torch.float64), 0.07),
+          ]
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              n, d = 2 * r.randint(1, 10), r.randint(1, 8)
+              dt = r.choice([torch.float32, torch.float64])
+              base = torch.randn(n // 2, d, generator=gg, dtype=dt)
+              z = base.repeat_interleave(2, dim=0) + r.choice([0.1, 1.0]) * torch.randn(n, d, generator=gg, dtype=dt)
+              z = z * r.choice([0.5, 1, 30])
+              if r.random() < 0.3:
+                  z = z.T.contiguous().T
+              return (z, r.choice([0.01, 0.07, 0.1, 0.5, 1.0]))
+
+          against(nt_xent, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Write `supcon(z, labels, temperature)`: the supervised contrastive loss, where every other row with the same label is a positive of anchor `i`.
+          - `z` `(N, D)` float: embeddings (any scale); `labels` `(N,)` int64: class of each row; `temperature` (float > 0, may be 0.01)
+          - returns `loss` 0-dim, dtype of `z`: with `s[i, j] = cos(z[i], z[j]) / temperature`, `P(i) = {j ≠ i : labels[j] == labels[i]}` and `log_p[i, j] = s[i, j] - log Σ_{k ≠ i} exp(s[i, k])`, `loss` = mean over anchors with `P(i)` non-empty of `-mean_{j ∈ P(i)} log_p[i, j]`; `0.` if no anchor has a positive
+          - Never NaN or inf; no Python loops.
+
+          <details><summary>Hint 1</summary>Same masked log-softmax; only which entries are averaged changes -> a boolean positives mask.</details>
+          <details><summary>Hint 2</summary>`pos = (labels[:, None] == labels[None, :]) & ~eye`; `-inf * 0` is NaN, so use `masked_fill`, not a product.</details>
+          <details><summary>Hint 3</summary>`-(log_p.masked_fill(~pos, 0).sum(1)) / n_pos.clamp(min=1)`, averaged over `n_pos > 0`.</details>
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def supcon(z, labels, temperature):
+              raise NotImplementedError
+        solution: |
+          def supcon(z, labels, temperature):
+              N = len(z)
+              u = F.normalize(z, dim=1)
+              eye = torch.eye(N, dtype=torch.bool)
+              s = (u @ u.T / temperature).masked_fill(eye, float("-inf"))   # (N, N), self removed
+              log_p = s.log_softmax(dim=1)                                  # (N, N), diagonal -inf
+              pos = (labels[:, None] == labels[None, :]) & ~eye             # (N, N) bool positives
+              n_pos = pos.sum(dim=1)                                        # (N,)
+              per = -log_p.masked_fill(~pos, 0).sum(dim=1) / n_pos.clamp(min=1)   # (N,)
+              has = n_pos > 0
+              return per[has].mean() if bool(has.any()) else z.new_zeros(())
+
+          # Trick: one masked log_softmax, then a mask-weighted row mean; the positives mask is a broadcast label compare.
+          # NaN trap: log_p is -inf on the diagonal; log_p * pos gives -inf * 0 = NaN -> masked_fill / where.
+          # Anchors without positives are skipped (0 / 0); the mean of an empty tensor is NaN.
+          # NumPy: np.where(pos, log_p, 0).sum(1); log_softmax by hand with a max-shift.
+          # Mistakes: forgetting ~eye (the anchor counts itself); F.cross_entropy takes one target per row.
+          # Follow-up: SupCon "in" variant (log of the mean of probabilities).
+        check: |
+          import dis
+          import math
+          import torch
+          from cardtest import against, rand_cases
+
+          _loops, _todo = False, [supcon.__code__]
+          while _todo:
+              _c = _todo.pop()
+              _loops |= any(i.opname.startswith(("FOR_ITER", "JUMP_BACKWARD")) for i in dis.get_instructions(_c))
+              _todo += [k for k in _c.co_consts if hasattr(k, "co_code")]
+          assert not _loops, "no Python loops (for / while / comprehensions)"
+
+          def _ref(z, labels, t):
+              Z, L = z.double().tolist(), labels.tolist()
+              U = [[v / math.sqrt(sum(w * w for w in r)) for v in r] for r in Z]
+              N, tot, cnt = len(U), 0.0, 0
+              for i in range(N):
+                  P = [j for j in range(N) if j != i and L[j] == L[i]]
+                  if not P:
+                      continue
+                  s = [sum(a * b for a, b in zip(U[i], U[j])) / t for j in range(N)]
+                  others = [s[j] for j in range(N) if j != i]
+                  m = max(others)
+                  lse = m + math.log(sum(math.exp(v - m) for v in others))
+                  tot += sum(lse - s[j] for j in P) / len(P)
+                  cnt += 1
+              return (torch.tensor(tot / cnt if cnt else 0.0, dtype=torch.float64), z.dtype)
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.dim() == 0 and got.dtype == exp[1]
+                      and bool(torch.isfinite(got)) and math.isclose(got.item(), exp[0].item(), rel_tol=1e-4, abs_tol=1e-4))
+
+          def _show(z, labels, t):
+              return f"(z {tuple(z.shape)} {str(z.dtype)[6:]}, labels={labels.tolist()}, temperature={t})"
+
+          g = torch.Generator().manual_seed(0)
+          _z = torch.randn(6, 4, generator=g)
+          _L = lambda *v: torch.tensor(v, dtype=torch.long)
+          _edge = [
+              (_z, _L(0, 0, 1, 1, 2, 2), 0.5),
+              (_z, _L(0, 0, 1, 1, 1, 2), 0.1),
+              (_z, _L(3, 3, 3, 3, 3, 3), 0.2),
+              (_z, _L(0, 1, 2, 3, 4, 5), 0.2),
+              (_z[:1], _L(0), 1.0),
+              (_z, _L(0, 1, 0, 1, 0, 2), 0.01),
+              (4 * _z.double(), _L(5, 5, 7, 7, 7, 9), 0.07),
+              (_z[[0, 0, 0, 1]], _L(0, 0, 1, 1), 0.5),
+          ]
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              n, d, c = r.randint(1, 16), r.randint(1, 6), r.randint(1, 6)
+              dt = r.choice([torch.float32, torch.float64])
+              labels = torch.randint(0, c, (n,), generator=gg)
+              z = torch.randn(c, d, generator=gg, dtype=dt)[labels] + r.choice([0.3, 1.0]) * torch.randn(n, d, generator=gg, dtype=dt)
+              return (z * r.choice([0.5, 1, 20]), labels, r.choice([0.01, 0.07, 0.1, 0.5, 1.0]))
+
+          against(supcon, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show)

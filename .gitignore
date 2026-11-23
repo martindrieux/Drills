@@ -1,0 +1,12 @@
+# personal learning data (stays local)
+progress.json
+answers.json
+backups/
+feedback/
+
+# builds and dependencies
+desktop/node_modules/
+desktop/dist/
+__pycache__/
+*.pyc
+.DS_Store

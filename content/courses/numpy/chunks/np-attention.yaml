@@ -1,0 +1,865 @@
+id: np-attention
+title: "Problem: multi-head attention & Transformer block, no autograd"
+intro: |
+  Multi-head attention and a Transformer block in NumPy, no autograd: forward, backward, training, gradient checks.
+  Interface: self-attention, no projection biases, causal mask, pre-LayerNorm. Later parts give earlier ones ready-made.
+  Cost: O(B·T²·d) time, O(B·h·T²) memory for `attn` (cut it with chunked online softmax, as FlashAttention).
+  Use `-inf` for the causal mask (`-1e9` if a whole row can be masked, e.g. padding).
+problems:
+  - Implement multi-head attention forward and backward without autograd
+  - Add a KV cache for generation
+  - Train a tiny language model with teacher forcing, report perplexity
+  - Check gradients with finite differences
+  - Write the softmax and LayerNorm backward passes
+atoms: []
+skills:
+  - id: np-attention.forward
+    name: "Part 1: multi-head causal attention forward"
+    teach: |
+      ```python
+      # X (B, T, d); W_q, W_k, W_v, W_o (d, d); h heads, hd = d // h
+      # split: (B, T, d) -> reshape (B, T, h, hd) -> transpose (B, h, T, hd); merge = the inverse
+      # Q, K, V = split(X @ W_q), split(X @ W_k), split(X @ W_v)     # (B, h, T, hd)
+      # scores = Q @ Kᵀ / sqrt(hd), -inf where u > t (causal)       # (B, h, T, T)
+      # attn = softmax(scores) over the last axis, row max first      # (B, h, T, T)
+      # concat = merge(attn @ V); out = concat @ W_o                  # (B, T, d)
+      # e.g. X (2, 5, 16), h = 4 -> Q (2, 4, 5, 4), scores (2, 4, 5, 5), out (2, 5, 16)
+      # KV cache: new token x (B, d) -> q, k, v (B, h, 1, hd); append k, v to K, V on the time axis
+      #   -> (B, h, t+1, hd); scores q @ Kᵀ (B, h, 1, t+1), no mask; O(t·d) per step
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Implement `attention_forward(X, W_q, W_k, W_v, W_o, h)`: causal multi-head self-attention (no biases).
+          - `X` (B, T, d): input; `W_q`, `W_k`, `W_v`, `W_o` (d, d): projections; `h` (int): number of heads, `hd = d // h`
+          - head `k` takes columns `k*hd:(k+1)*hd` of `X @ W_q`, `X @ W_k`, `X @ W_v` as `Q`, `K`, `V` and computes `softmax(Q Kᵀ / sqrt(hd)) @ V`, where position `t` attends only to positions `≤ t`
+          - returns `(out, cache)`: `out` (B, T, d) `= concat @ W_o`, `concat` = the heads' outputs put back in the same columns
+          - `cache`: dict for part 2 (not checked), e.g. `X, W_q, W_k, W_v, W_o, h, Q, K, V, attn, concat`
+        setup: |
+          import math
+          import numpy as np
+        solution: |
+          def attention_forward(X, W_q, W_k, W_v, W_o, h):
+              B, T, d = X.shape
+              hd = d // h
+              split = lambda M: M.reshape(B, T, h, hd).transpose(0, 2, 1, 3)    # (B, h, T, hd)
+              Q, K, V = split(X @ W_q), split(X @ W_k), split(X @ W_v)
+              scores = Q @ K.transpose(0, 1, 3, 2) / math.sqrt(hd)              # (B, h, T, T)
+              scores = np.where(np.triu(np.ones((T, T), dtype=bool), k=1), -np.inf, scores)
+              e = np.exp(scores - scores.max(axis=-1, keepdims=True))
+              attn = e / e.sum(axis=-1, keepdims=True)                          # (B, h, T, T)
+              concat = (attn @ V).transpose(0, 2, 1, 3).reshape(B, T, d)        # (B, T, d)
+              out = concat @ W_o
+              cache = {"X": X, "W_q": W_q, "W_k": W_k, "W_v": W_v, "W_o": W_o, "h": h,
+                       "Q": Q, "K": K, "V": V, "attn": attn, "concat": concat}
+              return out, cache
+        check: |
+          import warnings
+          from cardtest import against, rand_cases
+          from np_attention_ref import brute_attention, rand_attention_case, show_shapes
+          warnings.simplefilter("ignore", RuntimeWarning)
+
+          def _out_of(*args):
+              res = attention_forward(*args)
+              assert isinstance(res, tuple) and len(res) == 2, f"must return a tuple (out, cache), got {type(res).__name__}"
+              return res[0]
+          _out_of.__name__ = "attention_forward"
+
+          def _close(got, exp):
+              got = np.asarray(got, dtype=float)
+              return got.shape == exp.shape and np.allclose(got, exp, rtol=1e-6, atol=1e-8)
+
+          def _case(B, T, h, hd, seed, wscale=1.0, xscale=1.0):
+              rs = np.random.default_rng(seed)
+              d = h * hd
+              X = rs.normal(size=(B, T, d)) * xscale
+              return (X, *[rs.normal(size=(d, d)) / math.sqrt(d) * wscale for _ in range(4)], h)
+
+          _edge = [_case(1, 1, 1, 1, 1), _case(1, 1, 2, 3, 2), _case(2, 3, 1, 4, 3), _case(1, 4, 3, 1, 4),
+                   _case(1, 4, 2, 2, 5, wscale=6.0, xscale=5.0), _case(2, 5, 4, 4, 6), _case(3, 6, 2, 3, 7)]
+          against(_out_of, brute_attention, _edge + rand_cases(rand_attention_case, 200), same=_close, show=show_shapes)
+      - id: b
+        prompt: |
+          Implement `attention_step(x, kv, W_q, W_k, W_v, W_o, h)`: one generation step of causal attention with a KV cache.
+          - `x` (B, d): the newest token (position `t`); `kv`: `(K, V)` from the previous step, each (B, h, t, hd), or `None` at step 0
+          - `W_q`, `W_k`, `W_v`, `W_o` (d, d), `h`: as in `attention_forward`
+          - returns `(out, kv)`: `out` (B, d): this token's attention output after `W_o` (= row `t` of the full causal forward); `kv` = `(K, V)`, each (B, h, t+1, hd), with this token's key / value appended last on the time axis
+        setup: |
+          import math
+          import numpy as np
+        solution: |
+          def attention_step(x, kv, W_q, W_k, W_v, W_o, h):
+              B, d = x.shape
+              hd = d // h
+              split = lambda M: M.reshape(B, h, 1, hd)                          # (B, d) -> (B, h, 1, hd)
+              q, k, v = split(x @ W_q), split(x @ W_k), split(x @ W_v)
+              if kv is not None:
+                  k = np.concatenate([kv[0], k], axis=2)                        # (B, h, t+1, hd)
+                  v = np.concatenate([kv[1], v], axis=2)
+              scores = q @ k.transpose(0, 1, 3, 2) / math.sqrt(hd)              # (B, h, 1, t+1)
+              e = np.exp(scores - scores.max(axis=-1, keepdims=True))
+              attn = e / e.sum(axis=-1, keepdims=True)
+              ctx = (attn @ v).reshape(B, d)                                    # (B, h, 1, hd) -> (B, d)
+              return ctx @ W_o, (k, v)
+        check: |
+          import warnings
+          from cardtest import against, rand_cases
+          from np_attention_ref import brute_attention, rand_attention_case, show_shapes, split_heads
+          warnings.simplefilter("ignore", RuntimeWarning)
+
+          def _run_steps(X, W_q, W_k, W_v, W_o, h):
+              B, T, d = X.shape
+              hd = d // h
+              Ks, Vs = split_heads(X @ W_k, h), split_heads(X @ W_v, h)
+              kv, outs = None, []
+              for t in range(T):
+                  res = attention_step(X[:, t].copy(), kv, W_q, W_k, W_v, W_o, h)
+                  assert isinstance(res, tuple) and len(res) == 2, f"step {t}: must return a tuple (out, kv), got {type(res).__name__}"
+                  out, kv = res
+                  assert np.shape(out) == (B, d), f"step {t}: out has shape {np.shape(out)}, expected {(B, d)}"
+                  assert isinstance(kv, tuple) and len(kv) == 2, f"step {t}: kv must be a tuple (K, V), got {type(kv).__name__}"
+                  for name, got, full in (("K", kv[0], Ks), ("V", kv[1], Vs)):
+                      assert np.shape(got) == (B, h, t + 1, hd), f"step {t}: {name} has shape {np.shape(got)}, expected {(B, h, t + 1, hd)}"
+                      assert np.allclose(got, full[:, :, :t + 1], rtol=1e-6, atol=1e-8), \
+                          f"step {t}: {name} values differ from the keys/values of tokens 0..{t} in order"
+                  outs.append(np.asarray(out, dtype=float))
+              return np.stack(outs, axis=1)
+          _run_steps.__name__ = "attention_step (run over all positions)"
+
+          def _close(got, exp):
+              return got.shape == exp.shape and np.allclose(got, exp, rtol=1e-6, atol=1e-8)
+
+          def _case(B, T, h, hd, seed, wscale=1.0, xscale=1.0):
+              rs = np.random.default_rng(seed)
+              d = h * hd
+              X = rs.normal(size=(B, T, d)) * xscale
+              return (X, *[rs.normal(size=(d, d)) / math.sqrt(d) * wscale for _ in range(4)], h)
+
+          _edge = [_case(1, 1, 1, 1, 11), _case(2, 1, 2, 2, 12), _case(1, 4, 1, 3, 13), _case(2, 4, 3, 1, 14),
+                   _case(1, 4, 2, 2, 15, wscale=6.0, xscale=5.0), _case(2, 5, 4, 4, 16)]
+          against(_run_steps, brute_attention, _edge + rand_cases(rand_attention_case, 200), same=_close, show=show_shapes)
+
+  - id: np-attention.backward
+    name: "Part 2: attention backward by hand"
+    teach: |
+      ```python
+      # from d_out (B, T, d); "ᵀ" = swap the last two axes; each dY has Y's shape
+      # softmax backward, p = softmax(z) on the last axis: d_z = p * (d_p - sum(d_p * p, -1, keepdims))
+      dW_o   = concatᵀ @ d_out                  # flattened to (B*T, d): (d, d)
+      d_ctx  = split(d_out @ W_oᵀ)              # (B, h, T, hd)
+      dV     = attnᵀ @ d_ctx                    # (B, h, T, hd)
+      d_attn = d_ctx @ Vᵀ                       # (B, h, T, T)
+      d_sc   = softmax_backward(d_attn, attn) / sqrt(hd)   # (B, h, T, T); masked: attn = 0 -> 0
+      dQ, dK = d_sc @ K, d_scᵀ @ Q              # (B, h, T, hd)
+      dW_q   = Xᵀ @ merge(dQ)                   # (d, d); same for dW_k, dW_v
+      dX     = merge(dQ) @ W_qᵀ + merge(dK) @ W_kᵀ + merge(dV) @ W_vᵀ   # (B, T, d): 3 paths
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Implement `attention_backward(d_out, cache)`: the gradients of causal multi-head attention, by hand.
+          - `d_out` (B, T, d): `dL/dout`; `cache`: the dict from `attention_forward` (setup), keys `X, W_q, W_k, W_v, W_o, h, Q, K, V, attn, concat`
+          - `softmax_backward(d_p, p) -> d_z` is in the setup
+          - returns `(dX, dW_q, dW_k, dW_v, dW_o)`: `dX` (B, T, d), each `dW` (d, d): gradients of `L` w.r.t. those inputs
+        setup: |
+          import math
+          import numpy as np
+          from np_attention_ref import attention_forward, softmax_backward
+        starter: |
+          def attention_backward(d_out, cache):
+              X, W_q, W_k, W_v, W_o, h = (cache[k] for k in ("X", "W_q", "W_k", "W_v", "W_o", "h"))
+              Q, K, V, attn, concat = (cache[k] for k in ("Q", "K", "V", "attn", "concat"))
+              ...
+        solution: |
+          def attention_backward(d_out, cache):
+              X, W_q, W_k, W_v, W_o, h = (cache[k] for k in ("X", "W_q", "W_k", "W_v", "W_o", "h"))
+              Q, K, V, attn, concat = (cache[k] for k in ("Q", "K", "V", "attn", "concat"))
+              B, T, d = X.shape
+              hd = d // h
+              split = lambda x: x.reshape(B, T, h, hd).transpose(0, 2, 1, 3)    # (B, T, d) -> (B, h, T, hd)
+              merge = lambda x: x.transpose(0, 2, 1, 3).reshape(B, T, d)        # (B, h, T, hd) -> (B, T, d)
+              swap = lambda x: x.swapaxes(-1, -2)
+              dW_o = concat.reshape(-1, d).T @ d_out.reshape(-1, d)              # (d, d)
+              d_ctx = split(d_out @ W_o.T)                                       # (B, h, T, hd)
+              dV = swap(attn) @ d_ctx                                            # (B, h, T, hd)
+              d_attn = d_ctx @ swap(V)                                           # (B, h, T, T)
+              d_scores = softmax_backward(d_attn, attn) / math.sqrt(hd)          # (B, h, T, T)
+              dQ, dK = merge(d_scores @ K), merge(swap(d_scores) @ Q)            # (B, T, d)
+              dV = merge(dV)                                                     # (B, T, d)
+              X2 = X.reshape(-1, d)
+              dW_q, dW_k, dW_v = (X2.T @ g.reshape(-1, d) for g in (dQ, dK, dV))
+              dX = dQ @ W_q.T + dK @ W_k.T + dV @ W_v.T
+              return dX, dW_q, dW_k, dW_v, dW_o
+        check: |
+          import random
+          from cardtest import against, rand_cases
+          from np_attention_ref import attention_backward as _vec_ref, numeric_grad, rand_attention_case, show_shapes, arrays_close
+
+          def _case(X, W_q, W_k, W_v, W_o, h, seed=0):
+              d_out = np.random.default_rng(seed).normal(size=X.shape)
+              return (d_out, attention_forward(X, W_q, W_k, W_v, W_o, h)[1])
+
+          def _num_ref(d_out, cache):
+              X, W_q, W_k, W_v, W_o = (cache[k].copy() for k in ("X", "W_q", "W_k", "W_v", "W_o"))
+              f = lambda: float((attention_forward(X, W_q, W_k, W_v, W_o, cache["h"])[0] * d_out).sum())
+              return tuple(numeric_grad(f, x) for x in (X, W_q, W_k, W_v, W_o))
+
+          def _hand(B, T, h, hd, scale, seed):
+              rs = np.random.default_rng(seed)
+              d = h * hd
+              Ws = [rs.normal(size=(d, d)) / math.sqrt(d) * scale for _ in range(4)]
+              return _case(rs.normal(size=(B, T, d)), *Ws, h, seed)
+
+          _hand_cases = [_hand(1, 1, 1, 1, 1.0, 1), _hand(1, 3, 1, 1, 1.0, 2), _hand(1, 4, 1, 3, 1.0, 3), _hand(2, 3, 2, 2, 1.0, 4),
+                         _hand(2, 4, 3, 2, 1.0, 5), _hand(1, 4, 2, 2, 6.0, 6), _hand(2, 1, 2, 3, 1.0, 7)]
+          _num_close = lambda g, e: arrays_close(g, e, rtol=1e-5, atol=1e-6)
+          against(attention_backward, _num_ref, _hand_cases, same=_num_close, show=show_shapes)
+
+          def _gen(r):
+              X, W_q, W_k, W_v, W_o, h = rand_attention_case(r, max_b=3, max_t=6, max_h=3, max_hd=3)
+              return _case(X, W_q, W_k, W_v, W_o, h, r.randrange(10 ** 6))
+
+          _res = attention_backward(*_hand_cases[3])
+          assert isinstance(_res, tuple) and len(_res) == 5, f"return a tuple of 5 arrays, got {type(_res).__name__}"
+          against(attention_backward, _vec_ref, rand_cases(_gen, 200), same=arrays_close, show=show_shapes)
+      - id: b
+        prompt: |
+          Implement `softmax_backward(d_p, p)`: the backward pass of a softmax over the last axis.
+          - `p` (any rank, 1-D to 4-D): `p = softmax(z)` along the last axis; `d_p` (shape of `p`): `dL/dp`
+          - returns `d_z` (shape of `p`): `dL/dz`
+        setup: |
+          import numpy as np
+        solution: |
+          def softmax_backward(d_p, p):
+              return p * (d_p - (d_p * p).sum(axis=-1, keepdims=True))
+        check: |
+          from cardtest import against, rand_cases
+          from np_attention_ref import softmax, numeric_grad, show_shapes, arrays_close
+
+          def _ref(d_p, p):
+              z = np.log(p)
+              return numeric_grad(lambda: float((softmax(z) * d_p).sum()), z)
+
+          def _mk(shape, seed, scale=1.0, const=None):
+              rs = np.random.default_rng(seed)
+              p = softmax(rs.normal(size=shape) * scale)
+              d_p = np.full(shape, const) if const is not None else rs.normal(size=shape)
+              return (d_p, p)
+
+          def _gen(r):
+              shape = tuple(r.randint(1, 4) for _ in range(r.randint(1, 4)))
+              return _mk(shape, r.randrange(10 ** 6), r.choice([0.5, 1.0, 4.0]))
+
+          _same = lambda g, e: arrays_close((g,), (e,), rtol=1e-5, atol=1e-7)
+          against(softmax_backward, _ref, [_mk((1,), 1), _mk((3,), 2), _mk((4, 1), 3), _mk((2, 3), 4), _mk((3, 4), 5, const=2.0),
+                                           _mk((2, 1, 3), 6), _mk((2, 3, 2, 4), 7), _mk((3, 5), 8, scale=8.0)]
+                  + rand_cases(_gen, 200), same=_same, show=show_shapes)
+
+  - id: np-attention.train
+    name: "Part 3: autoregressive training"
+    teach: |
+      ```python
+      # tokens (B, T) in [0, V) -> X = E[tokens] (B, T, d) -> A = attention (B, T, d) -> logits = A @ W_out (B, T, V)
+      # teacher forcing: z = logits[:, :-1] predicts y = tokens[:, 1:], n = B*(T-1) predictions (legal: causal mask)
+      # loss = mean of -log softmax(z)[b, t, y[b, t]], with log-sum-exp: m + log sum exp(z - m), m = row max
+      # d_logits[:, :-1] = (softmax(z) - one_hot(y)) / n; d_logits[:, -1] = 0       # (B, T, V)
+      # perplexity = exp(loss); e.g. logits zeros (1, 2, 2), tokens [[0, 1]] -> loss log 2, perplexity 2
+      # embedding backward: np.add.at(dE, tokens, dX) adds dX[b, t] into dE[tokens[b, t]]   # dE (V, d)
+      ```
+      Pitfall: `dE[tokens] += dX` keeps only one write per repeated token.
+    cards:
+      - id: a
+        prompt: |
+          Implement `lm_loss(logits, tokens)`: next-token cross-entropy with teacher forcing and its gradient; also write `perplexity(loss)`.
+          - `logits` (B, T, V) float; `tokens` (B, T) int in `[0, V)`, `T ≥ 2`; position `t < T-1` predicts `tokens[:, t+1]`
+          - returns `(loss, d_logits)`: `loss` (float): mean of `-log softmax(logits[b, t])[tokens[b, t+1]]` over the `B*(T-1)` predictions, finite for logits around ±1000; `d_logits` (B, T, V): `dloss/dlogits`, zeros at the last position
+          - `perplexity(loss)` returns float: `exp(loss)`
+        setup: |
+          import numpy as np
+        solution: |
+          def lm_loss(logits, tokens):
+              B, T, V = logits.shape
+              z = logits[:, :-1]                                          # (B, T-1, V)
+              y = tokens[:, 1:]                                           # (B, T-1)
+              n = B * (T - 1)
+              m = z.max(axis=-1, keepdims=True)                           # (B, T-1, 1)
+              logp = z - m - np.log(np.exp(z - m).sum(axis=-1, keepdims=True))
+              b, t = np.meshgrid(np.arange(B), np.arange(T - 1), indexing="ij")
+              loss = -logp[b, t, y].sum() / n
+              g = np.exp(logp)                                            # softmax(z)
+              g[b, t, y] -= 1
+              d_logits = np.zeros_like(logits)
+              d_logits[:, :-1] = g / n
+              return loss, d_logits
+
+          def perplexity(loss):
+              return float(np.exp(loss))
+        check: |
+          import math
+          import warnings
+          from cardtest import against, rand_cases
+          from np_attention_ref import numeric_grad as _numgrad, arrays_close as _close, show_shapes as _show
+          warnings.simplefilter("ignore", RuntimeWarning)
+
+          def _ref(logits, tokens):
+              B, T, V = logits.shape
+              n = B * (T - 1)
+              loss, d = 0.0, np.zeros((B, T, V))
+              for b in range(B):
+                  for t in range(T - 1):
+                      row = [float(v) for v in logits[b, t]]
+                      y = int(tokens[b, t + 1])
+                      m = max(row)
+                      s = sum(math.exp(v - m) for v in row)
+                      loss += m + math.log(s) - row[y]
+                      for v in range(V):
+                          d[b, t, v] = (math.exp(row[v] - m) / s - (1.0 if v == y else 0.0)) / n
+              return loss / n, d
+
+          def _case(B, T, V, scale, seed, same_tok=False):
+              rs = np.random.default_rng(seed)
+              tok = rs.integers(0, V, size=(B, T))
+              if same_tok:
+                  tok[:] = tok[0, 0]
+              return (rs.normal(size=(B, T, V)) * scale, tok)
+
+          def _gen(r):
+              return _case(r.randint(1, 3), r.randint(2, 6), r.randint(1, 6), r.choice([0.5, 1, 5, 1000]),
+                           r.randrange(10 ** 9), r.random() < 0.2)
+
+          def _same(got, exp):
+              return (isinstance(got, tuple) and len(got) == 2 and np.shape(got[0]) == ()
+                      and math.isfinite(float(got[0])) and _close(got, exp))
+
+          _edge = [
+              (np.array([[[0.0, 0.0], [0.0, 0.0]]]), np.array([[0, 1]])),                 # T = 2, B = 1: loss = log 2
+              (np.array([[[3.0], [-2.0], [7.0]]]), np.array([[0, 0, 0]])),                 # V = 1: loss = 0
+              (np.array([[[1000.0, -1000.0, 0.0], [-1000.0, 1000.0, 5.0]]]), np.array([[0, 2]])),
+              (np.array([[[-1000.0, 1000.0], [1000.0, -1000.0], [0.0, 0.0]]]), np.array([[1, 0, 1]])),
+              _case(2, 4, 3, 1.0, 1, same_tok=True),                                       # repeated tokens
+              _case(3, 2, 4, 2.0, 2),
+          ]
+          against(lm_loss, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          for _B, _T, _V, _s in [(1, 2, 3, 1.0), (2, 4, 3, 2.0), (2, 3, 5, 0.5)]:
+              _lg, _tk = _case(_B, _T, _V, _s, 7 + _T)
+              _num = _numgrad(lambda: float(lm_loss(_lg, _tk)[0]), _lg)
+              _an = lm_loss(_lg.copy(), _tk)[1]
+              assert np.shape(_an) == _lg.shape and np.allclose(_an, _num, atol=1e-6), \
+                  f"d_logits disagrees with finite differences of your loss for logits {_lg.shape}: max diff {np.abs(np.asarray(_an) - _num).max():.2e}"
+
+          _ppl_same = lambda got, exp: np.shape(got) == () and math.isclose(float(got), exp, rel_tol=1e-9)
+          against(perplexity, math.exp, [(0.0,), (math.log(2),), (math.log(50),), (3.7,)]
+                  + rand_cases(lambda r: (r.uniform(0, 8),), 50), same=_ppl_same)
+      - id: b
+        prompt: |
+          Implement `train_step(P, tokens, lr, h)`: one SGD step of a one-layer attention language model.
+          - `P` (dict): `E` (V, d) embeddings, `W_q, W_k, W_v, W_o` (d, d), `W_out` (d, V); `tokens` (B, T) int; `lr` (float); `h`: heads
+          - model: `X = E[tokens]`, `A = attention_forward(X, W_q, W_k, W_v, W_o, h)[0]`, `logits = A @ W_out`, `loss = lm_loss(logits, tokens)[0]`
+          - setup gives `attention_forward`, `attention_backward(dA, cache) -> (dX, dW_q, dW_k, dW_v, dW_o)` and `lm_loss`
+          - returns `loss` (float), computed before the update; updates `P` in place: `P[k] -= lr * grad_k` for all 6 keys, every gradient from the old weights
+        setup: |
+          import numpy as np
+          from np_attention_ref import attention_forward, attention_backward, lm_loss
+        solution: |
+          def train_step(P, tokens, lr, h):
+              X = P["E"][tokens]                                          # (B, T, d)
+              A, cache = attention_forward(X, P["W_q"], P["W_k"], P["W_v"], P["W_o"], h)
+              logits = A @ P["W_out"]                                     # (B, T, V)
+              loss, d_logits = lm_loss(logits, tokens)
+              d, V = P["W_out"].shape
+              grads = {"W_out": A.reshape(-1, d).T @ d_logits.reshape(-1, V)}   # (d, V)
+              dA = d_logits @ P["W_out"].T                                # (B, T, d)
+              dX, grads["W_q"], grads["W_k"], grads["W_v"], grads["W_o"] = attention_backward(dA, cache)
+              grads["E"] = np.zeros_like(P["E"])                          # (V, d)
+              np.add.at(grads["E"], tokens, dX)
+              for k, g in grads.items():
+                  P[k] -= lr * g
+              return loss
+        check: |
+          import math
+          from cardtest import against, rand_cases
+          import np_attention_ref as _R
+
+          _KEYS = ("E", "W_q", "W_k", "W_v", "W_o", "W_out")
+
+          def _ref_step(P, tokens, lr, h):
+              E, W_out = P["E"], P["W_out"]
+              d, V = W_out.shape
+              A, cache = _R.attention_forward(E[tokens], P["W_q"], P["W_k"], P["W_v"], P["W_o"], h)
+              loss, dl = _R.lm_loss(A @ W_out, tokens)
+              g = {"W_out": A.reshape(-1, d).T @ dl.reshape(-1, V)}
+              dX, g["W_q"], g["W_k"], g["W_v"], g["W_o"] = _R.attention_backward(dl @ W_out.T, cache)
+              g["E"] = np.zeros_like(E)
+              for b in range(tokens.shape[0]):
+                  for t in range(tokens.shape[1]):
+                      g["E"][tokens[b, t]] += dX[b, t]
+              return loss, {k: P[k] - lr * g[k] for k in _KEYS}
+
+          def _wrap(fn):
+              def run(P, tokens, lr, h):
+                  loss = fn(P, tokens, lr, h)
+                  return loss, P
+              return run
+
+          def _same(got, exp):
+              loss, P = got
+              if np.shape(loss) != () or not math.isclose(float(loss), exp[0], rel_tol=1e-7, abs_tol=1e-9):
+                  return False
+              return all(np.shape(P[k]) == exp[1][k].shape and np.allclose(P[k], exp[1][k], rtol=1e-6, atol=1e-9)
+                         for k in _KEYS)
+
+          def _show(P, tokens, lr, h):
+              return f"(P{{{', '.join(f'{k}: {P[k].shape}' for k in _KEYS)}}}, tokens={tokens.tolist()}, lr={lr}, h={h})"
+
+          def _case(B, T, V, h, hd, lr, seed, same_tok=False):
+              rs = np.random.default_rng(seed)
+              d = h * hd
+              P = {"E": rs.normal(size=(V, d))}
+              for k in ("W_q", "W_k", "W_v", "W_o"):
+                  P[k] = rs.normal(size=(d, d)) / math.sqrt(d)
+              P["W_out"] = rs.normal(size=(d, V)) / math.sqrt(d)
+              tok = rs.integers(0, V, size=(B, T))
+              if same_tok:
+                  tok[:] = tok[0, 0]
+              return (P, tok, lr, h)
+
+          def _gen(r):
+              return _case(r.randint(1, 2), r.randint(2, 5), r.randint(1, 5), r.randint(1, 3), r.randint(1, 3),
+                           r.choice([0.01, 0.1, 1.0]), r.randrange(10 ** 9), r.random() < 0.2)
+
+          _edge = [_case(1, 2, 1, 1, 1, 0.1, 1), _case(1, 2, 3, 1, 1, 1.0, 2), _case(2, 4, 3, 1, 2, 0.5, 3, same_tok=True),
+                   _case(1, 5, 2, 2, 2, 0.1, 4), _case(2, 3, 4, 3, 1, 1.0, 5)]
+          against(_wrap(train_step), _ref_step, _edge + rand_cases(_gen, 120), same=_same, show=_show, name="train_step")
+
+          # finite differences: new P = old P - lr * numeric gradient of the loss
+          for _args in [_case(1, 3, 2, 1, 2, 0.5, 11), _case(2, 3, 3, 2, 1, 0.5, 12, same_tok=True)]:
+              _P0, _tk, _lr, _h = _args
+              def _f():
+                  A, _ = _R.attention_forward(_P0["E"][_tk], _P0["W_q"], _P0["W_k"], _P0["W_v"], _P0["W_o"], _h)
+                  return _R.lm_loss(A @ _P0["W_out"], _tk)[0]
+              _exp = {k: _P0[k] - _lr * _R.numeric_grad(_f, _P0[k]) for k in _KEYS}
+              _P = {k: v.copy() for k, v in _P0.items()}
+              train_step(_P, _tk.copy(), _lr, _h)
+              for k in _KEYS:
+                  assert np.allclose(_P[k], _exp[k], atol=1e-6), \
+                      f"P[{k!r}] after the step disagrees with P - lr * (finite-difference gradient), tokens={_tk.tolist()}"
+
+          # 50 steps on a repeating sequence
+          _Pa, _tk, _, _ = _case(1, 10, 3, 2, 2, 0.1, 0)
+          _tk = np.array([[0, 1, 2, 0, 1, 2, 0, 1, 2, 0]])
+          _Pb = {k: v.copy() for k, v in _Pa.items()}
+          _mine, _theirs = [], []
+          for _ in range(50):
+              _mine.append(float(train_step(_Pa, _tk, 0.1, 2)))
+              _l, _Pb = _ref_step(_Pb, _tk, 0.1, 2)
+              _theirs.append(_l)
+          assert np.allclose(_mine, _theirs, rtol=1e-6), f"50-step losses differ: yours {[round(v, 4) for v in _mine[:5]]}..., expected {[round(v, 4) for v in _theirs[:5]]}..."
+          assert all(b < a for a, b in zip(_mine, _mine[1:])) and _mine[-1] < 0.25 * _mine[0], f"loss did not decrease: {_mine[0]:.4f} -> {_mine[-1]:.4f}"
+
+  - id: np-attention.gradcheck
+    name: "Part 4: verify gradients with finite differences"
+    teach: |
+      ```python
+      # f() -> float reads x (a closure), so changing x[i] in place changes f()
+      # central difference: num = (f() at x[i] + eps  -  f() at x[i] - eps) / (2*eps)   error O(eps²)
+      # rel[i] = |g[i] - num| / max(|g[i]| + |num|, 1e-12)          # floor avoids 0/0
+      # np.ndindex(shape): every index tuple, np.ndindex((2, 1)) -> (0, 0), (1, 0)
+      # e.g. f = sum(x**3), x = [1.]: g = [3.] -> ~1e-11; g = [3.3] -> 0.048
+      # float64; max rel < 1e-7 good, > 1e-3 wrong
+      ```
+      Pitfall: restore `x[i] = old` (saved value); adding `eps` back leaves roundoff.
+    cards:
+      - id: a
+        prompt: |
+          Implement `grad_check(f, x, analytic, eps=1e-5)`: compare an analytic gradient with central finite differences.
+          - `f`: no-argument function returning a float that reads `x`; `x` float64 (any shape): the parameter, changed in place to probe `f`; `analytic` (shape of `x`): the gradient to check
+          - `num[i] = (f with x[i] + eps  -  f with x[i] - eps) / (2 * eps)`
+          - returns float: `max_i |analytic[i] - num[i]| / max(|analytic[i]| + |num[i]|, 1e-12)`
+          - `x` must be exactly unchanged afterwards
+        setup: |
+          import numpy as np
+        solution: |
+          def grad_check(f, x, analytic, eps=1e-5):
+              worst = 0.0
+              for i in np.ndindex(x.shape):
+                  old = x[i]
+                  x[i] = old + eps
+                  fp = f()
+                  x[i] = old - eps
+                  fm = f()
+                  x[i] = old
+                  num = (fp - fm) / (2 * eps)
+                  worst = max(worst, abs(analytic[i] - num) / max(abs(analytic[i]) + abs(num), 1e-12))
+              return worst
+        check: |
+          import math
+          import warnings
+          from cardtest import against, rand_cases
+          from np_attention_ref import numeric_grad
+          warnings.simplefilter("ignore", RuntimeWarning)
+
+          def _fg(kind, x, A):
+              """f (closure over x) and its exact gradient."""
+              if kind == "cube":
+                  return (lambda: float((x ** 3).sum())), (lambda: 3 * x ** 2)
+              if kind == "sinx":
+                  return (lambda: float((np.sin(x) * x).sum())), (lambda: np.cos(x) * x + np.sin(x))
+              if kind == "quad":
+                  return (lambda: float(x.ravel() @ A @ x.ravel())), (lambda: ((A + A.T) @ x.ravel()).reshape(x.shape))
+              if kind == "lse":
+                  _lse = lambda: float(x.max() + np.log(np.exp(x - x.max()).sum()))
+                  return _lse, (lambda: np.exp(x - _lse()))
+              def _g():                                   # "skip0": f ignores the first entry
+                  g = 3 * x ** 2
+                  g.flat[0] = 0.0
+                  return g
+              return (lambda: float((x.ravel()[1:] ** 3).sum())), _g
+
+          def _analytic(kind, x, A, wrong):
+              g = _fg(kind, x, A)[1]()
+              for idx, fac in wrong:
+                  g.flat[idx] *= fac
+              return g
+
+          def _run(kind, x, A, wrong, eps):
+              f = _fg(kind, x, A)[0]
+              an = _analytic(kind, x, A, wrong)
+              before = x.copy()
+              val = grad_check(f, x, an) if eps is None else grad_check(f, x, an, eps=eps)
+              return (val, x.dtype == before.dtype and np.array_equal(x, before))
+
+          def _ref(kind, x, A, wrong, eps):
+              f = _fg(kind, x, A)[0]
+              an = _analytic(kind, x, A, wrong)
+              num = numeric_grad(f, x, eps=1e-5 if eps is None else eps)
+              rel = np.abs(an - num) / np.maximum(np.abs(an) + np.abs(num), 1e-12)
+              return (float(rel.max()), True)
+
+          def _same(got, exp):
+              if not isinstance(got, tuple) or not got[1]:
+                  return False                            # x not restored exactly
+              v = got[0]
+              if np.ndim(v) != 0 or not math.isfinite(float(v)):
+                  return False
+              return abs(float(v) - exp[0]) <= 1e-3 * exp[0] + 1e-7
+
+          def _show(kind, x, A, wrong, eps):
+              w = ", analytic.flat[i] *= " + str(wrong) if wrong else ", exact analytic"
+              return f"(f = {'sum(x[1:]**3)' if kind == 'skip0' else kind}, x{x.shape}{w}, eps={eps or 1e-5})"
+
+          def _x(r, kind, shape):
+              n = int(np.prod(shape))
+              if kind == "quad":
+                  vals = [r.uniform(0.5, 2.0) for _ in range(n)]
+              elif kind == "lse":
+                  vals = [r.gauss(0, 1) for _ in range(n)]
+              else:
+                  vals = [r.choice([-1, 1]) * r.uniform(0.3, 1.5) for _ in range(n)]
+              return np.array(vals, dtype=np.float64).reshape(shape)
+
+          def _A(r, n):
+              return np.array([[r.uniform(0.1, 1.0) for _ in range(n)] for _ in range(n)])
+
+          def _gen(r):
+              kind = r.choice(["cube", "sinx", "quad", "lse", "skip0"])
+              shape = r.choice([(1,), (2,), (3,), (5,), (2, 2), (2, 3), (3, 1), (2, 2, 2), (1, 2, 3)])
+              n = int(np.prod(shape))
+              x = _x(r, kind, shape)
+              A = _A(r, n)
+              wrong = []
+              if r.random() < 0.5:
+                  wrong = [(r.randrange(n), r.choice([0.0, 0.5, 0.9, 1.1, 2.0, -1.0])) for _ in range(r.randint(1, 2))]
+              eps = r.choice([None, None, None, 1e-4, 1e-3, 1e-2])
+              return (kind, x, A, wrong, eps)
+
+          _A3 = np.array([[2.0, 0.5, 0.0], [0.1, 1.0, 0.3], [0.0, 0.2, 3.0]])
+          _A8 = np.eye(8) + 0.1
+          _edge = [
+              ("cube", np.array([1.5]), _A3, [], None),
+              ("cube", np.array([0.7, -1.2, 0.4]), _A3, [], None),
+              ("sinx", np.array([[0.5, -1.0, 1.3], [0.8, -0.4, 1.1]]), _A3, [], None),
+              ("quad", np.array([1.0, 2.0, 0.5]), _A3, [], None),
+              ("quad", np.arange(1.0, 9.0).reshape(2, 2, 2) / 4, _A8, [], None),
+              ("lse", np.array([1000.0, 999.0, 998.5]), _A3, [], None),
+              ("skip0", np.array([0.9, 1.1, -0.6]), _A3, [], None),
+              ("cube", np.array([0.7, -1.2, 0.4]), _A3, [(1, 1.1)], None),
+              ("cube", np.array([0.7, -1.2, 0.4]), _A3, [(0, 0.0)], None),
+              ("sinx", np.array([[0.5, -1.0], [0.8, 1.2]]), _A3, [(3, 2.0), (0, -1.0)], None),
+              ("quad", np.array([1.0, 2.0, 0.5]), _A3, [(2, 0.9)], None),
+              ("skip0", np.array([0.9, 1.1, -0.6]), _A3, [(0, 2.0), (2, 0.5)], None),
+              ("cube", np.array([1.0, -0.5]), _A3, [], 1e-2),
+              ("lse", np.array([[0.3, -0.2], [1.0, 0.1]]), _A3, [], 1e-2),
+          ]
+          against(_run, _ref, _edge + rand_cases(_gen, 160), same=_same, show=_show, name="grad_check")
+      - id: b
+        prompt: |
+          Implement `grad_errors(forward, backward, X, Ws, h, G)`: gradient-check every input of an attention layer whose `backward` may be buggy.
+          - `forward(X, W_q, W_k, W_v, W_o, h) -> (out, cache)`; `backward(d_out, cache) -> (dX, dW_q, dW_k, dW_v, dW_o)`
+          - `X` (B, T, d); `Ws = (W_q, W_k, W_v, W_o)`, each (d, d); `h`: heads; `G` (B, T, d): weights of the loss `L = sum(forward(X, *Ws, h)[0] * G)`
+          - `grad_check(f, x, analytic)` (max relative error) is in the setup
+          - returns dict, keys `"X", "W_q", "W_k", "W_v", "W_o"`: `grad_check` of `L` w.r.t. that input against its gradient from `backward(G, cache)`
+          - `X` and `Ws` exactly unchanged afterwards
+        setup: |
+          import numpy as np
+          from np_attention_ref import attention_forward, attention_backward, grad_check
+        solution: |
+          def grad_errors(forward, backward, X, Ws, h, G):
+              out, cache = forward(X, *Ws, h)
+              grads = backward(G, cache)
+              L = lambda: float((forward(X, *Ws, h)[0] * G).sum())
+              names = ["X", "W_q", "W_k", "W_v", "W_o"]
+              return {n: grad_check(L, a, g) for n, a, g in zip(names, [X, *Ws], grads)}
+        check: |
+          import math
+          import warnings
+          from cardtest import against, rand_cases
+          from np_attention_ref import numeric_grad, split_heads, merge_heads, softmax_backward
+          warnings.simplefilter("ignore", RuntimeWarning)
+          _NAMES = ["X", "W_q", "W_k", "W_v", "W_o"]
+
+          def _make_bwd(bug):
+              """The attention backward, with one planted bug (or none)."""
+              def bwd(d_out, cache):
+                  X, W_q, W_k, W_v, W_o, h = (cache[k] for k in ("X", "W_q", "W_k", "W_v", "W_o", "h"))
+                  Q, K, V, attn, concat = (cache[k] for k in ("Q", "K", "V", "attn", "concat"))
+                  d = X.shape[-1]
+                  hd = d // h
+                  dW_o = concat.reshape(-1, d).T @ d_out.reshape(-1, d)
+                  if bug == "dW_o*1.1":
+                      dW_o = dW_o * 1.1
+                  d_ctx = split_heads(d_out @ W_o.T, h)
+                  dV = attn.transpose(0, 1, 3, 2) @ d_ctx
+                  d_attn = d_ctx @ V.transpose(0, 1, 3, 2)
+                  if bug == "softmax-no-subtraction":
+                      d_scores = attn * d_attn / math.sqrt(hd)
+                  else:
+                      d_scores = softmax_backward(d_attn, attn) / math.sqrt(hd)
+                  dQ = d_scores @ K
+                  dK = d_scores @ Q if bug == "dK-no-transpose" else d_scores.transpose(0, 1, 3, 2) @ Q
+                  dQm, dKm, dVm = merge_heads(dQ), merge_heads(dK), merge_heads(dV)
+                  X2 = X.reshape(-1, d)
+                  dW_q = X2.T @ dQm.reshape(-1, d)
+                  if bug == "dW_q-transposed":
+                      dW_q = dW_q.T
+                  dW_k = X2.T @ dKm.reshape(-1, d)
+                  dW_v = X2.T @ dVm.reshape(-1, d)
+                  dX = dQm @ W_q.T + dKm @ W_k.T
+                  if bug != "dX-no-V-path":
+                      dX = dX + dVm @ W_v.T
+                  return dX, dW_q, dW_k, dW_v, dW_o
+              return bwd
+
+          _BUGS = [None, "dW_o*1.1", "dX-no-V-path", "dK-no-transpose", "dW_q-transposed", "softmax-no-subtraction"]
+
+          def _run(bug, X, Ws, h, G):
+              before = [X.copy()] + [w.copy() for w in Ws]
+              res = grad_errors(attention_forward, _make_bwd(bug), X, Ws, h, G)
+              same_arrays = all(np.array_equal(a, b) for a, b in zip([X, *Ws], before))
+              return (res, same_arrays)
+
+          def _ref(bug, X, Ws, h, G):
+              grads = _make_bwd(bug)(G, attention_forward(X, *Ws, h)[1])
+              L = lambda: float((attention_forward(X, *Ws, h)[0] * G).sum())
+              res = {}
+              for n, a, g in zip(_NAMES, [X, *Ws], grads):
+                  num = numeric_grad(L, a, eps=1e-5)
+                  res[n] = float((np.abs(g - num) / np.maximum(np.abs(g) + np.abs(num), 1e-12)).max())
+              return (res, True)
+
+          def _same(got, exp):
+              if not isinstance(got, tuple) or not got[1]:
+                  return False                            # arrays not restored exactly
+              res = got[0]
+              if not isinstance(res, dict) or sorted(res) != sorted(_NAMES):
+                  return False
+              for n in _NAMES:
+                  v, e = res[n], exp[0][n]
+                  if np.ndim(v) != 0 or not math.isfinite(float(v)):
+                      return False
+                  if abs(float(v) - e) > 1e-3 * e + 1e-7:
+                      return False
+              return True
+
+          def _show(bug, X, Ws, h, G):
+              return f"(backward = {bug or 'correct'}, X{X.shape}, h={h}, head_dim={X.shape[-1] // h})"
+
+          def _case(r, B, T, h, hd, bug):
+              rs = np.random.default_rng(r.randrange(10 ** 9))
+              d = h * hd
+              X = rs.normal(size=(B, T, d))
+              Ws = tuple(rs.normal(size=(d, d)) / math.sqrt(d) * r.choice([0.5, 1.0, 2.0]) for _ in range(4))
+              return (bug, X, Ws, h, rs.normal(size=(B, T, d)))
+
+          def _gen(r):
+              return _case(r, r.randint(1, 2), r.randint(1, 3), r.randint(1, 2), r.randint(1, 2), r.choice(_BUGS))
+
+          import random as _random
+          _r = _random.Random(7)
+          _edge = ([_case(_r, 2, 3, 2, 2, bug) for bug in _BUGS]
+                   + [_case(_r, 1, 1, 1, 1, None), _case(_r, 1, 1, 2, 1, "dW_o*1.1"), _case(_r, 2, 2, 1, 1, None),
+                      _case(_r, 1, 3, 1, 2, "dX-no-V-path"), _case(_r, 2, 1, 2, 2, "dK-no-transpose")])
+          _res, _ok = _run(*_edge[0])
+          assert isinstance(_res, dict) and sorted(_res) == sorted(_NAMES), f"grad_errors must return a dict with keys {_NAMES}, got {_res!r}"
+          assert _ok, "X or a weight was changed by grad_errors (restore every entry you perturb)"
+          assert all(v < 1e-6 for v in _res.values()), f"with the correct backward every value should be < 1e-6, got {_res}"
+          against(_run, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show, name="grad_errors")
+
+  - id: np-attention.block
+    name: "Part 5: the Transformer block, LayerNorm backward"
+    teach: |
+      ```python
+      # layer_norm(x, gamma, beta, eps): x (..., d), gamma, beta (d,) -> (..., d), per vector on the last axis:
+      #   (x - mean) / sqrt(var + eps) * gamma + beta       var biased (divide by d), eps inside the sqrt
+      # e.g. layer_norm([1., 2., 3.], ones, zeros) -> [-1.22, 0, 1.22]
+      # pre-LN block, X (B, T, d); Attn = attention_forward(., W_q, W_k, W_v, W_o, h)[0]
+      a   = X + Attn(layer_norm(X, g1, b1))                 # (B, T, d)
+      z   = layer_norm(a, g2, b2) @ W1 + c1                 # (B, T, d_ff); W1 (d, d_ff)
+      out = a + np.maximum(z, 0) @ W2 + c2                  # (B, T, d); W2 (d_ff, d), no ReLU after W2
+      ```
+      Post-LN (2017 paper) normalizes after the residual instead: `a = LN(X + Attn(X))`.
+    cards:
+      - id: a
+        prompt: |
+          Implement LayerNorm and the forward pass of a pre-LayerNorm Transformer block.
+          - `layer_norm(x, gamma, beta, eps=1e-5)`: `x` (..., d) any rank, `gamma`, `beta` (d,); returns (..., d): each vector on the last axis mapped to `(x - mean) / sqrt(var + eps) * gamma + beta` (biased `var`)
+          - `block_forward(X, P, h)`: `X` (B, T, d); `P` keys `W_q, W_k, W_v, W_o` (d, d), `g1, b1, g2, b2, c2` (d,), `W1` (d, d_ff), `c1` (d_ff,), `W2` (d_ff, d)
+          - returns (B, T, d): `a = X + Attn(LN(X; g1, b1))`, then `out = a + ReLU(LN(a; g2, b2) @ W1 + c1) @ W2 + c2`
+          - `Attn` = `attention_forward(., W_q, W_k, W_v, W_o, h)[0]`, in the setup
+        setup: |
+          import numpy as np
+          from np_attention_ref import attention_forward
+        solution: |
+          def layer_norm(x, gamma, beta, eps=1e-5):
+              mu = x.mean(axis=-1, keepdims=True)
+              var = ((x - mu) ** 2).mean(axis=-1, keepdims=True)
+              return (x - mu) / np.sqrt(var + eps) * gamma + beta
+
+          def block_forward(X, P, h):
+              a = X + attention_forward(layer_norm(X, P["g1"], P["b1"]), P["W_q"], P["W_k"], P["W_v"], P["W_o"], h)[0]
+              z = layer_norm(a, P["g2"], P["b2"]) @ P["W1"] + P["c1"]
+              return a + np.maximum(z, 0) @ P["W2"] + P["c2"]
+        check: |
+          import math
+          import warnings
+          from cardtest import against, rand_cases
+          from np_attention_ref import brute_attention, rand_attention_case, show_shapes
+          warnings.simplefilter("ignore", RuntimeWarning)
+
+          def _close(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp, rtol=1e-6, atol=1e-8)
+
+          def _ref_ln(x, gamma, beta, eps=1e-5):
+              d = x.shape[-1]
+              out = []
+              for row in x.reshape(-1, d).tolist():
+                  mu = sum(row) / d
+                  s = math.sqrt(sum((v - mu) ** 2 for v in row) / d + eps)
+                  out.append([(v - mu) / s * g + b for v, g, b in zip(row, gamma.tolist(), beta.tolist())])
+              return np.array(out).reshape(x.shape)
+
+          def _gen_ln(r):
+              shape = tuple(r.randint(1, 3) for _ in range(r.randint(0, 2))) + (r.randint(1, 6),)
+              rs = np.random.default_rng(r.randrange(10 ** 9))
+              x = rs.normal(size=shape) * r.choice([1e-3, 1.0, 100.0]) + r.choice([0.0, 5.0])
+              if r.random() < 0.2:
+                  x.reshape(-1, shape[-1])[0] = r.gauss(0, 3)
+              d = shape[-1]
+              g, b = 1 + 0.5 * rs.normal(size=d), 0.5 * rs.normal(size=d)
+              return (x, g, b, r.choice([1e-3, 0.1, 1.0])) if r.random() < 0.3 else (x, g, b)
+
+          _o = lambda d: (np.ones(d), np.zeros(d))
+          _rs = np.random.default_rng(7)
+          ln_edges = [
+              (np.array([1.0, 2.0, 3.0]), *_o(3)),
+              (np.array([[1.0, 2.0, 4.0], [5.0, 5.0, 5.0]]), np.array([2.0, -1.0, 0.5]), np.array([0.1, 0.2, 0.3])),
+              (np.array([[3.0], [-2.0]]), np.array([2.0]), np.array([0.7])),
+              (np.array([[0.0, 1e-3, 3e-3]]), *_o(3)),
+              (np.array([[1.0, 2.0, 4.0]]), np.ones(3), np.zeros(3), 0.5),
+              (_rs.normal(size=(2, 3, 4)), 1 + _rs.normal(size=4), _rs.normal(size=4)),
+          ]
+          against(layer_norm, _ref_ln, ln_edges + rand_cases(_gen_ln, 150), same=_close, show=show_shapes)
+
+          def _ref_block(X, P, h):
+              a = X + brute_attention(_ref_ln(X, P["g1"], P["b1"]), P["W_q"], P["W_k"], P["W_v"], P["W_o"], h)
+              z = _ref_ln(a, P["g2"], P["b2"]) @ P["W1"] + P["c1"]
+              return a + np.where(z > 0, z, 0.0) @ P["W2"] + P["c2"]
+
+          def _params(rs, d, dff, Ws):
+              P = dict(zip(["W_q", "W_k", "W_v", "W_o"], Ws))
+              for k in ("g1", "g2"):
+                  P[k] = 1 + 0.5 * rs.normal(size=d)
+              for k in ("b1", "b2", "c2"):
+                  P[k] = 0.5 * rs.normal(size=d)
+              P["W1"] = rs.normal(size=(d, dff)) / math.sqrt(d)
+              P["c1"] = 0.5 * rs.normal(size=dff)
+              P["W2"] = rs.normal(size=(dff, d)) / math.sqrt(dff)
+              return P
+
+          def _gen_block(r):
+              X, Wq, Wk, Wv, Wo, h = rand_attention_case(r)
+              rs = np.random.default_rng(r.randrange(10 ** 9))
+              return (X, _params(rs, X.shape[-1], r.randint(1, 6), [Wq, Wk, Wv, Wo]), h)
+
+          def _edge(B, T, h, hd, dff, seed):
+              rs = np.random.default_rng(seed)
+              d = h * hd
+              return (rs.normal(size=(B, T, d)), _params(rs, d, dff, [rs.normal(size=(d, d)) for _ in range(4)]), h)
+
+          blk_edges = [_edge(1, 1, 1, 1, 1, 0), _edge(1, 1, 1, 3, 2, 1), _edge(1, 4, 1, 2, 3, 2), _edge(2, 3, 2, 1, 4, 3), _edge(2, 5, 3, 2, 5, 4)]
+          _show = lambda X, P, h: f"(X {X.shape}, P with W1 {P['W1'].shape}, h={h})"
+          against(block_forward, _ref_block, blk_edges + rand_cases(_gen_block, 150), same=_close, show=_show)
+      - id: b
+        prompt: |
+          Implement `layer_norm_backward(dy, x, gamma, eps=1e-5)`: the gradients of `y = layer_norm(x, gamma, beta, eps)`.
+          - `x`, `dy` (..., d) any rank: input and `dL/dy`; `gamma` (d,)
+          - notation: `mu`, `var` over the last axis (biased), `s = sqrt(var + eps)`, `xhat = (x - mu) / s`, `dxhat = dy * gamma`; `sum` = over all leading axes, `mean` = over the last axis (keepdims)
+          - returns `(dx, dgamma, dbeta)`: `dx` (shape of `x`) `= (dxhat - mean(dxhat) - xhat * mean(dxhat * xhat)) / s`; `dgamma` (d,) `= sum(dy * xhat)`; `dbeta` (d,) `= sum(dy)`
+        setup: |
+          import numpy as np
+        solution: |
+          def layer_norm_backward(dy, x, gamma, eps=1e-5):
+              mu = x.mean(axis=-1, keepdims=True)
+              s = np.sqrt(((x - mu) ** 2).mean(axis=-1, keepdims=True) + eps)
+              xhat = (x - mu) / s
+              lead = tuple(range(x.ndim - 1))
+              dbeta = dy.sum(axis=lead)
+              dgamma = (dy * xhat).sum(axis=lead)
+              dxhat = dy * gamma
+              dx = (dxhat - dxhat.mean(axis=-1, keepdims=True) - xhat * (dxhat * xhat).mean(axis=-1, keepdims=True)) / s
+              return dx, dgamma, dbeta
+        check: |
+          from cardtest import against, rand_cases
+          from np_attention_ref import layer_norm as _ln, numeric_grad, show_shapes
+
+          def _ref(dy, x, gamma, eps=1e-5):
+              beta = np.zeros_like(gamma)
+              f = lambda: float((_ln(x, gamma, beta, eps) * dy).sum())
+              return numeric_grad(f, x), numeric_grad(f, gamma), numeric_grad(f, beta)
+
+          def _same(got, exp):
+              if not isinstance(got, tuple) or len(got) != 3:
+                  return False
+              return all(isinstance(g, np.ndarray) and g.shape == e.shape and np.allclose(g, e, rtol=1e-5, atol=1e-6 * (1 + np.abs(e).max()))
+                         for g, e in zip(got, exp))
+
+          def _gen(r):
+              shape = tuple(r.randint(1, 3) for _ in range(r.randint(0, 2))) + (r.randint(1, 5),)
+              rs = np.random.default_rng(r.randrange(10 ** 9))
+              x = rs.normal(size=shape) * r.choice([1e-3, 1.0, 10.0]) + r.choice([0.0, 3.0])
+              if r.random() < 0.2:
+                  x.reshape(-1, shape[-1])[0] = r.gauss(0, 3)
+              dy, g = rs.normal(size=shape), 1 + 0.5 * rs.normal(size=shape[-1])
+              return (dy, x, g, r.choice([1e-3, 0.1, 1.0])) if r.random() < 0.3 else (dy, x, g)
+
+          _rs = np.random.default_rng(11)
+          edges = [
+              (np.array([[0.5, -1.0, 2.0]]), np.array([[1.0, 2.0, 4.0]]), np.array([1.0, 2.0, -0.5])),
+              (np.array([[1.5], [-2.0]]), np.array([[3.0], [1.0]]), np.array([2.0])),
+              (np.array([[1.0, 2.0, 3.0], [0.3, -0.7, 0.1]]), np.array([[5.0, 5.0, 5.0], [1.0, -1.0, 0.5]]), np.array([1.0, -2.0, 0.5])),
+              (np.array([[1.0, -1.0, 0.5]]), np.array([[0.0, 1e-3, 3e-3]]), np.array([1.0, 0.5, 2.0])),
+              (np.array([0.2, -0.4, 1.0, 0.7]), np.array([1.0, -2.0, 0.5, 3.0]), np.array([1.0, 2.0, 0.5, -1.0])),
+              (_rs.normal(size=(2, 3, 4)), _rs.normal(size=(2, 3, 4)), 1 + _rs.normal(size=4)),
+              (np.array([[1.0, 0.5, -2.0]]), np.array([[1.0, 2.0, 4.0]]), np.array([1.0, 1.0, 1.0]), 0.5),
+          ]
+          against(layer_norm_backward, _ref, edges + rand_cases(_gen, 150), same=_same, show=show_shapes)

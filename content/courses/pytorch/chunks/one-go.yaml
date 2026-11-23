@@ -1,0 +1,739 @@
+id: one-go
+title: Write it in one go
+intro: |
+  No lesson: write the whole thing from memory, then run it. The checks are strict.
+problems: [Top-p (nucleus) sampling, k-means, k-means++ init, FlashAttention (tiled, online softmax), RoPE]
+atoms: []
+skills:
+  - id: one-go.top-p
+    name: Top-p (nucleus) sampling
+    teach: |
+      Per row: sort tokens by probability, keep the smallest top set whose probabilities sum to ≥ `p`
+      (the top token is always kept), renormalize, sample one token id.
+    cards:
+      - id: a
+        prompt: |
+          Implement top-p (nucleus) sampling: per row, keep the most probable tokens until their probabilities sum to ≥ `p`,
+          renormalize them, and sample one.
+          - `logits` (B, V) float; `p` (float, `0 < p <= 1`); `g`: a `torch.Generator`, pass it to `torch.multinomial`
+          - returns `sample_top_p(logits, p, g)` (B,) int64: the sampled vocab id of each row
+          - the top token is always kept; don't modify `logits`
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def sample_top_p(logits, p, g):
+              raise NotImplementedError
+        solution: |
+          def sample_top_p(logits, p, g):
+              probs = F.softmax(logits, dim=-1)                              # (B, V)
+              sp, si = probs.sort(dim=-1, descending=True)                   # (B, V), (B, V)
+              sp = sp.masked_fill(sp.cumsum(-1) - sp > p, 0.0)               # mass before > p -> drop
+              pos = torch.multinomial(sp, 1, generator=g)                    # (B, 1) positions (renormalized)
+              return si.gather(-1, pos).squeeze(-1)                          # (B,) vocab ids
+        check: |
+          import random
+          import torch
+          from cardtest import rand_cases
+
+          def _nucleus(row, p):
+              """{id: renormalized prob} for one row (python floats)."""
+              pr = torch.softmax(row.double(), -1).tolist()
+              keep, mass = [], 0.0
+              for i in sorted(range(len(pr)), key=lambda i: -pr[i]):
+                  if mass > p:
+                      break
+                  keep.append(i)
+                  mass += pr[i]
+              s = sum(pr[i] for i in keep)
+              return {i: pr[i] / s for i in keep}
+
+          def _draw(logits, p, seed, reps):
+              x = logits.repeat_interleave(reps, dim=0)                      # (B * reps, V)
+              before = x.clone()
+              out = sample_top_p(x, p, torch.Generator().manual_seed(seed))
+              assert isinstance(out, torch.Tensor) and out.shape == (x.shape[0],) and out.dtype == torch.int64, \
+                  f"expected a (B,) int64 tensor, got {getattr(out, 'shape', None)} {getattr(out, 'dtype', type(out))}"
+              assert torch.equal(x, before), "sample_top_p modified logits"
+              return out.view(logits.shape[0], reps)
+
+          def _test(logits, p, seed, reps, freq_tol=None):
+              outs = _draw(logits, p, seed, reps)
+              for b in range(logits.shape[0]):
+                  nuc = _nucleus(logits[b], p)
+                  got = outs[b].tolist()
+                  bad = [t for t in got if t not in nuc]
+                  assert not bad, (f"row {logits[b].tolist()} p={p}: sampled id {bad[0]}, outside the nucleus "
+                                   f"{sorted(nuc)}")
+                  missing = [t for t, q in nuc.items() if q > 0.05 and t not in got]
+                  assert not missing, (f"row {logits[b].tolist()} p={p}: id {missing[0]} is in the nucleus "
+                                       f"{sorted(nuc)} but never sampled in {reps} draws")
+                  if freq_tol:
+                      for t, q in nuc.items():
+                          f = got.count(t) / reps
+                          assert abs(f - q) < freq_tol, (f"row {logits[b].tolist()} p={p}: id {t} sampled with "
+                                                         f"frequency {f:.3f}, expected {q:.3f}")
+
+          L = lambda rows: torch.log(torch.tensor(rows, dtype=torch.float32))
+          # nucleus {1, 3}: 0.4 then 0.3 (crosses 0.6, kept), renormalized 4/7, 3/7
+          _test(L([[0.1, 0.4, 0.2, 0.3]]), 0.6, 0, 20000, 0.02)
+          # rows with different nucleus sizes in one batch
+          _test(L([[0.1, 0.4, 0.2, 0.3], [0.7, 0.1, 0.1, 0.1], [0.25, 0.26, 0.24, 0.25]]), 0.5, 1, 8000, 0.03)
+          # tiny p -> greedy; p = 1 -> plain sampling
+          _test(L([[0.1, 0.4, 0.2, 0.3], [0.5, 0.2, 0.2, 0.1]]), 1e-4, 2, 300)
+          _test(L([[0.1, 0.4, 0.2, 0.3]]), 1.0, 3, 20000, 0.02)
+          # huge logits (no NaN), V = 1, B = 1
+          _test(torch.tensor([[1000., 999., -1000., 998.]]), 0.8, 4, 4000, 0.03)
+          _test(torch.tensor([[3.0]]), 0.9, 5, 50)
+
+          # uses the generator: same seed -> same draws, other seed -> other draws
+          x = torch.zeros(1, 50).repeat(64, 1)
+          a1 = sample_top_p(x, 1.0, torch.Generator().manual_seed(7))
+          a2 = sample_top_p(x, 1.0, torch.Generator().manual_seed(7))
+          a3 = sample_top_p(x, 1.0, torch.Generator().manual_seed(8))
+          assert torch.equal(a1, a2) and not torch.equal(a1, a3), "pass g to torch.multinomial(..., generator=g)"
+
+          def _gen(r):
+              B, V = r.randint(1, 4), r.randint(1, 12)
+              while True:
+                  logits = torch.randn(B, V, generator=torch.Generator().manual_seed(r.randint(0, 10**9))) * r.choice([0.5, 2, 5])
+                  p = r.choice([0.1, 0.3, 0.5, 0.7, 0.9, 0.95])
+                  pr = torch.softmax(logits.double(), -1).sort(-1, descending=True).values
+                  before = pr.cumsum(-1) - pr
+                  if (before - p).abs().min() > 1e-3:                         # no exact boundary cases
+                      return (logits, p, r.randint(0, 10**6))
+
+          for logits, p, seed in rand_cases(_gen, 200):
+              _test(logits, p, seed, 200)
+      - id: b
+        prompt: |
+          Implement the full LLM sampler: temperature, then top-k, then top-p, then sample one token per row.
+          - `logits` (B, V) float; `temperature` (float > 0); `k` (int, `1 <= k <= V`); `p` (float, `0 < p <= 1`);
+            `g`: a `torch.Generator`, pass it to `torch.multinomial`
+          - steps: divide `logits` by `temperature`; keep the `k` largest; softmax over those `k`; keep the most probable
+            until their sum is ≥ `p`; renormalize and sample
+          - returns `sample(logits, temperature, k, p, g)` (B,) int64: the sampled vocab id of each row
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def sample(logits, temperature, k, p, g):
+              raise NotImplementedError
+        solution: |
+          def sample(logits, temperature, k, p, g):
+              v, ix = torch.topk(logits / temperature, k, dim=-1)            # (B, k) sorted descending
+              probs = F.softmax(v, dim=-1)                                   # (B, k)
+              probs = probs.masked_fill(probs.cumsum(-1) - probs > p, 0.0)   # top-p inside the top k
+              pos = torch.multinomial(probs, 1, generator=g)                 # (B, 1) positions
+              return ix.gather(-1, pos).squeeze(-1)                          # (B,) vocab ids
+        check: |
+          import torch
+          from cardtest import rand_cases
+
+          def _dist(row, T, k, p):
+              pr = torch.softmax(row.double() / T, -1).tolist()
+              order = sorted(range(len(pr)), key=lambda i: -pr[i])[:k]
+              s = sum(pr[i] for i in order)
+              keep, mass = [], 0.0
+              for i in order:
+                  if mass > p:
+                      break
+                  keep.append(i)
+                  mass += pr[i] / s
+              z = sum(pr[i] for i in keep)
+              return {i: pr[i] / z for i in keep}
+
+          def _test(logits, T, k, p, seed, reps, freq_tol=None):
+              x = logits.repeat_interleave(reps, dim=0)
+              before = x.clone()
+              out = sample(x, T, k, p, torch.Generator().manual_seed(seed))
+              assert isinstance(out, torch.Tensor) and out.shape == (x.shape[0],) and out.dtype == torch.int64, \
+                  f"expected a (B,) int64 tensor, got {getattr(out, 'shape', None)} {getattr(out, 'dtype', type(out))}"
+              assert torch.equal(x, before), "sample modified logits"
+              outs = out.view(logits.shape[0], reps)
+              for b in range(logits.shape[0]):
+                  d = _dist(logits[b], T, k, p)
+                  got = outs[b].tolist()
+                  tag = f"row {[round(v, 3) for v in logits[b].tolist()]}, T={T}, k={k}, p={p}"
+                  bad = [t for t in got if t not in d]
+                  assert not bad, f"{tag}: sampled id {bad[0]}, allowed ids are {sorted(d)}"
+                  missing = [t for t, q in d.items() if q > 0.05 and t not in got]
+                  assert not missing, f"{tag}: id {missing[0]} should be sampled but never was in {reps} draws"
+                  if freq_tol:
+                      for t, q in d.items():
+                          f = got.count(t) / reps
+                          assert abs(f - q) < freq_tol, f"{tag}: id {t} frequency {f:.3f}, expected {q:.3f}"
+
+          L = lambda rows: torch.log(torch.tensor(rows, dtype=torch.float32))
+          r = L([[0.05, 0.35, 0.1, 0.3, 0.2]])
+          _test(r, 1.0, 3, 1.0, 0, 20000, 0.02)    # top-k only: {1, 3, 4}
+          _test(r, 1.0, 5, 0.5, 1, 20000, 0.02)    # top-p only: {1, 3}
+          _test(r, 1.0, 3, 0.6, 2, 20000, 0.02)    # top-p on the renormalized top 3: .35/.85, .3/.85 -> {1, 3}
+          _test(r, 0.5, 5, 0.7, 3, 20000, 0.02)    # temperature sharpens before top-p: {1, 3}
+          _test(r, 3.0, 5, 0.9, 4, 20000, 0.02)    # temperature flattens: more tokens kept
+          _test(r, 1.0, 1, 0.9, 5, 200)            # k = 1 -> greedy
+
+          def _gen(r):
+              B, V = r.randint(1, 4), r.randint(1, 10)
+              while True:
+                  logits = torch.randn(B, V, generator=torch.Generator().manual_seed(r.randint(0, 10**9))) * 2
+                  T, k, p = r.choice([0.5, 1.0, 2.0]), r.randint(1, V), r.choice([0.3, 0.6, 0.9, 1.0])
+                  ok = True
+                  for b in range(B):
+                      pr = torch.softmax(logits[b].double() / T, -1).sort(descending=True).values[:k]
+                      pr = pr / pr.sum()
+                      if ((pr.cumsum(-1) - pr) - p).abs().min() < 1e-3:
+                          ok = False
+                  if ok:
+                      return (logits, T, k, p, r.randint(0, 10**6))
+
+          for args in rand_cases(_gen, 200):
+              _test(*args, 200)
+
+  - id: one-go.kmeans
+    name: k-means
+    teach: |
+      Lloyd's algorithm: assign each point to its nearest center (squared distance), move each center to the mean
+      of its points (a center with no points stays), repeat.
+    cards:
+      - id: a
+        prompt: |
+          Implement k-means (Lloyd's algorithm): repeat assigning each point to its nearest center, then moving each center
+          to the mean of its points.
+          - `X` (N, D) float: points; `init` (K, D): initial centers; `iters` (int ≥ 0): number of assign + update steps
+          - returns `kmeans(X, init, iters)` = `(C, assign)`: `C` (K, D) the final centers; `assign` (N,) int64: index of
+            each point's nearest center in the final `C` (squared Euclidean distance)
+          - a center with no points stays where it is; ties -> lowest center index
+          - no Python loops over points or clusters; don't modify `init`
+        setup: |
+          import torch
+        starter: |
+          def kmeans(X, init, iters):
+              raise NotImplementedError
+        solution: |
+          def kmeans(X, init, iters):
+              C = init.clone()
+              K = C.shape[0]
+              for _ in range(iters):
+                  assign = torch.cdist(X, C).argmin(dim=1)                          # (N,)
+                  sums = torch.zeros_like(C).index_add_(0, assign, X)               # (K, D)
+                  counts = torch.bincount(assign, minlength=K).unsqueeze(1)         # (K, 1)
+                  C = torch.where(counts > 0, sums / counts.clamp(min=1), C)        # empty center stays
+              return C, torch.cdist(X, C).argmin(dim=1)
+        check: |
+          import time
+          import torch
+          from cardtest import against, rand_cases
+
+          def _step(X, C):
+              assign = []
+              for x in X:
+                  ds = [sum((a - b) ** 2 for a, b in zip(x, c)) for c in C]
+                  assign.append(ds.index(min(ds)))
+              new = []
+              for k, c in enumerate(C):
+                  pts = [x for x, a in zip(X, assign) if a == k]
+                  new.append([sum(col) / len(pts) for col in zip(*pts)] if pts else c)
+              return new, assign
+
+          def _ref(X, init, iters):
+              P, C = X.double().tolist(), init.double().tolist()
+              for _ in range(iters):
+                  C, _a = _step(P, C)
+              _, assign = _step(P, C)
+              return torch.tensor(C, dtype=X.dtype).reshape(init.shape), torch.tensor(assign, dtype=torch.long)
+
+          def _same(got, exp):
+              return (isinstance(got, tuple) and len(got) == 2
+                      and isinstance(got[0], torch.Tensor) and got[0].shape == exp[0].shape
+                      and got[0].dtype == exp[0].dtype and torch.allclose(got[0], exp[0], rtol=1e-5, atol=1e-5)
+                      and isinstance(got[1], torch.Tensor) and got[1].dtype == torch.int64
+                      and torch.equal(got[1], exp[1]))
+
+          def _show(X, init, iters):
+              return f"(X {tuple(X.shape)}, init {tuple(init.shape)}, iters={iters})"
+
+          _t = lambda rows: torch.tensor(rows, dtype=torch.float64)
+          _I = _t([[0., 0.], [5., 5.]]); _orig = _I.clone()
+          kmeans(_t([[0., 1.], [1., 0.], [6., 5.]]), _I, 3)
+          assert torch.equal(_I, _orig), "kmeans modified `init` in place"
+
+          g = torch.Generator().manual_seed(0)
+          _blobs = torch.cat([torch.randn(15, 2, generator=g, dtype=torch.float64) * 0.6 + c
+                              for c in (_t([0., 0.]), _t([4., 0.]), _t([0., 4.]))])
+          _bad = _t([[0., 0.], [0.5, 0.], [0., 0.5]])
+          _edge = [
+              (_t([[0.], [1.], [10.]]), _t([[0.], [9.], [100.]]), 1),      # center 2 gets no point: stays
+              (_t([[0.], [1.], [10.]]), _t([[0.], [9.], [100.]]), 0),      # 0 steps: C = init
+              (_t([[1.], [3.]]), _t([[2.], [2.]]), 1),                      # tie: both points -> center 0
+              (_blobs, _bad, 1), (_blobs, _bad, 2), (_blobs, _bad, 20),
+              (_blobs[:1], _t([[1., 1.], [-1., -1.]]), 3),                  # N = 1, K > N
+              (_blobs, _bad[:1], 4),                                         # K = 1
+          ]
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              n, k, d = r.randint(1, 30), r.randint(1, 6), r.randint(1, 4)
+              dt = r.choice([torch.float32, torch.float64])
+              X = torch.randn(n, d, generator=gg, dtype=dt) * r.choice([1, 3])
+              init = X[torch.randint(0, n, (k,), generator=gg)] + 0.1 * torch.randn(k, d, generator=gg, dtype=dt)
+              return (X, init, r.randint(0, 8))
+
+          against(kmeans, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          # vectorized: 20000 points, 50 centers, 10 steps must be fast
+          gg = torch.Generator().manual_seed(1)
+          Xb = torch.randn(20000, 8, generator=gg)
+          t0 = time.perf_counter()
+          kmeans(Xb, Xb[:50].clone(), 10)
+          dt = time.perf_counter() - t0
+          assert dt < 1.0, f"20000 points, 50 centers, 10 steps took {dt:.1f} s: loop over points or clusters?"
+      - id: b
+        prompt: |
+          Implement k-means++ initialization: pick `K` points of `X` as centers, each new one sampled with probability
+          proportional to its squared distance to the nearest center already chosen.
+          - `X` (N, D) float: points; `K` (int, `1 <= K <= N`); `g`: a `torch.Generator`
+          - first center: `X[torch.randint(N, (1,), generator=g)]`; each next: index `torch.multinomial(d2, 1, generator=g)`,
+            `d2` (N,) = squared distance of each point to its nearest chosen center
+          - returns `kmeanspp(X, K, g)` (K, D): the chosen centers, in the order chosen
+        setup: |
+          import torch
+        starter: |
+          def kmeanspp(X, K, g):
+              raise NotImplementedError
+        solution: |
+          def kmeanspp(X, K, g):
+              idx = [torch.randint(X.shape[0], (1,), generator=g).item()]
+              d2 = ((X - X[idx[0]]) ** 2).sum(dim=1)                    # (N,)
+              for _ in range(K - 1):
+                  i = torch.multinomial(d2, 1, generator=g).item()       # far points are more likely
+                  idx.append(i)
+                  d2 = torch.minimum(d2, ((X - X[i]) ** 2).sum(dim=1))  # nearest chosen center so far
+              return X[idx]                                              # (K, D)
+        check: |
+          import torch
+          from cardtest import against, rand_cases
+
+          def _ref(X, K, g):
+              P = X.tolist()
+              idx = [torch.randint(len(P), (1,), generator=g).item()]
+              for _ in range(K - 1):
+                  d2 = [min(sum((a - b) ** 2 for a, b in zip(x, P[j])) for j in idx) for x in P]
+                  idx.append(torch.multinomial(torch.tensor(d2, dtype=X.dtype), 1, generator=g).item())
+              return X[idx]
+
+          class _G:
+              """A seed, turned into a fresh generator for each call (so both functions see the same draws)."""
+              def __init__(self, s): self.s = s
+              def __deepcopy__(self, memo): return torch.Generator().manual_seed(self.s)
+              def __repr__(self): return f"Generator(seed={self.s})"
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.equal(got, exp))
+
+          def _show(X, K, g):
+              return f"(X {tuple(X.shape)}, K={K}, {g!r})"
+
+          _t = lambda rows: torch.tensor(rows, dtype=torch.float64)
+          _edge = [
+              (_t([[0., 0.], [1., 0.], [10., 10.]]), 1, _G(0)),
+              (_t([[0., 0.], [1., 0.], [10., 10.]]), 2, _G(1)),
+              (_t([[0., 0.], [1., 0.], [10., 10.]]), 3, _G(2)),
+              (_t([[5.], [-5.]]), 2, _G(3)),
+          ]
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              n, d = r.randint(2, 25), r.randint(1, 4)
+              X = torch.randn(n, d, generator=gg, dtype=torch.float64) * r.choice([1, 5])
+              return (X, r.randint(1, min(n, 6)), _G(r.randint(0, 10**6)))
+
+          against(kmeanspp, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          # far points are chosen far more often than near ones (sampling by d², not argmax)
+          X = _t([[0.], [1.], [3.]])
+          firsts = [kmeanspp(X, 2, torch.Generator().manual_seed(s)) for s in range(300)]
+          pairs = [tuple(c.flatten().tolist()) for c in firsts]
+          assert len(set(pairs)) >= 4, f"only {len(set(pairs))} different pairs over 300 seeds: sample, don't take argmax"
+
+  - id: one-go.flash
+    name: Flash attention, structure only
+    teach: |
+      Exact attention computed tile by tile: queries in tiles of `Br` rows, keys/values in tiles of `Bc` rows.
+      For each query tile, stream over the key tiles keeping a running max `m`, running denominator `l` and running
+      output `acc` (online softmax). The full (T, T) score matrix never exists. Plain PyTorch loops, no kernel.
+    cards:
+      - id: a
+        prompt: |
+          Implement causal attention the FlashAttention way: loop over query tiles and, inside, over key tiles, with an online
+          softmax (running max, running sum, running output), so the (T, T) score matrix never exists.
+          - `q, k, v` (B, H, T, Dh); `Br`, `Bc` (int): rows per query tile / key tile (they may not divide `T`)
+          - returns `flash_attention(q, k, v, Br, Bc)` (B, H, T, Dh):
+            `out[i] = Σ_{j <= i} softmax_j(q[i]·k[j] / sqrt(Dh)) · v[j]` (query `i` sees keys `j <= i`)
+          - no float tensor bigger than `B·H·max(T·Dh, Br·Bc, Bc·Dh)` elements; no `scaled_dot_product_attention`
+        setup: |
+          import math
+          import torch
+        starter: |
+          def flash_attention(q, k, v, Br, Bc):
+              raise NotImplementedError
+        solution: |
+          def flash_attention(q, k, v, Br, Bc):
+              B, H, T, Dh = q.shape
+              out = torch.empty_like(q)
+              for qs in range(0, T, Br):
+                  qe = min(qs + Br, T)
+                  qi = q[:, :, qs:qe] / math.sqrt(Dh)                         # (B, H, br, Dh)
+                  m = torch.full((B, H, qe - qs, 1), float("-inf"), dtype=q.dtype)   # running max
+                  l = torch.zeros(B, H, qe - qs, 1, dtype=q.dtype)                   # running denominator
+                  acc = torch.zeros(B, H, qe - qs, Dh, dtype=q.dtype)                # running output
+                  for ks in range(0, qe, Bc):                                 # key tiles fully in the future: skipped
+                      ke = min(ks + Bc, T)
+                      s = qi @ k[:, :, ks:ke].transpose(-2, -1)               # (B, H, br, bc)
+                      keep = torch.arange(qs, qe)[:, None] >= torch.arange(ks, ke)   # (br, bc) causal
+                      s = s.masked_fill(~keep, float("-inf"))
+                      m_new = torch.maximum(m, s.amax(-1, keepdim=True))      # (B, H, br, 1)
+                      p = torch.exp(s - m_new)                                # (B, H, br, bc)
+                      scale = torch.exp(m - m_new)                            # rescale the old sums to the new max
+                      l = l * scale + p.sum(-1, keepdim=True)
+                      acc = acc * scale + p @ v[:, :, ks:ke]                  # (B, H, br, Dh)
+                      m = m_new
+                  out[:, :, qs:qe] = acc / l
+              return out
+          # Online softmax: when the max rises m -> m', old sums are multiplied by exp(m - m').
+          # Memory O(Br·Bc) per tile instead of O(T²); time is still O(T²·Dh). Real FlashAttention fuses this
+          # loop in on-chip SRAM (one kernel), which is what makes it fast. Key tile 0 holds key 0, so m is finite.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from torch.overrides import TorchFunctionMode
+          from cardtest import against, rand_cases
+
+          def _names(co):
+              out = set(co.co_names)
+              for c in co.co_consts:
+                  if hasattr(c, "co_names"):
+                      out |= _names(c)
+              return out
+          assert "scaled_dot_product_attention" not in _names(flash_attention.__code__), \
+              "don't use F.scaled_dot_product_attention"
+          _sdpa = F.scaled_dot_product_attention
+
+          class _Track(TorchFunctionMode):
+              def __init__(self):
+                  super().__init__(); self.big = 0
+              def __torch_function__(self, func, types, args=(), kwargs=None):
+                  res = func(*args, **(kwargs or {}))
+                  for r in (res if isinstance(res, (tuple, list)) else (res,)):
+                      if isinstance(r, torch.Tensor) and r.is_floating_point():
+                          self.big = max(self.big, r.numel())
+                  return res
+
+          def _run(q, k, v, Br, Bc):
+              B, H, T, Dh = q.shape
+              tr = _Track()
+              with tr:
+                  out = flash_attention(q, k, v, Br, Bc)
+              lim = B * H * max(T * Dh, Br * Bc, Bc * Dh)
+              assert tr.big <= lim, (f"a float tensor had {tr.big} elements (limit {lim}): work tile by tile, "
+                                     f"Br queries × Bc keys, never all queries or all keys at once")
+              return out
+
+          def _ref(q, k, v, Br, Bc):
+              return _sdpa(q, k, v, is_causal=True)
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, rtol=1e-4, atol=1e-5))
+
+          def _show(q, k, v, Br, Bc):
+              return f"(q, k, v {tuple(q.shape)}, Br={Br}, Bc={Bc})"
+
+          def _case(B, H, T, Dh, Br, Bc, seed, scale=1.0):
+              g = torch.Generator().manual_seed(seed)
+              return (torch.randn(B, H, T, Dh, generator=g) * scale, torch.randn(B, H, T, Dh, generator=g),
+                      torch.randn(B, H, T, Dh, generator=g), Br, Bc)
+
+          edge = [_case(1, 1, 1, 4, 1, 1, 1), _case(1, 1, 7, 2, 3, 4, 2), _case(2, 2, 9, 2, 4, 3, 3),
+                  _case(1, 1, 10, 2, 16, 16, 4), _case(1, 1, 12, 2, 1, 5, 5), _case(1, 2, 12, 3, 5, 1, 6),
+                  _case(1, 1, 16, 2, 4, 4, 7, scale=30.0), _case(2, 1, 20, 2, 3, 7, 8)]
+
+          def _gen(r):
+              T, Dh = r.randint(1, 24), r.randint(1, 4)
+              return _case(r.randint(1, 2), r.randint(1, 2), T, Dh, r.randint(1, T + 2), r.randint(1, T + 2),
+                           r.randrange(10**6), r.choice([1.0, 1.0, 10.0]))
+
+          against(_run, _ref, edge + rand_cases(_gen, 150), same=_same, show=_show, name="flash_attention")
+      - id: b
+        prompt: |
+          Implement tiled attention with an online softmax (as in FlashAttention), with an arbitrary boolean mask.
+          - `q` (B, H, T, Dh); `k, v` (B, H, S, Dh); `mask` (T, S) bool, True = query `i` may see key `j`;
+            `Br`, `Bc` (int): rows per query tile / key tile (they may not divide `T` or `S`)
+          - returns `flash_attention_masked(q, k, v, mask, Br, Bc)` (B, H, T, Dh):
+            `out[i] = Σ_{j: mask[i, j]} softmax_j(q[i]·k[j] / sqrt(Dh)) · v[j]`
+          - a query with no visible key -> zeros (no NaN, even when its first key tiles are all masked)
+          - no float tensor bigger than `B·H·max(T·Dh, Br·Bc, Bc·Dh)` elements; no `scaled_dot_product_attention`
+        setup: |
+          import math
+          import torch
+        starter: |
+          def flash_attention_masked(q, k, v, mask, Br, Bc):
+              raise NotImplementedError
+        solution: |
+          def flash_attention_masked(q, k, v, mask, Br, Bc):
+              B, H, T, Dh = q.shape
+              S = k.shape[2]
+              out = torch.empty_like(q)
+              for qs in range(0, T, Br):
+                  qe = min(qs + Br, T)
+                  qi = q[:, :, qs:qe] / math.sqrt(Dh)                         # (B, H, br, Dh)
+                  m = torch.full((B, H, qe - qs, 1), float("-inf"), dtype=q.dtype)
+                  l = torch.zeros(B, H, qe - qs, 1, dtype=q.dtype)
+                  acc = torch.zeros(B, H, qe - qs, Dh, dtype=q.dtype)
+                  for ks in range(0, S, Bc):
+                      ke = min(ks + Bc, S)
+                      s = qi @ k[:, :, ks:ke].transpose(-2, -1)               # (B, H, br, bc)
+                      s = s.masked_fill(~mask[qs:qe, ks:ke], float("-inf"))
+                      m_new = torch.maximum(m, s.amax(-1, keepdim=True))
+                      m_safe = m_new.masked_fill(m_new == float("-inf"), 0.0) # all masked so far: avoid -inf - -inf
+                      p = torch.exp(s - m_safe)                               # masked -> exp(-inf) = 0
+                      scale = torch.exp(m - m_safe)
+                      l = l * scale + p.sum(-1, keepdim=True)
+                      acc = acc * scale + p @ v[:, :, ks:ke]
+                      m = m_new
+                  out[:, :, qs:qe] = acc / l.clamp(min=torch.finfo(q.dtype).tiny)   # l = 0 -> acc = 0 -> 0
+              return out
+          # The NaN trap: a row whose keys are all masked so far has m = -inf, and exp(-inf - (-inf)) = NaN.
+          # Subtract 0 instead for those rows; at the end l = 0 means "saw nothing", so output 0.
+          # Real kernels also skip tiles that are entirely masked (a block-sparse mask = less work).
+        check: |
+          import torch
+          from torch.overrides import TorchFunctionMode
+          from cardtest import against, rand_cases
+
+          def _names(co):
+              out = set(co.co_names)
+              for c in co.co_consts:
+                  if hasattr(c, "co_names"):
+                      out |= _names(c)
+              return out
+          assert "scaled_dot_product_attention" not in _names(flash_attention_masked.__code__), \
+              "don't use F.scaled_dot_product_attention"
+
+          class _Track(TorchFunctionMode):
+              def __init__(self):
+                  super().__init__(); self.big = 0
+              def __torch_function__(self, func, types, args=(), kwargs=None):
+                  res = func(*args, **(kwargs or {}))
+                  for r in (res if isinstance(res, (tuple, list)) else (res,)):
+                      if isinstance(r, torch.Tensor) and r.is_floating_point():
+                          self.big = max(self.big, r.numel())
+                  return res
+
+          def _run(q, k, v, mask, Br, Bc):
+              B, H, T, Dh = q.shape
+              tr = _Track()
+              with tr:
+                  out = flash_attention_masked(q, k, v, mask, Br, Bc)
+              lim = B * H * max(T * Dh, Br * Bc, Bc * Dh)
+              assert tr.big <= lim, (f"a float tensor had {tr.big} elements (limit {lim}): work tile by tile, "
+                                     f"Br queries × Bc keys, never all queries or all keys at once")
+              return out
+
+          def _ref(q, k, v, mask, Br, Bc):
+              Dh = q.shape[-1]
+              s = (q.double() @ k.double().transpose(-2, -1)) / Dh ** 0.5            # (B, H, T, S)
+              s = s.masked_fill(~mask, float("-inf"))
+              w = torch.softmax(s, -1).nan_to_num(0.0)                                # empty rows -> 0
+              return (w @ v.double()).to(q.dtype)
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and not got.isnan().any() and torch.allclose(got, exp, rtol=1e-4, atol=1e-5))
+
+          def _show(q, k, v, mask, Br, Bc):
+              return f"(q {tuple(q.shape)}, k/v {tuple(k.shape)}, mask {mask.int().tolist()}, Br={Br}, Bc={Bc})"
+
+          def _case(B, H, T, S, Dh, Br, Bc, seed, mask=None, density=0.5, scale=1.0):
+              g = torch.Generator().manual_seed(seed)
+              if mask is None:
+                  mask = torch.rand(T, S, generator=g) < density
+              return (torch.randn(B, H, T, Dh, generator=g) * scale, torch.randn(B, H, S, Dh, generator=g),
+                      torch.randn(B, H, S, Dh, generator=g), mask, Br, Bc)
+
+          late = torch.zeros(4, 9, dtype=torch.bool); late[:, 7:] = True; late[1, :] = False; late[2, 0] = True
+          edge = [
+              _case(1, 1, 4, 9, 2, 2, 3, 1, mask=late),                                  # first tiles all masked
+              _case(1, 1, 3, 5, 2, 2, 2, 2, mask=torch.zeros(3, 5, dtype=torch.bool)),   # nothing visible
+              _case(1, 2, 5, 5, 2, 2, 3, 3, mask=torch.ones(5, 5, dtype=torch.bool)),    # no mask
+              _case(2, 1, 6, 6, 2, 4, 4, 4, mask=torch.ones(6, 6, dtype=torch.bool).tril()),  # causal
+              _case(1, 1, 3, 11, 2, 8, 8, 5),                                             # tiles bigger than T, S
+              _case(1, 1, 8, 8, 2, 3, 3, 6, scale=30.0),
+              _case(1, 1, 1, 1, 1, 1, 1, 7, mask=torch.ones(1, 1, dtype=torch.bool)),
+          ]
+
+          def _gen(r):
+              T, S = r.randint(1, 16), r.randint(1, 16)
+              return _case(r.randint(1, 2), r.randint(1, 2), T, S, r.randint(1, 4), r.randint(1, T + 2),
+                           r.randint(1, S + 2), r.randrange(10**6), density=r.choice([0.1, 0.3, 0.7, 1.0]),
+                           scale=r.choice([1.0, 1.0, 10.0]))
+
+          against(_run, _ref, edge + rand_cases(_gen, 150), same=_same, show=_show, name="flash_attention_masked")
+  - id: one-go.rope
+    name: RoPE (rotary position embedding)
+    teach: |
+      Split each head vector into `Dh/2` pairs of dims; at position `t`, rotate pair `i` by the angle `t·θ_i`,
+      `θ_i = base^(-2i/Dh)` (early pairs spin fast, late pairs slowly). Applied to `q` and `k` before attention,
+      so `q_m · k_n` depends only on `m - n`. Two pairings exist: halves `(i, i + Dh/2)` (Llama in Hugging Face)
+      and neighbours `(2i, 2i+1)` (original paper).
+    cards:
+      - id: a
+        prompt: |
+          Implement RoPE with the half-split pairing, positions `0 … T-1`.
+          - `x` (B, H, T, Dh) float, `Dh` even; `base` (float), e.g. 10000
+          - returns `rope(x, base)` (B, H, T, Dh), dtype of `x`: with `h = Dh/2`, `θ_i = base^(-2i/Dh)`, `a = t·θ_i`:
+            `out[..., t, i] = x[..., t, i]·cos a - x[..., t, i+h]·sin a`
+            `out[..., t, i+h] = x[..., t, i]·sin a + x[..., t, i+h]·cos a`
+          - don't modify `x`
+        setup: |
+          import torch
+        starter: |
+          def rope(x, base):
+              raise NotImplementedError
+        solution: |
+          def rope(x, base):
+              B, H, T, Dh = x.shape
+              h = Dh // 2
+              theta = base ** (-2 * torch.arange(h, dtype=torch.float64) / Dh)  # (h,)
+              ang = torch.arange(T, dtype=torch.float64)[:, None] * theta       # (T, h)
+              cos, sin = ang.cos().to(x.dtype), ang.sin().to(x.dtype)            # (T, h), broadcast over B, H
+              x1, x2 = x[..., :h], x[..., h:]                                    # (B, H, T, h) each
+              return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
+          # Cost O(B·H·T·Dh); cos/sin are usually cached once for max T.
+          # Follow-up: why does q_m·k_n depend only on m - n? (R_m^T R_n = R_{n-m})
+        check: |
+          import math
+          import torch
+          from cardtest import against, rand_cases
+
+          def _ref(x, base):
+              B, H, T, Dh = x.shape
+              h = Dh // 2
+              out = torch.zeros(x.shape, dtype=torch.float64)
+              xd = x.double()
+              for t in range(T):
+                  for i in range(h):
+                      a = t * base ** (-2 * i / Dh)
+                      x1, x2 = xd[..., t, i], xd[..., t, i + h]
+                      out[..., t, i] = x1 * math.cos(a) - x2 * math.sin(a)
+                      out[..., t, i + h] = x1 * math.sin(a) + x2 * math.cos(a)
+              return out.to(x.dtype)
+
+          def _same(got, exp):
+              # 1e-5 for all dtypes: angles computed in float32 are fine
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, atol=1e-5, rtol=1e-5))
+
+          def _show(x, base):
+              return f"(x {tuple(x.shape)} {x.dtype}, base={base})"
+
+          def _x(B, H, T, Dh, seed, dtype=torch.float64):
+              return torch.randn(B, H, T, Dh, generator=torch.Generator().manual_seed(seed), dtype=dtype)
+
+          _edge = [
+              (_x(1, 1, 1, 2, 0), 10000.0),      # position 0 only: identity
+              (_x(1, 1, 3, 2, 1), 10000.0),      # one pair, angle t
+              (_x(1, 1, 4, 4, 2), 10000.0),
+              (_x(2, 3, 5, 8, 3), 100.0),
+              (_x(1, 2, 6, 6, 4, torch.float32), 10000.0),
+              (_x(1, 1, 7, 16, 5), 10.0),
+          ]
+
+          def _gen(r):
+              return (_x(r.randint(1, 2), r.randint(1, 3), r.randint(1, 9), 2 * r.randint(1, 6), r.randrange(10**6),
+                         r.choice([torch.float64, torch.float32])), r.choice([10.0, 100.0, 10000.0]))
+
+          against(rope, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          x = _x(1, 2, 5, 8, 9)
+          before = x.clone()
+          rope(x, 10000.0)
+          assert torch.equal(x, before), "rope modified x"
+      - id: b
+        prompt: |
+          Implement RoPE with the neighbour pairing `(2i, 2i+1)`, at given positions (e.g. new tokens decoded after a
+          KV cache of length 100 have positions 100, 101, …).
+          - `x` (B, H, T, Dh) float, `Dh` even; `pos` (T,) int64: position of each token; `base` (float)
+          - returns `rope_pairs(x, pos, base)` (B, H, T, Dh), dtype of `x`: with `θ_i = base^(-2i/Dh)`, `a = pos[t]·θ_i`:
+            `out[..., t, 2i] = x[..., t, 2i]·cos a - x[..., t, 2i+1]·sin a`
+            `out[..., t, 2i+1] = x[..., t, 2i]·sin a + x[..., t, 2i+1]·cos a`
+          - don't modify `x`
+        setup: |
+          import torch
+        starter: |
+          def rope_pairs(x, pos, base):
+              raise NotImplementedError
+        solution: |
+          def rope_pairs(x, pos, base):
+              Dh = x.shape[-1]
+              theta = base ** (-torch.arange(0, Dh, 2, dtype=torch.float64) / Dh)  # (Dh/2,) = base^(-2i/Dh)
+              ang = pos.to(torch.float64)[:, None] * theta                         # (T, Dh/2)
+              cos, sin = ang.cos().to(x.dtype), ang.sin().to(x.dtype)
+              x1, x2 = x[..., 0::2], x[..., 1::2]                                  # (B, H, T, Dh/2) each
+              out = torch.empty_like(x)
+              out[..., 0::2] = x1 * cos - x2 * sin
+              out[..., 1::2] = x1 * sin + x2 * cos
+              return out
+          # Same as viewing pairs as complex numbers: torch.view_as_complex(x.view(..., Dh/2, 2)) * e^{i·a}.
+        check: |
+          import math
+          import torch
+          from cardtest import against, rand_cases
+
+          def _ref(x, pos, base):
+              Dh = x.shape[-1]
+              out = torch.zeros(x.shape, dtype=torch.float64)
+              xd = x.double()
+              for t, p in enumerate(pos.tolist()):
+                  for i in range(Dh // 2):
+                      a = p * base ** (-2 * i / Dh)
+                      x1, x2 = xd[..., t, 2 * i], xd[..., t, 2 * i + 1]
+                      out[..., t, 2 * i] = x1 * math.cos(a) - x2 * math.sin(a)
+                      out[..., t, 2 * i + 1] = x1 * math.sin(a) + x2 * math.cos(a)
+              return out.to(x.dtype)
+
+          def _same(got, exp):
+              # 1e-5 for all dtypes: angles computed in float32 are fine
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, atol=1e-5, rtol=1e-5))
+
+          def _show(x, pos, base):
+              return f"(x {tuple(x.shape)} {x.dtype}, pos={pos.tolist()}, base={base})"
+
+          def _x(B, H, T, Dh, seed, dtype=torch.float64):
+              return torch.randn(B, H, T, Dh, generator=torch.Generator().manual_seed(seed), dtype=dtype)
+
+          _p = lambda *v: torch.tensor(v, dtype=torch.int64)
+          _edge = [
+              (_x(1, 1, 1, 2, 0), _p(0), 10000.0),             # position 0: identity
+              (_x(1, 1, 1, 2, 1), _p(3), 10000.0),             # one pair, angle 3
+              (_x(1, 1, 2, 4, 2), _p(100, 101), 10000.0),      # decoding after a cache of 100
+              (_x(2, 2, 3, 8, 3), _p(5, 0, 2), 100.0),         # positions need not be sorted
+              (_x(1, 1, 4, 6, 4, torch.float32), _p(7, 8, 9, 10), 10000.0),
+          ]
+
+          def _gen(r):
+              T = r.randint(1, 8)
+              start = r.choice([0, 0, r.randint(1, 50)])
+              return (_x(r.randint(1, 2), r.randint(1, 3), T, 2 * r.randint(1, 6), r.randrange(10**6),
+                         r.choice([torch.float64, torch.float32])),
+                      _p(*[start + t for t in range(T)]) if r.random() < 0.7 else _p(*[r.randint(0, 60) for _ in range(T)]),
+                      r.choice([10.0, 100.0, 10000.0]))
+
+          against(rope_pairs, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          x = _x(1, 2, 3, 8, 9)
+          before = x.clone()
+          rope_pairs(x, _p(4, 5, 6), 10000.0)
+          assert torch.equal(x, before), "rope_pairs modified x"

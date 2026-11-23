@@ -1,0 +1,541 @@
+id: rl-value-iteration
+title: Value iteration (NumPy)
+intro: |
+  No lesson: write value iteration and policy iteration for a finite MDP from memory, in vectorized NumPy. The checks are strict.
+problems: [Value iteration, Q-value iteration with terminal states, Exact policy evaluation, Policy iteration]
+atoms: []
+skills:
+  - id: rl-value-iteration.vi
+    name: Value iteration
+    teach: |
+      Finite MDP: `P[s, a, s2]` = probability of reaching `s2` from `s` with action `a`, `R[s, a, s2]` its reward, discount γ.
+      Bellman optimality backup: `Q[s, a] = Σ_s2 P[s, a, s2] (R[s, a, s2] + γ V[s2])`, `V_new[s] = max_a Q[s, a]`.
+      Start from `V = 0`, repeat until `max_s |V_new - V| < tol`; greedy policy `π(s) = argmax_a Q[s, a]` (ties -> lowest action).
+      A terminal state ends the episode: its value is 0 and nothing is bootstrapped from it.
+    cards:
+      - id: a
+        prompt: |
+          Implement value iteration for a finite MDP: apply the Bellman optimality backup until the values stop changing, then return the greedy policy.
+          - `P` (S, A, S) float64: `P[s, a, s2]` = probability of moving to `s2` after action `a` in `s` (rows sum to 1); `R` (S, A, S) float64: reward of that transition; `gamma` (float, `0 <= γ < 1`); `tol` (float > 0)
+          - start from `V = 0`; one iteration: `Q[s, a] = Σ_s2 P[s, a, s2] (R[s, a, s2] + γ V[s2])`, `V_new[s] = max_a Q[s, a]`; stop after the first iteration with `max_s |V_new[s] - V[s]| < tol`
+          - returns `value_iteration(P, R, gamma, tol)` = `(V, pi, n_iters)`: `V` (S,) float64: the last `V_new`; `pi` (S,) int: greedy action `argmax_a Q[s, a]` for the final values (ties -> lowest action); `n_iters` (int): number of backups applied
+          - terminal states are absorbing (`P[s, a, s] = 1`, `R[s, a, :] = 0`) and must end with `V = 0`
+          - vectorized: the only Python loop allowed is the one over iterations; don't modify `P` or `R`
+        setup: |
+          import numpy as np
+        starter: |
+          def value_iteration(P, R, gamma, tol):
+              raise NotImplementedError
+        solution: |
+          def value_iteration(P, R, gamma, tol):
+              r = (P * R).sum(-1)                        # (S, A) expected immediate reward
+              V = np.zeros(P.shape[0])                   # (S,)
+              n = 0
+              while True:
+                  Q = r + gamma * (P @ V)                # (S, A, S) @ (S,) -> (S, A)
+                  V_new = Q.max(1)                       # (S,)
+                  n += 1
+                  if np.abs(V_new - V).max() < tol:
+                      break
+                  V = V_new
+              Q = r + gamma * (P @ V_new)                # (S, A) greedy w.r.t. the final values
+              return V_new, Q.argmax(1), n               # argmax returns the first max -> lowest action
+          # Follow-ups:
+          # why does it converge? The backup is a γ-contraction in max-norm: ‖V_k - V*‖ ≤ γ^k ‖V_0 - V*‖ (linear rate γ).
+          # cost? O(S²A) time per iteration (dense P), O(log(1/tol) / (1-γ)) iterations.
+          # how far from V* when stopping? ‖V_new - V*‖ ≤ γ·tol/(1-γ); the greedy policy is 2γ·tol/(1-γ)-optimal.
+          # terminal states? absorbing with reward 0, so V stays exactly 0 from V_0 = 0 (no special case needed).
+        check: |
+          import dis
+          import types
+          import numpy as np
+          from cardtest import against, rand_cases
+
+          _file = value_iteration.__code__.co_filename
+          _fns = [f for f in list(globals().values())               # the learner's functions
+                  if isinstance(f, types.FunctionType) and f.__code__.co_filename == _file]
+          def _heads(c):
+              h = {(id(c), i.argval) for i in dis.get_instructions(c) if i.opname.startswith("JUMP_BACKWARD")}
+              for k in c.co_consts:
+                  if isinstance(k, types.CodeType):
+                      h |= _heads(k)
+              return h
+          _nl = sum(len(_heads(f.__code__)) for f in _fns)
+          assert _nl <= 1, (f"found {_nl} Python loops/comprehensions: only the loop over iterations is allowed, "
+                            f"vectorize over states and actions")
+
+          def _ref(P, R, gamma, tol):
+              S, A = P.shape[:2]
+              Pl, Rl = P.tolist(), R.tolist()
+              def backup(V):
+                  return [[sum(p * (rw + gamma * v) for p, rw, v in zip(Pl[s][a], Rl[s][a], V)) for a in range(A)]
+                          for s in range(S)]
+              V, n = [0.0] * S, 0
+              while True:
+                  Q = backup(V)
+                  Vn = [max(q) for q in Q]
+                  n += 1
+                  if max(abs(x - y) for x, y in zip(Vn, V)) < tol:
+                      break
+                  V = Vn
+              Q = backup(Vn)
+              return np.array(Vn), np.array([q.index(max(q)) for q in Q]), n
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 3):
+                  return False
+              V, pi, n = got
+              return (isinstance(V, np.ndarray) and V.shape == exp[0].shape and V.dtype == np.float64
+                      and np.allclose(V, exp[0], rtol=1e-9, atol=1e-9)
+                      and isinstance(pi, np.ndarray) and pi.shape == exp[1].shape
+                      and np.issubdtype(pi.dtype, np.integer) and np.array_equal(pi, exp[1])
+                      and isinstance(n, (int, np.integer)) and n == exp[2])
+
+          def _show(P, R, gamma, tol):
+              return f"(P={P.tolist()}, R={R.tolist()}, gamma={gamma}, tol={tol})"
+
+          def _mdp(S, A, T):
+              """T: {(s, a): [(s2, prob, reward), ...]}; missing (s, a) -> stay in s with reward 0."""
+              P, R = np.zeros((S, A, S)), np.zeros((S, A, S))
+              for s in range(S):
+                  for a in range(A):
+                      for s2, p, rw in T.get((s, a), [(s, 1.0, 0.0)]):
+                          P[s, a, s2] += p
+                          R[s, a, s2] = rw
+              return P, R
+
+          chain = _mdp(3, 2, {(0, 0): [(1, 1, 0.)], (0, 1): [(2, 1, 1.)], (1, 0): [(2, 1, 10.)], (1, 1): [(0, 1, 0.)]})
+          tie = _mdp(2, 3, {(0, 0): [(1, 1, 1.)], (0, 1): [(1, 1, 2.)], (0, 2): [(1, 1, 2.)]})
+          stoch = _mdp(3, 2, {(0, 0): [(1, .5, 4.), (2, .5, 0.)], (0, 1): [(2, 1, 1.5)], (1, 0): [(1, 1, 1.)],
+                              (1, 1): [(2, 1, 0.)]})
+          loop = _mdp(1, 2, {(0, 0): [(0, 1, 1.)], (0, 1): [(0, 1, .5)]})
+          same = _mdp(2, 2, {(0, 0): [(1, 1, 3.)], (0, 1): [(1, 1, 3.)], (1, 0): [(0, 1, 1.)], (1, 1): [(0, 1, 1.)]})
+          _edge = [(*chain, 0.9, 1e-6),         # V = [9, 10, 0], pi = [0, 0, 0], 3 backups
+                   (*tie, 0.9, 1e-6),           # actions 1 and 2 tie -> pi[0] = 1
+                   (*stoch, 0.5, 1e-8),         # V[1] = 2, Q[0] = [2.5, 1.5]
+                   (*stoch, 0.0, 1e-6),         # gamma = 0: V = max expected reward
+                   (*_mdp(2, 2, {}), 0.9, 1e-6),  # all terminal: V = 0 after 1 backup
+                   (*same, 0.8, 1e-6),          # identical actions everywhere -> pi = 0
+                   (*loop, 0.99, 1e-8)]         # V = 1 / (1 - 0.99) = 100, many backups
+
+          def _rand_mdp(rng, S, A, n_term):
+              P = np.zeros((S, A, S))
+              for s in range(S):
+                  for a in range(A):
+                      k = int(rng.integers(1, S + 1))
+                      P[s, a, rng.choice(S, size=k, replace=False)] = rng.dirichlet(np.ones(k))
+              R = np.round(rng.normal(size=(S, A, S)) * 2, 2)
+              for s in range(S - n_term, S):
+                  P[s], R[s] = 0.0, 0.0
+                  P[s, :, s] = 1.0
+              return P, R
+
+          def _ok(P, R, gamma, tol):
+              """reject cases whose stopping step or greedy action sits on a floating-point boundary"""
+              r, V = (P * R).sum(-1), np.zeros(len(P))
+              while True:
+                  Q = r + gamma * (P @ V)
+                  Vn = Q.max(1)
+                  d = np.abs(Vn - V).max()
+                  if abs(d - tol) < 1e-6 * tol:
+                      return False
+                  if d < tol:
+                      break
+                  V = Vn
+              Q2 = r + gamma * (P @ Vn)
+              if (Q.argmax(1) != Q2.argmax(1)).any():
+                  return False
+              if P.shape[1] > 1:
+                  q = np.sort(Q2, 1)
+                  gap = q[:, -1] - q[:, -2]
+                  if ((gap > 0) & (gap < 1e-6)).any():
+                      return False
+              return True
+
+          def _gen(r):
+              while True:
+                  rng = np.random.default_rng(r.randint(0, 10**9))
+                  S, A = r.randint(1, 5), r.randint(1, 3)
+                  P, R = _rand_mdp(rng, S, A, r.randint(0, min(2, S - 1)))
+                  gamma, tol = r.choice([0.0, 0.5, 0.8, 0.9, 0.95]), r.choice([1e-3, 1e-5, 1e-7])
+                  if _ok(P, R, gamma, tol):
+                      return (P, R, gamma, tol)
+
+          against(value_iteration, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          P0, R0 = stoch[0].copy(), stoch[1].copy()
+          value_iteration(P0, R0, 0.9, 1e-6)
+          assert np.array_equal(P0, stoch[0]) and np.array_equal(R0, stoch[1]), "value_iteration modified P or R"
+      - id: b
+        prompt: |
+          Implement Q-value iteration on an episodic MDP with terminal states, where γ = 1 is allowed.
+          - `P` (S, A, S) float64: transition probabilities `P[s, a, s2]`; `R` (S, A, S) float64: transition rewards; `gamma` (float, `0 <= γ <= 1`); `terminal` (S,) bool: True = the episode ends on entering that state; `tol` (float > 0)
+          - start from `Q = 0`; one iteration: `Q_new[s, a] = Σ_s2 P[s, a, s2] (R[s, a, s2] + γ (1 - terminal[s2]) max_a2 Q[s2, a2])`, and `Q_new[s, :] = 0` for terminal `s`; stop after the first iteration with `max |Q_new - Q| < tol`
+          - returns `q_value_iteration(P, R, gamma, terminal, tol)` = `(Q, pi)`: `Q` (S, A) float64: the last `Q_new`; `pi` (S,) int: `argmax_a Q[s, a]` (ties -> lowest action)
+          - the rows `P[s]`, `R[s]` of terminal states are arbitrary (may loop with rewards): don't use them; every policy reaches a terminal state, so γ = 1 converges
+          - vectorized: the only Python loop allowed is the one over iterations; don't modify the inputs
+        setup: |
+          import numpy as np
+        starter: |
+          def q_value_iteration(P, R, gamma, terminal, tol):
+              raise NotImplementedError
+        solution: |
+          def q_value_iteration(P, R, gamma, terminal, tol):
+              r = (P * R).sum(-1)                                # (S, A) expected immediate reward
+              live = ~terminal                                   # (S,) bool
+              Q = np.zeros(r.shape)                              # (S, A)
+              while True:
+                  V = np.where(live, Q.max(1), 0.0)              # (S,) no bootstrap from terminal states
+                  Q_new = (r + gamma * (P @ V)) * live[:, None]  # (S, A), terminal rows = 0
+                  if np.abs(Q_new - Q).max() < tol:
+                      break
+                  Q = Q_new
+              return Q_new, Q_new.argmax(1)
+          # Follow-ups:
+          # why can γ = 1 converge? if every policy terminates (proper policies), the backup is a contraction in a weighted max-norm.
+          # why mask terminal next states? their row in P is not part of the episode; bootstrapping from it adds rewards after the end.
+          # Q vs V iteration? Q needs O(SA) memory but gives the greedy policy (and model-free Q-learning) without P.
+        check: |
+          import dis
+          import types
+          import numpy as np
+          from cardtest import against, rand_cases
+
+          _file = q_value_iteration.__code__.co_filename
+          _fns = [f for f in list(globals().values())               # the learner's functions
+                  if isinstance(f, types.FunctionType) and f.__code__.co_filename == _file]
+          def _heads(c):
+              h = {(id(c), i.argval) for i in dis.get_instructions(c) if i.opname.startswith("JUMP_BACKWARD")}
+              for k in c.co_consts:
+                  if isinstance(k, types.CodeType):
+                      h |= _heads(k)
+              return h
+          _nl = sum(len(_heads(f.__code__)) for f in _fns)
+          assert _nl <= 1, (f"found {_nl} Python loops/comprehensions: only the loop over iterations is allowed, "
+                            f"vectorize over states and actions")
+
+          def _ref(P, R, gamma, terminal, tol):
+              S, A = P.shape[:2]
+              Pl, Rl, T = P.tolist(), R.tolist(), terminal.tolist()
+              def backup(Q):
+                  m = [0.0 if T[t] else max(Q[t]) for t in range(S)]
+                  return [[0.0] * A if T[s] else
+                          [sum(p * (rw + gamma * v) for p, rw, v in zip(Pl[s][a], Rl[s][a], m)) for a in range(A)]
+                          for s in range(S)]
+              Q = [[0.0] * A for _ in range(S)]
+              while True:
+                  Qn = backup(Q)
+                  if max(abs(x - y) for qa, qb in zip(Qn, Q) for x, y in zip(qa, qb)) < tol:
+                      break
+                  Q = Qn
+              return np.array(Qn).reshape(S, A), np.array([q.index(max(q)) for q in Qn])
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 2):
+                  return False
+              Q, pi = got
+              return (isinstance(Q, np.ndarray) and Q.shape == exp[0].shape and Q.dtype == np.float64
+                      and np.allclose(Q, exp[0], rtol=1e-9, atol=1e-9)
+                      and isinstance(pi, np.ndarray) and pi.shape == exp[1].shape
+                      and np.issubdtype(pi.dtype, np.integer) and np.array_equal(pi, exp[1]))
+
+          def _show(P, R, gamma, terminal, tol):
+              return f"(P={P.tolist()}, R={R.tolist()}, gamma={gamma}, terminal={terminal.tolist()}, tol={tol})"
+
+          def _mdp(S, A, T):
+              """T: {(s, a): [(s2, prob, reward), ...]}; missing (s, a) -> stay in s with reward 0."""
+              P, R = np.zeros((S, A, S)), np.zeros((S, A, S))
+              for s in range(S):
+                  for a in range(A):
+                      for s2, p, rw in T.get((s, a), [(s, 1.0, 0.0)]):
+                          P[s, a, s2] += p
+                          R[s, a, s2] = rw
+              return P, R
+
+          tm = lambda *b: np.array(b, dtype=bool)
+          # terminal state 2 loops on itself with reward 7: it must not count
+          chain = _mdp(3, 2, {(0, 0): [(1, 1, 1.)], (0, 1): [(2, 1, 3.)], (1, 0): [(2, 1, 5.)], (1, 1): [(2, 1, 0.)],
+                              (2, 0): [(2, 1, 7.)], (2, 1): [(0, 1, 7.)]})
+          # stay w.p. .5 with reward 2, else end: V = 2 > 1.5
+          risky = _mdp(2, 2, {(0, 0): [(0, .5, 2.), (1, .5, 0.)], (0, 1): [(1, 1, 1.5)], (1, 0): [(1, 1, 3.)]})
+          tie = _mdp(2, 3, {(0, 0): [(1, 1, 1.)], (0, 1): [(1, 1, 2.)], (0, 2): [(1, 1, 2.)]})
+          _edge = [(*chain, 0.9, tm(0, 0, 1), 1e-8),    # Q = [[5.5, 3], [5, 0], [0, 0]]
+                   (*risky, 0.9, tm(0, 1), 1e-8),
+                   (*chain, 1.0, tm(0, 0, 1), 1e-8),    # Q = [[6, 3], [5, 0], [0, 0]]
+                   (*risky, 1.0, tm(0, 1), 1e-10),      # Q = [[2, 1.5], [0, 0]]
+                   (*tie, 1.0, tm(0, 1), 1e-8),         # actions 1 and 2 tie -> pi[0] = 1
+                   (*risky, 1.0, tm(1, 1), 1e-8),       # all terminal: Q = 0
+                   (*_mdp(2, 1, {(0, 0): [(1, 1, 4.)], (1, 0): [(1, 1, 1.)]}), 1.0, tm(0, 1), 1e-8)]  # A = 1
+
+          def _ok(P, R, gamma, terminal, tol):
+              r, live, Q = (P * R).sum(-1), ~terminal, np.zeros(P.shape[:2])
+              while True:
+                  Qn = (r + gamma * (P @ np.where(live, Q.max(1), 0.0))) * live[:, None]
+                  d = np.abs(Qn - Q).max()
+                  if abs(d - tol) < 1e-6 * tol:
+                      return False
+                  if d < tol:
+                      break
+                  Q = Qn
+              if P.shape[1] > 1:
+                  q = np.sort(Qn, 1)
+                  gap = q[:, -1] - q[:, -2]
+                  if ((gap > 0) & (gap < 1e-6)).any():
+                      return False
+              return True
+
+          def _gen(r):
+              while True:
+                  rng = np.random.default_rng(r.randint(0, 10**9))
+                  S, A = r.randint(2, 6), r.randint(1, 3)
+                  terminal = np.zeros(S, dtype=bool)
+                  terminal[rng.choice(S, size=r.randint(1, max(1, S // 2)), replace=False)] = True
+                  ends = np.flatnonzero(terminal)
+                  P = np.zeros((S, A, S))
+                  for s in range(S):
+                      for a in range(A):
+                          q = rng.uniform(0.3, 1.0)                       # mass sent to terminal states
+                          P[s, a, ends] += q * rng.dirichlet(np.ones(len(ends)))
+                          k = int(rng.integers(1, S + 1))
+                          P[s, a, rng.choice(S, size=k, replace=False)] += (1 - q) * rng.dirichlet(np.ones(k))
+                  R = np.round(rng.normal(size=(S, A, S)) * 2, 2)
+                  gamma, tol = r.choice([0.5, 0.9, 1.0, 1.0]), r.choice([1e-4, 1e-6, 1e-8])
+                  if _ok(P, R, gamma, terminal, tol):
+                      return (P, R, gamma, terminal, tol)
+
+          against(q_value_iteration, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          P0, R0, T0 = chain[0].copy(), chain[1].copy(), tm(0, 0, 1)
+          q_value_iteration(P0, R0, 1.0, T0, 1e-6)
+          assert (np.array_equal(P0, chain[0]) and np.array_equal(R0, chain[1])
+                  and np.array_equal(T0, tm(0, 0, 1))), "q_value_iteration modified its inputs"
+
+  - id: rl-value-iteration.pi
+    name: Policy evaluation and policy iteration
+    teach: |
+      Policy evaluation solves the Bellman expectation equation exactly: `V = r_π + γ P_π V`, i.e. `(I - γ P_π) V = r_π`,
+      with `P_π[s, s2] = Σ_a π[s, a] P[s, a, s2]` (S, S) and `r_π[s] = Σ_a π[s, a] Σ_s2 P[s, a, s2] R[s, a, s2]` (S,).
+      Policy iteration: start from a policy, evaluate it exactly, replace it by the greedy policy
+      `argmax_a Σ_s2 P[s, a, s2] (R[s, a, s2] + γ V[s2])` (ties -> lowest action), stop when the policy no longer changes.
+    cards:
+      - id: a
+        prompt: |
+          Evaluate a stochastic policy exactly by solving the Bellman expectation equation as a linear system.
+          - `P` (S, A, S) float64: transition probabilities `P[s, a, s2]`; `R` (S, A, S) float64: transition rewards; `gamma` (float, `0 <= γ < 1`); `pi` (S, A) float64: `pi[s, a]` = probability of taking `a` in `s` (rows sum to 1)
+          - `P_pi[s, s2] = Σ_a pi[s, a] P[s, a, s2]`; `r_pi[s] = Σ_a pi[s, a] Σ_s2 P[s, a, s2] R[s, a, s2]`
+          - returns `policy_evaluation(P, R, gamma, pi)` (S,) float64: the `V` that solves `(I - γ P_pi) V = r_pi` (exact to 1e-9, not an iterative approximation)
+          - no Python loops or comprehensions; don't modify the inputs
+        setup: |
+          import numpy as np
+        starter: |
+          def policy_evaluation(P, R, gamma, pi):
+              raise NotImplementedError
+        solution: |
+          def policy_evaluation(P, R, gamma, pi):
+              P_pi = np.einsum("sa,sat->st", pi, P)              # (S, S)
+              r_pi = np.einsum("sa,sat,sat->s", pi, P, R)        # (S,)
+              S = P.shape[0]
+              return np.linalg.solve(np.eye(S) - gamma * P_pi, r_pi)
+          # Follow-ups:
+          # why is I - γ P_π invertible? P_π is row-stochastic so its spectral radius is 1; γ < 1 keeps eigenvalues of γP_π inside the unit disc.
+          # cost? O(S²A) to build, O(S³) to solve; iterative evaluation is O(S²) per sweep and needs O(log(1/ε)/(1-γ)) sweeps.
+          # V = Σ_t γ^t P_π^t r_π: the Neumann series of (I - γ P_π)^(-1) is the "sum of discounted rewards".
+        check: |
+          import dis
+          import types
+          import numpy as np
+          from cardtest import against, rand_cases
+
+          _file = policy_evaluation.__code__.co_filename
+          _fns = [f for f in list(globals().values())               # the learner's functions
+                  if isinstance(f, types.FunctionType) and f.__code__.co_filename == _file]
+          def _heads(c):
+              h = {(id(c), i.argval) for i in dis.get_instructions(c) if i.opname.startswith("JUMP_BACKWARD")}
+              for k in c.co_consts:
+                  if isinstance(k, types.CodeType):
+                      h |= _heads(k)
+              return h
+          _nl = sum(len(_heads(f.__code__)) for f in _fns)
+          assert _nl == 0, f"found {_nl} Python loops/comprehensions: no Python loops allowed"
+
+          def _ref(P, R, gamma, pi):
+              S, A = pi.shape
+              M = [[(1.0 if s == t else 0.0) - gamma * sum(pi[s, a] * P[s, a, t] for a in range(A)) for t in range(S)]
+                   for s in range(S)]
+              b = [sum(pi[s, a] * P[s, a, t] * R[s, a, t] for a in range(A) for t in range(S)) for s in range(S)]
+              return np.linalg.solve(np.array(M).reshape(S, S), np.array(b))
+
+          def _same(got, exp):
+              return (isinstance(got, np.ndarray) and got.shape == exp.shape and got.dtype == np.float64
+                      and np.allclose(got, exp, rtol=1e-9, atol=1e-9))
+
+          def _show(P, R, gamma, pi):
+              return f"(P={P.tolist()}, R={R.tolist()}, gamma={gamma}, pi={pi.tolist()})"
+
+          def _mdp(S, A, T):
+              """T: {(s, a): [(s2, prob, reward), ...]}; missing (s, a) -> stay in s with reward 0."""
+              P, R = np.zeros((S, A, S)), np.zeros((S, A, S))
+              for s in range(S):
+                  for a in range(A):
+                      for s2, p, rw in T.get((s, a), [(s, 1.0, 0.0)]):
+                          P[s, a, s2] += p
+                          R[s, a, s2] = rw
+              return P, R
+
+          stay = _mdp(1, 2, {(0, 0): [(0, 1, 1.)], (0, 1): [(0, 1, 3.)]})
+          # s0: a0 -> s1 (r 2), a1 -> s0 (r 1); s1: a0 -> 50/50 s0 (r 4) / s1 (r 0), a1 -> s0 (r 0)
+          two = _mdp(2, 2, {(0, 0): [(1, 1, 2.)], (0, 1): [(0, 1, 1.)], (1, 0): [(0, .5, 4.), (1, .5, 0.)],
+                            (1, 1): [(0, 1, 0.)]})
+          pis = lambda *rows: np.array(rows, dtype=float)
+          _edge = [(*stay, 0.5, pis([1, 0])),                       # V = 1 / (1 - .5) = 2
+                   (*stay, 0.5, pis([.25, .75])),                   # r_pi = 2.5 -> V = 5
+                   (*stay, 0.0, pis([.25, .75])),                   # gamma = 0: V = r_pi
+                   (*two, 0.9, pis([1, 0], [1, 0])),
+                   (*two, 0.9, pis([.3, .7], [.6, .4])),
+                   (*two, 0.99, pis([.5, .5], [0, 1])),             # exact solve, not a few sweeps
+                   (*_mdp(2, 2, {(0, 0): [(1, 1, 5.)]}), 0.9, pis([.5, .5], [.5, .5]))]   # s1 terminal
+
+          def _gen(r):
+              rng = np.random.default_rng(r.randint(0, 10**9))
+              S, A = r.randint(1, 6), r.randint(1, 3)
+              P = np.zeros((S, A, S))
+              for s in range(S):
+                  for a in range(A):
+                      k = int(rng.integers(1, S + 1))
+                      P[s, a, rng.choice(S, size=k, replace=False)] = rng.dirichlet(np.ones(k))
+              R = np.round(rng.normal(size=(S, A, S)) * 2, 2)
+              if r.random() < 0.3:
+                  pi = np.eye(A)[rng.integers(0, A, size=S)]      # deterministic policy (one-hot rows)
+              else:
+                  pi = rng.dirichlet(np.ones(A), size=S)
+              return (P, R, r.choice([0.0, 0.5, 0.9, 0.99]), pi)
+
+          against(policy_evaluation, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          P0, R0, pi0 = two[0].copy(), two[1].copy(), pis([.3, .7], [.6, .4])
+          policy_evaluation(P0, R0, 0.9, pi0)
+          assert (np.array_equal(P0, two[0]) and np.array_equal(R0, two[1])
+                  and np.array_equal(pi0, pis([.3, .7], [.6, .4]))), "policy_evaluation modified its inputs"
+      - id: b
+        prompt: |
+          Implement policy iteration: start from the policy that always takes action 0, evaluate it exactly, make it greedy, repeat until the policy stops changing.
+          - `P` (S, A, S) float64: transition probabilities `P[s, a, s2]`; `R` (S, A, S) float64: transition rewards; `gamma` (float, `0 <= γ < 1`)
+          - evaluation: solve `(I - γ P_pi) V = r_pi` with `P_pi[s, s2] = P[s, pi[s], s2]`, `r_pi[s] = Σ_s2 P[s, pi[s], s2] R[s, pi[s], s2]`; improvement: `pi_new[s] = argmax_a Σ_s2 P[s, a, s2] (R[s, a, s2] + γ V[s2])` (ties -> lowest action); stop when `pi_new == pi`
+          - returns `policy_iteration(P, R, gamma)` = `(V, pi)`: `V` (S,) float64: the value of the final policy (= V*); `pi` (S,) int: the final policy
+          - the only Python loop allowed is the one over improvement steps; don't modify the inputs
+        setup: |
+          import numpy as np
+        starter: |
+          def policy_iteration(P, R, gamma):
+              raise NotImplementedError
+        solution: |
+          def policy_iteration(P, R, gamma):
+              S = P.shape[0]
+              idx = np.arange(S)
+              r = (P * R).sum(-1)                                  # (S, A) expected immediate reward
+              pi = np.zeros(S, dtype=np.int64)                     # (S,)
+              while True:
+                  P_pi, r_pi = P[idx, pi], r[idx, pi]              # (S, S), (S,)
+                  V = np.linalg.solve(np.eye(S) - gamma * P_pi, r_pi)
+                  pi_new = (r + gamma * (P @ V)).argmax(1)         # (S, A) -> (S,), first max on ties
+                  if np.array_equal(pi_new, pi):
+                      return V, pi
+                  pi = pi_new
+          # Follow-ups:
+          # why does it terminate? each step gives V^{π'} ≥ V^π (policy improvement theorem), strictly somewhere unless optimal; finitely many (A^S) policies.
+          # cost? O(S³ + S²A) per step, usually a handful of steps; VI costs O(S²A) per step but needs O(log(1/tol)/(1-γ)) steps.
+          # PI beats VI when γ is close to 1 and S is small enough for the O(S³) solve; for large S use modified PI (a few sweeps instead of a solve).
+          # why ties -> lowest (deterministic)? an arbitrary tie rule can switch between equally good actions forever.
+        check: |
+          import dis
+          import itertools
+          import types
+          import numpy as np
+          from cardtest import against, rand_cases
+
+          _file = policy_iteration.__code__.co_filename
+          _fns = [f for f in list(globals().values())               # the learner's functions
+                  if isinstance(f, types.FunctionType) and f.__code__.co_filename == _file]
+          def _heads(c):
+              h = {(id(c), i.argval) for i in dis.get_instructions(c) if i.opname.startswith("JUMP_BACKWARD")}
+              for k in c.co_consts:
+                  if isinstance(k, types.CodeType):
+                      h |= _heads(k)
+              return h
+          _nl = sum(len(_heads(f.__code__)) for f in _fns)
+          assert _nl <= 1, (f"found {_nl} Python loops/comprehensions: only the loop over improvement steps is allowed, "
+                            f"vectorize over states and actions")
+
+          def _ref(P, R, gamma):
+              """brute force: V*(s) = max over all deterministic policies of V^pi(s); pi* greedy on V*"""
+              S, A = P.shape[:2]
+              Vs = []
+              for pol in itertools.product(range(A), repeat=S):
+                  M = np.eye(S) - gamma * np.array([P[s, pol[s]] for s in range(S)])
+                  b = np.array([P[s, pol[s]] @ R[s, pol[s]] for s in range(S)])
+                  Vs.append(np.linalg.solve(M, b))
+              V = np.max(Vs, axis=0)
+              Q = [[P[s, a] @ (R[s, a] + gamma * V) for a in range(A)] for s in range(S)]
+              return V, np.array([q.index(max(q)) for q in Q])
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 2):
+                  return False
+              V, pi = got
+              return (isinstance(V, np.ndarray) and V.shape == exp[0].shape and V.dtype == np.float64
+                      and np.allclose(V, exp[0], rtol=1e-9, atol=1e-9)
+                      and isinstance(pi, np.ndarray) and pi.shape == exp[1].shape
+                      and np.issubdtype(pi.dtype, np.integer) and np.array_equal(pi, exp[1]))
+
+          def _show(P, R, gamma):
+              return f"(P={P.tolist()}, R={R.tolist()}, gamma={gamma})"
+
+          def _mdp(S, A, T):
+              """T: {(s, a): [(s2, prob, reward), ...]}; missing (s, a) -> stay in s with reward 0."""
+              P, R = np.zeros((S, A, S)), np.zeros((S, A, S))
+              for s in range(S):
+                  for a in range(A):
+                      for s2, p, rw in T.get((s, a), [(s, 1.0, 0.0)]):
+                          P[s, a, s2] += p
+                          R[s, a, s2] = rw
+              return P, R
+
+          # walk right along 0 -> 1 -> 2 -> 3 (terminal) for reward 10; action 0 = "quit" for reward 1
+          walk = _mdp(4, 2, {(0, 0): [(3, 1, 1.)], (0, 1): [(1, 1, 0.)], (1, 0): [(3, 1, 1.)], (1, 1): [(2, 1, 0.)],
+                             (2, 0): [(3, 1, 1.)], (2, 1): [(3, 1, 10.)]})
+          tie = _mdp(2, 3, {(0, 0): [(1, 1, 1.)], (0, 1): [(1, 1, 2.)], (0, 2): [(1, 1, 2.)]})
+          stoch = _mdp(3, 2, {(0, 0): [(1, .5, 4.), (2, .5, 0.)], (0, 1): [(2, 1, 1.5)], (1, 0): [(1, 1, 1.)],
+                              (1, 1): [(2, 1, 0.)]})
+          _edge = [(*walk, 0.9),                 # pi = [1, 1, 1, 0], V = [8.1, 9, 10, 0]: needs several improvements
+                   (*walk, 0.3),                 # short-sighted: pi = [0, 1, 1, 0]
+                   (*tie, 0.9),                  # actions 1 and 2 tie -> pi[0] = 1
+                   (*stoch, 0.5),
+                   (*stoch, 0.0),
+                   (*_mdp(1, 1, {(0, 0): [(0, 1, 2.)]}), 0.99)]   # S = A = 1: V = 200
+
+          def _gen(r):
+              while True:
+                  rng = np.random.default_rng(r.randint(0, 10**9))
+                  S = r.randint(1, 5)
+                  A = r.randint(1, 3 if S <= 4 else 2)
+                  P = np.zeros((S, A, S))
+                  for s in range(S):
+                      for a in range(A):
+                          k = int(rng.integers(1, S + 1))
+                          P[s, a, rng.choice(S, size=k, replace=False)] = rng.dirichlet(np.ones(k))
+                  R = np.round(rng.normal(size=(S, A, S)) * 2, 2)
+                  n_term = r.randint(0, min(1, S - 1))
+                  for s in range(S - n_term, S):
+                      P[s], R[s] = 0.0, 0.0
+                      P[s, :, s] = 1.0
+                  gamma = r.choice([0.0, 0.5, 0.9, 0.99])
+                  V, _ = _ref(P, R, gamma)
+                  Q = np.sort((P * R).sum(-1) + gamma * (P @ V), 1)
+                  if A == 1 or not (((Q[:, -1] - Q[:, -2]) > 0) & ((Q[:, -1] - Q[:, -2]) < 1e-6)).any():
+                      return (P, R, gamma)
+
+          against(policy_iteration, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          P0, R0 = walk[0].copy(), walk[1].copy()
+          policy_iteration(P0, R0, 0.9)
+          assert np.array_equal(P0, walk[0]) and np.array_equal(R0, walk[1]), "policy_iteration modified P or R"

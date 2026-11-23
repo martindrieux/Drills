@@ -1,0 +1,387 @@
+id: conv-theory
+title: "Conv theory: costs, Toeplitz, equivariance, transpose"
+intro: |
+  The "explain it" side of convolutions: count a layer's parameters and multiply-adds, write a conv as one big
+  sparse matrix, and use that matrix view to derive translation equivariance and the transposed conv (its adjoint).
+problems:
+  - How many parameters and FLOPs does this CNN layer / network have?
+  - Show that a convolution is a linear map (Toeplitz matrix)
+  - Why are CNNs translation equivariant?
+  - Implement conv_transpose2d (upsampling, backward of conv) from scratch
+atoms: []
+skills:
+  - id: conv-theory.costs
+    name: parameter count and multiply-adds of a conv layer
+    teach: |
+      Every output value is one dot product of length `Cin*Kh*Kw` (+ bias); the weights are shared over positions.
+      ```
+      params = Cout*Cin*Kh*Kw + Cout                  # weights + bias; independent of B, H, W
+      H_out  = (H + 2*pad - Kh) // stride + 1          # same for W_out
+      MACs   = B*Cout*H_out*W_out * Cin*Kh*Kw          # multiply-adds; FLOPs ~ 2*MACs
+      ```
+      Example: `B=1, Cin=3, 32x32, Cout=16, 3x3, stride 1, pad 1` -> out `(1, 16, 32, 32)`, params `448`,
+      MACs `16*32*32*27 = 442,368`.
+      Pitfall: MACs use the **output** size `H_out*W_out`, not the input size.
+    cards:
+      - id: a
+        prompt: |
+          Compute the output shape, parameter count and compute cost of one conv layer.
+          - input (B, Cin, H, W); the layer has Cout filters of size Kh × Kw and a bias; `stride`; `pad` (zeros on each side)
+          - returns `conv_cost(B, Cin, H, W, Cout, Kh, Kw, stride, pad)` = `(out_shape, params, macs)`:
+            `out_shape` tuple (B, Cout, H_out, W_out); `params` (int): weights + biases;
+            `macs` (int): multiply-adds of one forward pass (bias additions not counted)
+        setup: |
+          import numpy as np
+        solution: |
+          def conv_cost(B, Cin, H, W, Cout, Kh, Kw, stride, pad):
+              H_out = (H + 2 * pad - Kh) // stride + 1
+              W_out = (W + 2 * pad - Kw) // stride + 1
+              params = Cout * Cin * Kh * Kw + Cout                # weights + bias
+              macs = B * Cout * H_out * W_out * Cin * Kh * Kw     # one dot of length Cin*Kh*Kw per output value
+              return (B, Cout, H_out, W_out), params, macs
+          # Params are shared over positions: they don't grow with H, W, B; compute does.
+          # Follow-up: depthwise-separable conv (depthwise KxK per channel + 1x1 pointwise) costs
+          # Cin*K*K + Cin*Cout params: about K*K times fewer than a full conv when Cout is large.
+        check: |
+          import torch
+          from cardtest import against, rand_cases
+
+          def _ref(B, Cin, H, W, Cout, Kh, Kw, stride, pad):
+              conv = torch.nn.Conv2d(Cin, Cout, (Kh, Kw), stride=stride, padding=pad)
+              with torch.no_grad():
+                  out = conv(torch.zeros(B, Cin, H, W))
+              return tuple(out.shape), sum(p.numel() for p in conv.parameters()), out.numel() * Cin * Kh * Kw
+
+          def _same(got, exp):
+              try:
+                  shape, params, macs = got
+                  return tuple(int(s) for s in shape) == exp[0] and int(params) == exp[1] and int(macs) == exp[2]
+              except Exception:
+                  return False
+
+          def _gen(r):
+              H, W, pad = r.randint(1, 7), r.randint(1, 7), r.randint(0, 2)
+              return (r.randint(1, 3), r.randint(1, 4), H, W, r.randint(1, 5),
+                      r.randint(1, min(H + 2 * pad, 5)), r.randint(1, min(W + 2 * pad, 5)), r.randint(1, 3), pad)
+
+          against(conv_cost, _ref, [(1, 3, 32, 32, 16, 3, 3, 1, 1), (2, 1, 5, 5, 1, 5, 5, 1, 0), (1, 2, 7, 5, 3, 3, 2, 2, 0),
+                                    (1, 1, 4, 4, 8, 1, 1, 3, 0), (3, 3, 6, 4, 1, 2, 3, 3, 2), (1, 4, 1, 1, 2, 3, 3, 1, 1)]
+                  + rand_cases(_gen, 250), same=_same)
+      - id: b
+        prompt: |
+          Add up the parameters and multiply-adds of a small CNN made of conv layers.
+          - `layers`: list of dicts `{"out": Cout, "k": K, "stride": s, "pad": p}` (K × K kernel, with bias), applied in order;
+            each layer's Cin is the previous layer's Cout
+          - `input_shape`: (B, C, H, W) of the first layer's input
+          - returns `cnn_costs(layers, input_shape)` = `(params, macs)`: ints summed over all layers (macs as in the previous card)
+        setup: |
+          import numpy as np
+        solution: |
+          def cnn_costs(layers, input_shape):
+              B, C, H, W = input_shape
+              params = macs = 0
+              for l in layers:
+                  k, s, p, co = l["k"], l["stride"], l["pad"], l["out"]
+                  H, W = (H + 2 * p - k) // s + 1, (W + 2 * p - k) // s + 1   # spatial size after this layer
+                  params += co * C * k * k + co
+                  macs += B * co * H * W * C * k * k
+                  C = co                                                     # next layer's Cin
+              return params, macs
+          # Early high-resolution layers dominate compute; late wide layers dominate params.
+          # Follow-up: how does a stride-2 first layer change the total MACs?
+        check: |
+          import torch
+          from cardtest import against, rand_cases
+
+          def _ref(layers, input_shape):
+              B, C, H, W = input_shape
+              mods, macs = [], [0]
+              for l in layers:
+                  m = torch.nn.Conv2d(C, l["out"], l["k"], stride=l["stride"], padding=l["pad"])
+                  m.register_forward_hook(lambda mod, inp, out: macs.__setitem__(
+                      0, macs[0] + out.numel() * mod.in_channels * mod.kernel_size[0] * mod.kernel_size[1]))
+                  mods.append(m)
+                  C = l["out"]
+              net = torch.nn.Sequential(*mods)
+              with torch.no_grad():
+                  net(torch.zeros(*input_shape))
+              return sum(p.numel() for p in net.parameters()), macs[0]
+
+          def _same(got, exp):
+              try:
+                  return int(got[0]) == exp[0] and int(got[1]) == exp[1] and len(got) == 2
+              except Exception:
+                  return False
+
+          def _gen(r):
+              shape = (r.randint(1, 3), r.randint(1, 4), r.randint(1, 7), r.randint(1, 7))
+              H, W, layers = shape[2], shape[3], []
+              for _ in range(r.randint(1, 4)):
+                  p = r.randint(0, 1)
+                  k = r.randint(1, min(H, W) + 2 * p)
+                  s = r.randint(1, 2)
+                  layers.append({"out": r.randint(1, 6), "k": k, "stride": s, "pad": p})
+                  H, W = (H + 2 * p - k) // s + 1, (W + 2 * p - k) // s + 1
+              return (layers, shape)
+
+          against(cnn_costs, _ref, [([], (1, 3, 8, 8)),
+                                    ([{"out": 16, "k": 3, "stride": 1, "pad": 1}], (1, 3, 32, 32)),
+                                    ([{"out": 4, "k": 3, "stride": 1, "pad": 1}, {"out": 8, "k": 3, "stride": 2, "pad": 1}], (2, 3, 8, 8)),
+                                    ([{"out": 2, "k": 1, "stride": 1, "pad": 0}, {"out": 5, "k": 3, "stride": 1, "pad": 0},
+                                      {"out": 1, "k": 2, "stride": 3, "pad": 0}], (1, 6, 7, 5))]
+                  + rand_cases(_gen, 250), same=_same)
+
+  - id: conv-theory.toeplitz
+    name: conv as a matrix (Toeplitz)
+    teach: |
+      A conv is linear in `x`, so `out.reshape(-1) = T @ x.reshape(-1)` with `T` sparse, banded, the same weights on every row.
+      ```
+      1D, 1 channel, stride 1, no pad: out[o] = sum_k w[k] * x[o + k]
+        -> T (L-K+1, L), T[o, o+k] = w[k], 0 elsewhere
+        w = [1, 2], L = 4 -> T = [[1, 2, 0, 0],
+                                  [0, 1, 2, 0],
+                                  [0, 0, 1, 2]]
+      2D, Cin -> Cout: T[(co, y, x), (ci, y+i, x+j)] = w[co, ci, i, j]
+        -> T (Cout*H_out*W_out, Cin*H*W), Cin*Kh*Kw nonzeros per row ("doubly block Toeplitz")
+      ```
+      Pitfall: row and column indices follow C-order `reshape(-1)`: row `(co*H_out + y)*W_out + x`, column `(ci*H + y)*W + x`.
+    cards:
+      - id: a
+        prompt: |
+          Write a 1D convolution as a matrix.
+          - `w` (K,): kernel; `L` (int): input length; stride 1, no padding
+          - returns `conv1d_matrix(w, L)` (L − K + 1, L) float: the matrix `T` with `T @ x` = `y`, where
+            `y[t] = Σ_k x[t + k] · w[k]`, for every `x` (L,)
+        setup: |
+          import numpy as np
+        solution: |
+          def conv1d_matrix(w, L):
+              K = len(w)
+              T = np.zeros((L - K + 1, L))          # (L_out, L)
+              for o in range(L - K + 1):
+                  T[o, o:o + K] = w                 # row o = w shifted right by o
+              return T
+          # T is Toeplitz (constant diagonals): only K distinct values out of (L-K+1)*L entries.
+          # Backward: dL/dx = T.T @ dL/dout, i.e. the transposed conv.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(w, L):
+              E = torch.eye(L, dtype=torch.float64)[:, None, :]               # basis vectors (L, 1, L)
+              cols = F.conv1d(E, torch.tensor(w, dtype=torch.float64)[None, None])  # (L, 1, L_out): T[:, j] = conv(e_j)
+              return cols[:, 0, :].T.numpy()
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp)
+
+          def _gen(r):
+              L = r.randint(1, 8)
+              return (np.array([r.gauss(0, 1) for _ in range(r.randint(1, L))]), L)
+
+          against(conv1d_matrix, _ref, [(np.array([1.0, 2.0]), 4), (np.array([3.0]), 1), (np.array([3.0]), 4),
+                                        (np.array([1.0, -2.0, 0.5]), 3), (np.array([1.0, 2.0, 3.0]), 6)]
+                  + rand_cases(_gen, 250), same=_same, show=lambda w, L: f"(w of shape {w.shape}, L={L})")
+          _x = np.arange(6.0)
+          _T = conv1d_matrix(np.array([1.0, 2.0, 3.0]), 6)
+          assert np.allclose(_T @ _x, np.correlate(_x, [1.0, 2.0, 3.0], "valid")), f"T @ x = {_T @ _x}"
+      - id: b
+        prompt: |
+          Write a multi-channel 2D convolution as a matrix.
+          - `w` (Cout, Cin, Kh, Kw); `H`, `W`: input size; stride 1, no padding, no bias
+          - returns `conv2d_matrix(w, H, W)` (Cout·H_out·W_out, Cin·H·W): the matrix `T` with
+            `T @ x.reshape(-1) == conv(x).reshape(-1)` for every `x` (Cin, H, W) (row-major flattening on both sides)
+        setup: |
+          import numpy as np
+        solution: |
+          def conv2d_matrix(w, H, W):
+              Cout, Cin, Kh, Kw = w.shape
+              Ho, Wo = H - Kh + 1, W - Kw + 1
+              T = np.zeros((Cout, Ho, Wo, Cin, H, W))           # row index (co, y, x), column index (ci, h, w)
+              for y in range(Ho):
+                  for x in range(Wo):
+                      T[:, y, x, :, y:y + Kh, x:x + Kw] = w     # (Cout, Cin, Kh, Kw) window at (y, x)
+              return T.reshape(Cout * Ho * Wo, Cin * H * W)
+          # Each block row over y is itself banded: Toeplitz blocks of Toeplitz blocks.
+          # A dense T has Cout*Ho*Wo*Cin*H*W entries but only Cout*Cin*Kh*Kw distinct values.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(w, H, W):
+              Cin = w.shape[1]
+              E = torch.eye(Cin * H * W, dtype=torch.float64).reshape(-1, Cin, H, W)  # basis images
+              out = F.conv2d(E, torch.tensor(w, dtype=torch.float64))               # (N, Cout, Ho, Wo)
+              return out.reshape(len(E), -1).T.numpy()
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp)
+
+          def _gen(r):
+              H, W = r.randint(1, 5), r.randint(1, 5)
+              shape = (r.randint(1, 3), r.randint(1, 3), r.randint(1, H), r.randint(1, W))
+              w = np.array([r.gauss(0, 1) for _ in range(int(np.prod(shape)))]).reshape(shape)
+              return (w, H, W)
+
+          _rng = np.random.default_rng(0)
+          against(conv2d_matrix, _ref, [(np.arange(4.0).reshape(1, 1, 2, 2) + 1, 3, 3), (np.ones((1, 1, 1, 1)), 1, 1),
+                                        (_rng.normal(size=(2, 1, 1, 1)), 2, 3), (_rng.normal(size=(1, 2, 3, 3)), 3, 3),
+                                        (_rng.normal(size=(3, 2, 2, 1)), 4, 3), (_rng.normal(size=(2, 3, 1, 3)), 2, 5)]
+                  + rand_cases(_gen, 250), same=_same, show=lambda w, H, W: f"(w of shape {w.shape}, H={H}, W={W})")
+
+  - id: conv-theory.equivariance-adjoint
+    name: translation equivariance, transposed conv as the adjoint
+    teach: |
+      **Equivariance**: shifting the input shifts the output: `conv(shift_t(x)) = shift_t(conv(x))`.
+      ```
+      out[y] = sum_k w[k] x[y+k];  x'[y] = x[y-t]  ->  out'[y] = sum_k w[k] x[y-t+k] = out[y-t]
+      ```
+      Exact with circular padding (indices mod H, `np.roll`); with zero padding it breaks only near the borders.
+      **Transposed conv** = the adjoint `T^T`: `<conv(x), y> = <x, conv_T(y)>`. Each input pixel `y[b, co, p, q]`
+      scatters `y * w[co, :, :, :]` into the output:
+      ```
+      out[b, ci, s*p + i - pad, s*q + j - pad] += y[b, co, p, q] * w[co, ci, i, j]
+      H_out = (H - 1)*s - 2*pad + Kh          # H=3, s=2, pad=0, Kh=3 -> 7
+      ```
+      Pitfall: `F.conv_transpose2d(y, w)` takes the forward conv's `w` (Cout, Cin, Kh, Kw) unchanged:
+      its first axis is the transposed conv's **input** channels.
+    cards:
+      - id: a
+        prompt: |
+          Implement the transposed convolution (the adjoint of a strided, padded conv) with loops.
+          - `y` (B, Cout, H, W): input; `w` (Cout, Cin, Kh, Kw): the weight of the forward conv `x -> conv(x, w, stride, pad)`
+          - returns `conv_transpose2d(y, w, stride, pad)` (B, Cin, (H − 1)·stride − 2·pad + Kh, (W − 1)·stride − 2·pad + Kw):
+            the adjoint, i.e. `Σ conv(x, w) · y == Σ x · conv_transpose2d(y, w)` for every `x` (no bias)
+          - `pad` crops `pad` pixels from each side of the result (cross-check: `F.conv_transpose2d(y, w, stride=stride, padding=pad)`)
+        setup: |
+          import numpy as np
+        solution: |
+          def conv_transpose2d(y, w, stride, pad):
+              B, Cout, H, W = y.shape
+              _, Cin, Kh, Kw = w.shape
+              Hf, Wf = (H - 1) * stride + Kh, (W - 1) * stride + Kw          # size before cropping pad
+              out = np.zeros((B, Cin, Hf, Wf))
+              for p in range(H):
+                  for q in range(W):
+                      # (B, Cout) . (Cout, Cin, Kh, Kw) -> (B, Cin, Kh, Kw), added where this pixel's window was
+                      out[:, :, p * stride:p * stride + Kh, q * stride:q * stride + Kw] += np.tensordot(y[:, :, p, q], w, axes=(1, 0))
+              return out[:, :, pad:Hf - pad, pad:Wf - pad]
+          # Overlapping windows (stride < K) must accumulate (+=); stride > 1 leaves no-overlap gaps.
+          # This is exactly dL/dx of conv2d given dL/dout = y (the conv's backward pass).
+          # Follow-up: why do stride-2 transposed convs make checkerboard artifacts? (uneven overlap)
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          _t = lambda a: torch.tensor(a, dtype=torch.float64)
+
+          def _ref(y, w, stride, pad):
+              return F.conv_transpose2d(_t(y), _t(w), stride=stride, padding=pad).numpy()
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp)
+
+          def _gen(r):
+              while True:
+                  H, W, Kh, Kw, s = r.randint(1, 4), r.randint(1, 4), r.randint(1, 3), r.randint(1, 3), r.randint(1, 3)
+                  pad = r.randint(0, min(Kh, Kw) - 1)
+                  if (H - 1) * s - 2 * pad + Kh >= 1 and (W - 1) * s - 2 * pad + Kw >= 1:
+                      break
+              B, Cout, Cin = r.randint(1, 2), r.randint(1, 3), r.randint(1, 3)
+              y = np.array([r.gauss(0, 1) for _ in range(B * Cout * H * W)]).reshape(B, Cout, H, W)
+              w = np.array([r.gauss(0, 1) for _ in range(Cout * Cin * Kh * Kw)]).reshape(Cout, Cin, Kh, Kw)
+              return (y, w, s, pad)
+
+          _rng = np.random.default_rng(0)
+          _n = lambda *s: _rng.normal(size=s)
+          _cases = [(np.ones((1, 1, 1, 1)), np.array([[[[1.0, 2.0], [3.0, 4.0]]]]), 1, 0),
+                    (np.ones((1, 1, 2, 2)), np.ones((1, 1, 3, 3)), 1, 0),
+                    (_n(1, 1, 3, 3), _n(1, 1, 3, 3), 2, 0),
+                    (_n(2, 3, 2, 3), _n(3, 2, 2, 3), 2, 1),
+                    (_n(1, 2, 3, 2), _n(2, 4, 3, 1), 3, 0),
+                    (_n(1, 1, 4, 4), _n(1, 3, 3, 3), 1, 1),
+                    (_n(1, 2, 2, 2), _n(2, 1, 1, 1), 2, 0)]
+          _rand = rand_cases(_gen, 250)
+          _sh = lambda y, w, s, p: f"(y {y.shape}, w {w.shape}, stride={s}, pad={p})"
+          against(conv_transpose2d, _ref, _cases + _rand, same=_same, show=_sh)
+          for (y, w, s, p) in _cases + _rand[:60]:          # adjoint: <conv(x), y> == <x, conv_T(y)>
+              ct = conv_transpose2d(y, w, s, p)
+              x = _rng.normal(size=ct.shape)
+              lhs = float((F.conv2d(_t(x), _t(w), stride=s, padding=p).numpy() * y).sum())
+              rhs = float((x * ct).sum())
+              assert np.isclose(lhs, rhs), f"adjoint fails for {_sh(y, w, s, p)}: <conv(x), y> = {lhs:.6f}, <x, conv_T(y)> = {rhs:.6f}"
+      - id: b
+        prompt: |
+          Implement a circular (wrap-around) 2D convolution, which is exactly translation-equivariant.
+          - `x` (B, Cin, H, W), `w` (Cout, Cin, Kh, Kw); `Kh`, `Kw` may exceed `H`, `W`
+          - returns `circular_conv2d(x, w)` (B, Cout, H, W):
+            `out[n, co, r, c] = Σ_{ci, i, j} w[co, ci, i, j] · x[n, ci, (r + i) % H, (c + j) % W]`
+          - no loop over output pixels (a loop over the kernel offsets `i, j` is fine)
+        setup: |
+          import numpy as np
+        solution: |
+          def circular_conv2d(x, w):
+              Cout, Cin, Kh, Kw = w.shape
+              out = np.zeros((x.shape[0], Cout) + x.shape[2:])                # (B, Cout, H, W)
+              for i in range(Kh):
+                  for j in range(Kw):
+                      xs = np.roll(x, (-i, -j), axis=(2, 3))                    # xs[..., y, x] = x[..., (y+i)%H, (x+j)%W]
+                      out += np.einsum("bchw,oc->bohw", xs, w[:, :, i, j])     # (B, Cin, H, W) -> (B, Cout, H, W)
+              return out
+          # np.roll(x, -i) moves pixel y+i to y; a shift of x commutes with every roll, hence equivariance.
+          # Same as F.conv2d on x wrap-padded by Kh-1 rows at the bottom and Kw-1 columns at the right.
+          # Follow-up: via FFT, circular conv is an elementwise product of spectra.
+        check: |
+          import sys
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(x, w):
+              Kh, Kw = w.shape[2:]
+              xp = np.pad(x, ((0, 0), (0, 0), (0, Kh - 1), (0, Kw - 1)), mode="wrap")
+              return F.conv2d(torch.tensor(xp), torch.tensor(w)).numpy()
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp)
+
+          def _gen(r):
+              B, Cin, Cout, H, W = r.randint(1, 2), r.randint(1, 3), r.randint(1, 3), r.randint(1, 6), r.randint(1, 6)
+              Kh, Kw = r.randint(1, min(H + 1, 4)), r.randint(1, min(W + 1, 4))
+              x = np.array([r.gauss(0, 1) for _ in range(B * Cin * H * W)]).reshape(B, Cin, H, W)
+              w = np.array([r.gauss(0, 1) for _ in range(Cout * Cin * Kh * Kw)]).reshape(Cout, Cin, Kh, Kw)
+              return (x, w)
+
+          _rng = np.random.default_rng(0)
+          _n = lambda *s: _rng.normal(size=s)
+          _cases = [(np.arange(4.0).reshape(1, 1, 1, 4), np.array([[[[1.0, 10.0]]]])), (_n(1, 1, 1, 1), _n(1, 1, 1, 1)),
+                    (_n(1, 1, 3, 3), _n(1, 1, 3, 3)), (_n(2, 2, 4, 5), _n(3, 2, 2, 3)), (_n(1, 3, 5, 4), _n(1, 3, 1, 2)),
+                    (_n(1, 1, 2, 2), _n(2, 1, 3, 3))]
+          _sh = lambda x, w: f"(x {x.shape}, w {w.shape})"
+          against(circular_conv2d, _ref, _cases + rand_cases(_gen, 250), same=_same, show=_sh)
+
+          for (x, w) in _cases[2:]:                       # equivariance under circular shifts
+              for t in [(1, 0), (0, 2), (2, 1), (-1, 3)]:
+                  a = circular_conv2d(np.roll(x, t, axis=(2, 3)), w)
+                  b = np.roll(circular_conv2d(x, w), t, axis=(2, 3))
+                  assert np.allclose(a, b), f"conv(shift(x)) != shift(conv(x)) for {_sh(x, w)}, shift {t}"
+
+          _lines = [0]
+          _file = circular_conv2d.__code__.co_filename
+          def _tr(frame, event, arg):
+              if frame.f_code.co_filename != _file:
+                  return None
+              def _loc(frame, event, arg):
+                  if event == "line":
+                      _lines[0] += 1
+                  return _loc
+              return _loc
+          sys.settrace(_tr)
+          try:
+              circular_conv2d(_n(1, 1, 48, 48), _n(1, 1, 3, 3))
+          finally:
+              sys.settrace(None)
+          assert _lines[0] < 400, f"{_lines[0]} lines executed on a 48x48 input with a 3x3 kernel: loop over kernel offsets, not output pixels"

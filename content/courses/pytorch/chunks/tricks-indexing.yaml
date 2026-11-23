@@ -1,0 +1,358 @@
+id: tricks-indexing
+title: "Tricks: advanced indexing & selection"
+intro: |
+  Batched "look up by position" and "write by position" problems with no Python loops: pick several rows per
+  batch element, and write or accumulate values into a table at given columns. One-element-per-row picks and
+  token log-prob gathers are drilled in `tensor-ops` and `interview-tricks`; this page covers the angles they skip.
+problems:
+  - Gather the hidden states of K selected tokens per sequence
+  - Flatten a batch and index it with one 1-D index (offsets)
+  - Scatter values into a table, overwrite vs accumulate on repeated indices
+atoms: []
+skills:
+  - id: tricks-indexing.gather-rows
+    name: Retrieve K rows per batch element (Medium)
+    teach: |
+      **Problem.** For each batch element `b`, pick `K` rows of `x[b]` by position.
+
+      - `x` (B, N, D), `indices` (B, K) int64 in `[0, N)` -> (B, K, D): `out[b, k] = x[b, indices[b, k]]`.
+      - Example: `x = [[[0, 1], [2, 3], [4, 5]]]` (1, 3, 2), `indices = [[2, 0, 2, 2]]` -> `[[[4, 5], [0, 1], [4, 5], [4, 5]]]` (1, 4, 2).
+      - No Python loops. Repeats and `K > N` allowed; `x` may be non-contiguous.
+    cards:
+      - id: a
+        prompt: |
+          Write `gather_rows(x, indices)`: for each batch element, pick the rows of `x` listed in `indices`.
+          - `x` (B, N, D): batch of row sets (may be non-contiguous); `indices` (B, K) int64 in `[0, N)`: rows to pick (repeats and `K > N` allowed)
+          - returns `out` (B, K, D), dtype of `x`: `out[b, k] = x[b, indices[b, k]]`
+          - No Python loops.
+
+          <details><summary>Hint 1</summary>The row read depends on (b, k), not on d: a lookup along dim 1, copied across D.</details>
+          <details><summary>Hint 2</summary><code>x.gather(1, index)</code> needs an index with the ndim of <code>x</code>; or <code>x[rows, cols]</code> with rows (B, 1), cols (B, K).</details>
+          <details><summary>Hint 3</summary><code>x.gather(1, indices.unsqueeze(-1).expand(-1, -1, D))</code>, or <code>x[torch.arange(B)[:, None], indices]</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def gather_rows(x, indices):
+              raise NotImplementedError
+        solution: |
+          def gather_rows(x, indices):
+              D = x.size(-1)
+              idx = indices.unsqueeze(-1).expand(-1, -1, D)      # (B, K, 1) -> (B, K, D), a view: no copy
+              return x.gather(1, idx)                            # out[b, k, d] = x[b, idx[b, k, d], d]
+
+          # Trick: gather needs an index with x's ndim; expand (B, K, 1) -> (B, K, D) is a free view.
+          #   Or: x[torch.arange(B)[:, None], indices] (rows (B, 1) and cols (B, K) broadcast to (B, K)).
+          # Cost: O(B*K*D) time and memory.
+          # NumPy: np.take_along_axis(x, indices[..., None], axis=1).
+          # Mistakes: x[:, indices] -> (B, B, K, D); gather without expand -> (B, K, 1), only feature 0.
+          # Follow-up: the backward of gather is a scatter_add (repeated indices accumulate gradients).
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _has_loop(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if hasattr(c, "co_code"))
+              return walk(fn.__code__)
+
+          assert not _has_loop(gather_rows), "gather_rows contains a Python loop (for / while / comprehension): vectorize it"
+
+          def _ref(x, indices):
+              B, N, D = x.shape
+              K = indices.shape[1]
+              out = torch.zeros(B, K, D, dtype=x.dtype)
+              for b in range(B):
+                  for k in range(K):
+                      out[b, k] = x[b, int(indices[b, k])]
+              return out
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got.double(), exp.double()))
+
+          def _show(x, i):
+              nc = "" if x.is_contiguous() else " non-contiguous"
+              return f"(x {tuple(x.shape)} {x.dtype}{nc}, indices {i.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, N, D, K = r.randint(1, 4), r.randint(1, 5), r.randint(1, 4), r.randint(0, 7)
+              if r.random() < 0.3:
+                  x = torch.randn(N, B, D, generator=g).transpose(0, 1)          # (B, N, D) non-contiguous
+              elif r.random() < 0.3:
+                  x = torch.randint(-9, 10, (B, N, D), generator=g)
+              else:
+                  x = torch.randn(B, N, D, generator=g, dtype=r.choice([torch.float32, torch.float64]))
+              if r.random() < 0.3:
+                  idx = torch.randint(0, N, (K, B), generator=g).t()             # (B, K) non-contiguous
+              else:
+                  idx = torch.randint(0, N, (B, K), generator=g)
+              return (x, idx)
+
+          _x = torch.arange(6.0).view(1, 3, 2)
+          _xt = torch.arange(24.0).view(4, 2, 3).transpose(0, 1)                 # (2, 4, 3) non-contiguous
+          cases = [
+              (_x, torch.tensor([[2, 0, 2, 2]])),                                 # example: repeats, K > N
+              (_x, torch.zeros(1, 0, dtype=torch.long)),                          # K = 0
+              (torch.tensor([[[7.0]]]), torch.tensor([[0, 0, 0]])),               # N = 1, D = 1
+              (torch.arange(12).view(2, 3, 2), torch.tensor([[1, 2], [0, 0]])),   # int64 x, different rows per batch
+              (_xt, torch.tensor([[3, 0, 1], [2, 2, 3]])),
+              (_xt, torch.tensor([[3, 1], [0, 2], [1, 3]]).t()),                  # non-contiguous indices
+          ]
+          against(gather_rows, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Write `gather_rows_flat(x, indices)`: for each batch element, pick the rows of `x` listed in `indices`, by indexing `x` flattened to `(B*N, D)` with **one** 1-D index.
+          - `x` (B, N, D): batch of row sets (may be non-contiguous); `indices` (B, K) int64 in `[0, N)`: rows to pick
+          - returns `out` (B, K, D), dtype of `x`: `out[b, k] = x[b, indices[b, k]]`
+          - No `gather` / `take_along_dim`, no Python loops.
+
+          <details><summary>Hint 1</summary>Once (B, N) are merged, <code>x[b, n]</code> sits at one flat row number. Which?</details>
+          <details><summary>Hint 2</summary>In <code>x.reshape(B * N, D)</code>, row <code>b * N + n</code> is <code>x[b, n]</code> (<code>view</code> fails on a non-contiguous x).</details>
+          <details><summary>Hint 3</summary><code>flat = (indices + N * torch.arange(B)[:, None]).reshape(-1)</code>; index, then reshape to (B, K, D).</details>
+        setup: |
+          import torch
+        starter: |
+          def gather_rows_flat(x, indices):
+              raise NotImplementedError
+        solution: |
+          def gather_rows_flat(x, indices):
+              B, N, D = x.shape
+              K = indices.size(1)
+              offsets = N * torch.arange(B, device=indices.device).unsqueeze(1)   # (B, 1): start row of each batch
+              flat = (indices + offsets).reshape(-1)                              # (B*K,) rows of the flat buffer
+              return x.reshape(B * N, D)[flat].reshape(B, K, D)                   # (B*K, D) -> (B, K, D)
+
+          # Trick: merging (B, N) puts x[b, n] at flat row b*N + n, so per-batch offsets turn a batched lookup into a 1-D one.
+          # Cost: O(B*K*D); reshape copies x only if it is non-contiguous (view would raise).
+          # NumPy: x.reshape(B * N, D)[(indices + N * np.arange(B)[:, None]).ravel()].reshape(B, K, D).
+          # Mistakes: offsets K * b instead of N * b; forgetting the offsets (always batch 0).
+          # Follow-up: beam search reorders (B*beam, ...) caches this way; the backward is index_add_.
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _walk(co):
+              yield co
+              for c in co.co_consts:
+                  if hasattr(c, "co_code"):
+                      yield from _walk(c)
+
+          _codes = list(_walk(gather_rows_flat.__code__))
+          assert not any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT")
+                         for co in _codes for i in dis.get_instructions(co)), \
+              "gather_rows_flat contains a Python loop (for / while / comprehension): vectorize it"
+          _names = {n for co in _codes for n in co.co_names}
+          assert not _names & {"gather", "take_along_dim"}, f"gather_rows_flat uses {_names & {'gather', 'take_along_dim'}}: use one 1-D index into the flattened x"
+
+          def _ref(x, indices):
+              B, N, D = x.shape
+              K = indices.shape[1]
+              out = torch.zeros(B, K, D, dtype=x.dtype)
+              for b in range(B):
+                  for k in range(K):
+                      out[b, k] = x[b, int(indices[b, k])]
+              return out
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got.double(), exp.double()))
+
+          def _show(x, i):
+              nc = "" if x.is_contiguous() else " non-contiguous"
+              return f"(x {tuple(x.shape)} {x.dtype}{nc}, indices {i.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, N, D, K = r.randint(1, 4), r.randint(1, 5), r.randint(1, 4), r.randint(0, 7)
+              if r.random() < 0.35:
+                  x = torch.randn(N, B, D, generator=g).transpose(0, 1)
+              else:
+                  x = torch.randn(B, N, D, generator=g, dtype=r.choice([torch.float32, torch.float64]))
+              return (x, torch.randint(0, N, (B, K), generator=g))
+
+          _xt = torch.arange(24.0).view(4, 2, 3).transpose(0, 1)                 # (2, 4, 3) non-contiguous
+          cases = [
+              (torch.arange(6.0).view(1, 3, 2), torch.tensor([[2, 0, 2, 2]])),
+              (torch.arange(6.0).view(1, 3, 2), torch.zeros(1, 0, dtype=torch.long)),
+              (torch.arange(12).view(3, 2, 2), torch.tensor([[1, 1, 0], [0, 1, 1], [1, 0, 0]])),   # int64 x, K != N
+              (_xt, torch.tensor([[3, 0, 1], [2, 2, 3]])),
+          ]
+          against(gather_rows_flat, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: tricks-indexing.scatter-values
+    name: Scatter values into a table, write vs accumulate (Medium)
+    teach: |
+      **Problem.** Write `K` values per row into a `(B, C)` table at given columns.
+
+      - `indices` (B, K) int64 in `[0, C)`, `values` (B, K).
+      - Part A (write, columns distinct per row): a copy of `base` (B, C) with `out[b, indices[b, k]] = values[b, k]`; `base` unchanged.
+      - Part B (accumulate, repeats allowed): from zeros (B, C), `out[b, c]` = sum of `values[b, k]` with `indices[b, k] == c`.
+      - Example: A: `base = [[9., 9., 9., 9.]]`, `indices = [[0, 2]]`, `values = [[1., 2.]]` -> `[[1., 9., 2., 9.]]`.
+        B: `indices = [[0, 2, 2]]`, `values = [[1., 2., 3.]]`, `C = 4` -> `[[1., 0., 5., 0.]]`.
+      - No Python loops, no one-hot `(B, K, C)`.
+    cards:
+      - id: a
+        prompt: |
+          Part A: write `write_values(base, indices, values)`, which writes `K` values per row into a copy of a table at given columns.
+          - `base` (B, C): the table; `indices` (B, K) int64 in `[0, C)`, distinct within a row: target columns; `values` (B, K), dtype of `base`: values to write
+          - returns `out` (B, C), dtype of `base`: copy of `base` with `out[b, indices[b, k]] = values[b, k]`
+          - Return a new tensor, don't modify `base`; no Python loops, no `one_hot`.
+
+          <details><summary>Hint 1</summary>The inverse of a per-row gather: write to position <code>indices[b, k]</code> instead of reading it.</details>
+          <details><summary>Hint 2</summary><code>t.scatter(dim, index, src)</code> returns a copy with <code>out[b][index[b][k]] = src[b][k]</code> (dim 1); <code>scatter_</code> is in place.</details>
+          <details><summary>Hint 3</summary><code>base.scatter(1, indices, values)</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def write_values(base, indices, values):
+              raise NotImplementedError
+        solution: |
+          def write_values(base, indices, values):
+              return base.scatter(1, indices, values)          # out-of-place: base untouched
+
+          # Trick: scatter is the write-side twin of gather; out-of-place scatter leaves base untouched (scatter_ would not).
+          # Cost: O(B*C) for the copy + O(B*K) writes, vs O(B*K*C) for a one-hot mask.
+          # Duplicates: a repeated column keeps one unspecified value, hence scatter_add for accumulating (card b).
+          # NumPy: out = base.copy(); np.put_along_axis(out, indices, values, axis=1).
+          # Follow-up: un-sorting a permutation (logits.scatter(-1, sorted_ix, sorted_vals)) as in top-p sampling.
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _walk(co):
+              yield co
+              for c in co.co_consts:
+                  if hasattr(c, "co_code"):
+                      yield from _walk(c)
+
+          _codes = list(_walk(write_values.__code__))
+          assert not any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT")
+                         for co in _codes for i in dis.get_instructions(co)), \
+              "write_values contains a Python loop (for / while / comprehension): vectorize it"
+          assert "one_hot" not in {n for co in _codes for n in co.co_names}, "write_values uses one_hot: write the values directly"
+
+          _b = torch.full((2, 3), 9.0)
+          _b0 = _b.clone()
+          _res = write_values(_b, torch.tensor([[0], [2]]), torch.tensor([[5.0], [6.0]]))
+          assert torch.equal(_b, _b0), f"write_values modified base in place: base is now {_b.tolist()}, return a new tensor"
+          assert torch.is_tensor(_res) and _res.data_ptr() != _b.data_ptr(), "write_values must return a new tensor, not base itself"
+
+          def _ref(base, indices, values):
+              out = base.clone()
+              for b in range(indices.shape[0]):
+                  for k in range(indices.shape[1]):
+                      out[b, int(indices[b, k])] = values[b, k]
+              return out
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got.double(), exp.double()))
+
+          def _show(base, i, v):
+              return f"(base {base.tolist()}, indices {i.tolist()}, values {v.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, C = r.randint(1, 4), r.randint(1, 6)
+              K = r.randint(0, C)
+              idx = torch.stack([torch.randperm(C, generator=g)[:K] for _ in range(B)])          # distinct per row
+              if r.random() < 0.3:
+                  base = torch.randint(-9, 10, (B, C), generator=g)
+                  vals = torch.randint(-9, 10, (B, K), generator=g)
+              else:
+                  dt = r.choice([torch.float32, torch.float64])
+                  base = torch.randn(B, C, generator=g, dtype=dt)
+                  vals = torch.randn(B, K, generator=g, dtype=dt)
+              if r.random() < 0.3:
+                  base, idx, vals = base.t().contiguous().t(), idx.t().contiguous().t(), vals.t().contiguous().t()
+              return (base, idx, vals)
+
+          cases = [
+              (torch.full((1, 4), 9.0), torch.tensor([[0, 2]]), torch.tensor([[1.0, 2.0]])),                 # example
+              (torch.full((2, 3), 9.0), torch.zeros(2, 0, dtype=torch.long), torch.zeros(2, 0)),           # K = 0
+              (torch.zeros(2, 3), torch.tensor([[2, 0, 1], [1, 2, 0]]), torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])),  # K = C
+              (torch.tensor([[5]]), torch.tensor([[0]]), torch.tensor([[-3]])),                             # C = 1, int64
+              (torch.arange(6.0).view(3, 2).t(), torch.tensor([[2], [0]]), torch.tensor([[7.0, 8.0]]).t()),  # non-contiguous
+          ]
+          against(write_values, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Part B: write `accumulate(indices, values, C)`, which adds `K` values per row into a zero table of `C` columns, at given columns that may repeat.
+          - `indices` (B, K) int64 in `[0, C)`, repeats allowed: target columns; `values` (B, K): values to add; `C` (int): number of columns
+          - returns `out` (B, C), dtype of `values`: `out[b, c]` = sum of `values[b, k]` with `indices[b, k] == c`, 0 if none
+          - No Python loops, no `one_hot`.
+
+          <details><summary>Hint 1</summary>A plain write (or <code>out[rows, cols] += v</code>) keeps one value per repeated cell: you need a write that adds each.</details>
+          <details><summary>Hint 2</summary><code>t.scatter_add_(dim, index, src)</code>: <code>t[b][index[b][k]] += src[b][k]</code> (dim 1), repeats included.</details>
+          <details><summary>Hint 3</summary><code>torch.zeros(B, C, dtype=values.dtype).scatter_add_(1, indices, values)</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def accumulate(indices, values, C):
+              raise NotImplementedError
+        solution: |
+          def accumulate(indices, values, C):
+              out = torch.zeros(indices.size(0), C, dtype=values.dtype, device=values.device)   # (B, C)
+              return out.scatter_add_(1, indices, values)       # out[b, indices[b, k]] += values[b, k], repeats add
+
+          # Trick: scatter_add adds every source element, so repeats accumulate; scatter / out[rows, cols] += v keep one.
+          # Cost: O(B*C + B*K) vs O(B*K*C) for a one-hot sum. Alternative: index_put_(..., accumulate=True).
+          # NumPy: np.add.at(out, (np.arange(B)[:, None], indices), values) (out[rows, cols] += v drops repeats too).
+          # Mistake: torch.zeros(B, C) without dtype (float32 for int / float64 values).
+          # Follow-up: histograms, embedding-gradient accumulation, scatter_reduce(reduce="amax") for a segment max.
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _walk(co):
+              yield co
+              for c in co.co_consts:
+                  if hasattr(c, "co_code"):
+                      yield from _walk(c)
+
+          _codes = list(_walk(accumulate.__code__))
+          assert not any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT")
+                         for co in _codes for i in dis.get_instructions(co)), \
+              "accumulate contains a Python loop (for / while / comprehension): vectorize it"
+          assert "one_hot" not in {n for co in _codes for n in co.co_names}, "accumulate uses one_hot: add the values directly"
+
+          def _ref(indices, values, C):
+              B, K = indices.shape
+              out = torch.zeros(B, C, dtype=values.dtype)
+              for b in range(B):
+                  for k in range(K):
+                      out[b, int(indices[b, k])] += values[b, k]
+              return out
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got.double(), exp.double(), atol=1e-5))
+
+          def _show(i, v, C):
+              return f"(indices {i.tolist()}, values {v.tolist()} {v.dtype}, C={C})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, C = r.randint(1, 4), r.randint(1, 5)
+              K = r.randint(0, 2 * C)
+              idx = torch.randint(0, C, (B, K), generator=g)
+              if r.random() < 0.3:
+                  vals = torch.randint(-9, 10, (B, K), generator=g)
+              else:
+                  vals = torch.randn(B, K, generator=g, dtype=r.choice([torch.float32, torch.float64]))
+              if r.random() < 0.3:
+                  idx, vals = idx.t().contiguous().t(), vals.t().contiguous().t()
+              return (idx, vals, C)
+
+          cases = [
+              (torch.tensor([[0, 2, 2]]), torch.tensor([[1.0, 2.0, 3.0]]), 4),                               # example
+              (torch.tensor([[1, 1, 1, 1], [0, 2, 0, 2]]), torch.tensor([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]), 3),
+              (torch.zeros(2, 0, dtype=torch.long), torch.zeros(2, 0), 3),                                  # K = 0
+              (torch.tensor([[0, 0, 0]]), torch.tensor([[2, -5, 4]]), 1),                                   # C = 1, int64
+              (torch.tensor([[3, 3], [0, 3]]), torch.tensor([[0.5, 0.25], [1.0, 2.0]], dtype=torch.float64), 5),
+              (torch.tensor([[1, 0], [1, 1], [0, 1]]).t(), torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]).t(), 2),  # non-contiguous
+          ]
+          against(accumulate, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)

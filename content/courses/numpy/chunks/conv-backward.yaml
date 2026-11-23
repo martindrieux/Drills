@@ -1,0 +1,346 @@
+id: conv-backward
+title: "Conv2D backward: dX, dW, db"
+intro: |
+  The three gradients of a Conv2D layer from the upstream gradient `dout`, written with loops and validated against
+  PyTorch autograd, then checked the way you would in an interview: central finite differences and relative error.
+problems:
+  - Implement the backward pass of a Conv2D layer from scratch
+  - Show that the input gradient of a conv is a full correlation with the flipped kernel
+  - Gradient-check a layer with finite differences
+atoms: []
+skills:
+  - id: conv-backward.grads
+    name: dX, dW, db of a Conv2D (overlaps accumulate)
+    teach: |
+      `dout` (B, Cout, H_out, W_out) = dL/d(output); `xp` = `x` zero-padded by `pad`; `s` = stride.
+      ```python
+      # db (Cout,): dout summed over b, y, x
+      # dW (Cout, Cin, Kh, Kw): dW[co,ci,i,j] = sum_{b,y,x} dout[b,co,y,x] * xp[b,ci,y*s+i, x*s+j]
+      # dxp (like xp): dxp[b,ci,y*s+i, x*s+j] += w[co,ci,i,j] * dout[b,co,y,x]   (over all co,y,x,i,j)
+      # dx = dxp with the padding cropped off: dxp[:, :, pad:pad+H, pad:pad+W]  -> (B, Cin, H, W)
+      # 1D, stride 1, no pad: dx (L,) = FULL correlation of dy (L-K+1,) with the flipped w (K,)
+      # dx[t] = sum_k dy[t-k] * w[k]   e.g. w = [1, 2], dy = [1, 1] -> dx = [1, 3, 2]
+      ```
+      Why `+=`: an input pixel sits in several overlapping windows, so it feeds several outputs; by the chain rule
+      its gradient is the sum over all of them. Pitfall: `=` keeps only the last window.
+    cards:
+      - id: a
+        prompt: |
+          Implement the backward pass of the 2D convolution `out = conv2d_forward(x, w, b, stride, pad)` with loops.
+          - `dout` (B, Cout, H_out, W_out): gradient of the loss with respect to `out`
+          - `x` (B, Cin, H, W), `w` (Cout, Cin, Kh, Kw), `stride`, `pad`: the forward inputs (zero padding on each side)
+          - returns `conv2d_backward(dout, x, w, stride, pad)` = `(dx, dw, db)`: gradients of the loss with respect to
+            `x` (B, Cin, H, W), `w` (Cout, Cin, Kh, Kw) and `b` (Cout,)
+          - loops allowed
+        setup: |
+          import numpy as np
+        starter: |
+          def conv2d_backward(dout, x, w, stride, pad):
+              raise NotImplementedError
+        solution: |
+          def conv2d_backward(dout, x, w, stride, pad):
+              B, Cin, H, W = x.shape
+              Cout, _, Kh, Kw = w.shape
+              Ho, Wo = dout.shape[2:]
+              xp = np.pad(x, ((0, 0), (0, 0), (pad, pad), (pad, pad)))   # (B, Cin, Hp, Wp)
+              dxp = np.zeros_like(xp)
+              dw = np.zeros_like(w)
+              db = dout.sum(axis=(0, 2, 3))                              # (Cout,)
+              for y in range(Ho):
+                  for c in range(Wo):
+                      r0, c0 = y * stride, c * stride
+                      win = xp[:, :, r0:r0 + Kh, c0:c0 + Kw]             # (B, Cin, Kh, Kw)
+                      g = dout[:, :, y, c]                               # (B, Cout)
+                      dw += np.einsum('bo,bcij->ocij', g, win)
+                      dxp[:, :, r0:r0 + Kh, c0:c0 + Kw] += np.einsum('bo,ocij->bcij', g, w)  # accumulate
+              return dxp[:, :, pad:pad + H, pad:pad + W], dw, db
+          # Key idea: forward reads window (y, c) of xp; backward sends dout[y, c] back to the same window.
+          # Cost: same as the forward, O(B*Cout*Cin*Kh*Kw*H_out*W_out).
+          # Follow-up: dx is a transposed conv of dout with w (F.conv_transpose2d), dW a correlation of xp with dout.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(dout, x, w, stride, pad):
+              xt = torch.tensor(x, requires_grad=True)
+              wt = torch.tensor(w, requires_grad=True)
+              bt = torch.zeros(w.shape[0], dtype=torch.float64, requires_grad=True)
+              F.conv2d(xt, wt, bt, stride=stride, padding=pad).backward(torch.tensor(dout))
+              return xt.grad.numpy(), wt.grad.numpy(), bt.grad.numpy()
+
+          def _same(got, exp):
+              return (isinstance(got, tuple) and len(got) == 3
+                      and all(isinstance(g, np.ndarray) and g.shape == e.shape and np.allclose(g, e, atol=1e-9)
+                              for g, e in zip(got, exp)))
+
+          def _case(rng, B, Cin, Cout, H, W, Kh, Kw, stride, pad):
+              Ho, Wo = (H + 2 * pad - Kh) // stride + 1, (W + 2 * pad - Kw) // stride + 1
+              return (rng.standard_normal((B, Cout, Ho, Wo)), rng.standard_normal((B, Cin, H, W)),
+                      rng.standard_normal((Cout, Cin, Kh, Kw)), stride, pad)
+
+          _rng = np.random.default_rng(0)
+          _hand = [_case(_rng, *a) for a in [
+              (1, 1, 1, 3, 3, 2, 2, 1, 0), (1, 1, 1, 4, 4, 1, 1, 1, 0), (1, 1, 1, 3, 3, 3, 3, 1, 0),
+              (2, 2, 3, 5, 5, 3, 3, 1, 1), (1, 2, 3, 6, 6, 2, 2, 2, 0), (1, 1, 2, 7, 7, 3, 3, 2, 0),
+              (1, 1, 1, 5, 5, 2, 2, 3, 0), (2, 3, 1, 4, 6, 3, 2, 1, 2), (1, 2, 4, 5, 4, 2, 3, 2, 1),
+              (1, 1, 1, 2, 2, 3, 3, 1, 1)]]
+
+          def _gen(r):
+              B, Cin, Cout = r.randint(1, 2), r.randint(1, 3), r.randint(1, 3)
+              H, W, pad, stride = r.randint(1, 6), r.randint(1, 6), r.randint(0, 2), r.randint(1, 3)
+              Kh, Kw = r.randint(1, H + 2 * pad), r.randint(1, W + 2 * pad)
+              return _case(np.random.default_rng(r.randrange(10**9)), B, Cin, Cout, H, W, Kh, Kw, stride, pad)
+
+          _show = lambda dout, x, w, s, p: f"(dout {dout.shape}, x {x.shape}, w {w.shape}, stride={s}, pad={p})"
+          against(conv2d_backward, _ref, _hand + rand_cases(_gen, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Compute the input gradient of a 1D cross-correlation, without loops.
+          - forward: `y[t] = Σ_k x[t + k] · w[k]`, with `x` (L,), `w` (K,), `y` (L − K + 1,) (stride 1, no padding)
+          - `dy` (L − K + 1,): gradient of the loss with respect to `y`; `w` (K,)
+          - returns `conv1d_input_grad(dy, w)` (L,): gradient of the loss with respect to `x`
+          - no Python loops or comprehensions
+        setup: |
+          import numpy as np
+        starter: |
+          def conv1d_input_grad(dy, w):
+              raise NotImplementedError
+        solution: |
+          def conv1d_input_grad(dy, w):
+              return np.convolve(dy, w)   # full mode: (L-K+1) + K - 1 = L; convolve = correlate with flipped w
+          # Same thing: sliding_window_view(np.pad(dy, K - 1), K) @ w[::-1]   ((L, K) @ (K,) -> (L,))
+          # Key idea: dx[t] = sum_k dy[t-k] * w[k]; pad dy by K-1 on both sides so edge pixels get their few terms.
+          # Follow-up: in 2D with stride s, first insert s-1 zeros between the dout entries (transposed conv).
+        check: |
+          import dis
+          import types
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _loops(code):
+              if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT", "JUMP_ABSOLUTE")
+                     for i in dis.get_instructions(code)):
+                  return True
+              return any(_loops(c) for c in code.co_consts if isinstance(c, types.CodeType))
+
+          assert not _loops(conv1d_input_grad.__code__), "conv1d_input_grad uses a Python loop or comprehension"
+
+          def _ref(dy, w):
+              L = len(dy) + len(w) - 1
+              xt = torch.zeros(1, 1, L, dtype=torch.float64, requires_grad=True)
+              F.conv1d(xt, torch.tensor(w)[None, None]).backward(torch.tensor(dy)[None, None])
+              return xt.grad[0, 0].numpy()
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp, atol=1e-9)
+
+          def _gen(r):
+              K = r.randint(1, 6)
+              return (np.array([r.gauss(0, 1) for _ in range(r.randint(1, 7))]), np.array([r.gauss(0, 1) for _ in range(K)]))
+
+          _hand = [(np.array([1.0, 1.0]), np.array([1.0, 2.0])), (np.array([2.0]), np.array([1.0, -1.0, 3.0])),
+                   (np.array([1.0, -2.0, 3.0]), np.array([5.0])), (np.array([1.0, 0.0, 0.0, 2.0]), np.array([1.0, 2.0, 3.0]))]
+          against(conv1d_input_grad, _ref, _hand + rand_cases(_gen, 300), same=_same,
+                  show=lambda dy, w: f"(dy={dy.round(3).tolist()}, w={w.round(3).tolist()})")
+
+  - id: conv-backward.gradcheck
+    name: gradient check with central differences and relative error
+    teach: |
+      Check an analytic gradient by nudging one input entry at a time.
+      ```python
+      # central difference: df/dx[i] ~ (f(x + eps*e_i) - f(x - eps*e_i)) / (2*eps), error O(eps^2)
+      # f(x) = sum(x**3), x = [1.], eps = 1e-3 -> (1.003003001 - 0.997002999) / 0.002 = 3.000001  (exact: 3)
+      # np.ndindex(shape) -> every index tuple of an array of that shape, row-major
+      list(np.ndindex((2, 2)))    # [(0, 0), (0, 1), (1, 0), (1, 1)]
+      # relative error, elementwise then max: |a - b| / max(1e-8, |a| + |b|); ~1e-7 or less = correct
+      # conv layer: with L = sum(conv(x) * dout), dL/d(output) = dout, so numeric dL/dx must equal analytic dx
+      ```
+      Pitfall: perturb `x` in place and put the original value back after each entry, or later entries are off.
+    cards:
+      - id: a
+        prompt: |
+          Implement a numerical gradient by central differences.
+          - `f`: function that takes an array shaped like `x` and returns a float; `x` (any shape) float64; `eps` (float)
+          - returns `numeric_grad(f, x, eps=1e-6)` (same shape as `x`): entry `i` is
+            `(f(x with x[i] + eps) − f(x with x[i] − eps)) / (2·eps)`
+          - `x` must hold its original values when you return
+        setup: |
+          import numpy as np
+        starter: |
+          def numeric_grad(f, x, eps=1e-6):
+              raise NotImplementedError
+        solution: |
+          def numeric_grad(f, x, eps=1e-6):
+              g = np.zeros_like(x)
+              for idx in np.ndindex(x.shape):
+                  old = x[idx]
+                  x[idx] = old + eps
+                  fp = f(x)
+                  x[idx] = old - eps
+                  fm = f(x)
+                  x[idx] = old                          # restore before the next entry
+                  g[idx] = (fp - fm) / (2 * eps)
+              return g
+          # Cost: 2 * x.size evaluations of f, so only for tiny test inputs.
+          # Follow-up: why not eps = 1e-12? Rounding error ~1e-16 * |f| / eps then dominates.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(f, x):
+              x = x.copy()
+              g = np.zeros_like(x)
+              for idx in np.ndindex(x.shape):
+                  old = x[idx]
+                  x[idx] = old + 1e-6
+                  fp = f(x)
+                  x[idx] = old - 1e-6
+                  fm = f(x)
+                  x[idx] = old
+                  g[idx] = (fp - fm) / 2e-6
+              return g
+
+          def _run(f, x):
+              x0 = x.copy()
+              g = numeric_grad(f, x)
+              assert np.allclose(x, x0, rtol=0, atol=1e-12), f"x was not restored: max change {np.abs(x - x0).max():.2e}"
+              return g
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp, rtol=1e-5, atol=1e-7)
+
+          _W = np.random.default_rng(1).standard_normal((2, 2, 2, 2))
+          _conv_loss = lambda x: float((F.conv2d(torch.from_numpy(x), torch.from_numpy(_W), padding=1) ** 2).sum())
+          _fs = [lambda x: np.sum(x ** 3), lambda x: np.sum(x) ** 2, lambda x: np.log(np.sum(np.exp(x))),
+                 lambda x: np.sum(np.tanh(x) * np.sum(x ** 2))]
+          _rng = np.random.default_rng(0)
+          _hand = [(_fs[0], np.array([1.0])), (_fs[1], np.array([0.5, -1.0, 2.0])), (_fs[2], _rng.standard_normal((2, 3))),
+                   (_fs[3], _rng.standard_normal((3, 2))), (_conv_loss, _rng.standard_normal((1, 2, 3, 3))),
+                   (_conv_loss, _rng.standard_normal((2, 2, 2, 4)))]
+
+          def _gen(r):
+              shape = tuple(r.randint(1, 3) for _ in range(r.randint(1, 3)))
+              return (r.choice(_fs), np.random.default_rng(r.randrange(10**9)).standard_normal(shape))
+
+          against(_run, _ref, _hand + rand_cases(_gen, 200), same=_same, name="numeric_grad",
+                  show=lambda f, x: f"(f, x of shape {x.shape})")
+      - id: b
+        prompt: |
+          Check an analytic conv backward pass against numerical gradients.
+          - `x` (B, Cin, H, W), `w` (Cout, Cin, Kh, Kw), `b` (Cout,), `stride`, `pad`, `dout` (B, Cout, H_out, W_out)
+          - `conv2d_forward` and `conv2d_backward` are given (setup); call them by name
+          - returns `rel_error(a, b)` (float): max over entries of `|a − b| / max(1e-8, |a| + |b|)`
+          - returns `check_conv_grads(x, w, b, stride, pad, dout)` (dict with keys `"dx"`, `"dw"`, `"db"`, float values):
+            `rel_error` between `conv2d_backward`'s gradients and central differences (eps = 1e-6) of
+            `L = sum(conv2d_forward(x, w, b, stride, pad) · dout)`
+          - leave the inputs unchanged
+        setup: |
+          import numpy as np
+          # given (hidden): conv2d_forward(x, w, b, stride, pad) and a correct conv2d_backward(dout, x, w, stride, pad) -> (dx, dw, db)
+          from conv_ref import conv2d_forward, conv2d_backward
+        starter: |
+          def rel_error(a, b):
+              raise NotImplementedError
+
+          def check_conv_grads(x, w, b, stride, pad, dout):
+              raise NotImplementedError
+        solution: |
+          def rel_error(a, b):
+              return float(np.max(np.abs(a - b) / np.maximum(1e-8, np.abs(a) + np.abs(b))))
+
+          def check_conv_grads(x, w, b, stride, pad, dout):
+              L = lambda: np.sum(conv2d_forward(x, w, b, stride, pad) * dout)   # dL/d(out) = dout
+              def num(p):                                    # central differences, p perturbed in place
+                  g = np.zeros_like(p)
+                  for idx in np.ndindex(p.shape):
+                      old = p[idx]
+                      p[idx] = old + 1e-6
+                      fp = L()
+                      p[idx] = old - 1e-6
+                      g[idx] = (fp - L()) / 2e-6
+                      p[idx] = old
+                  return g
+              dx, dw, db = conv2d_backward(dout, x, w, stride, pad)
+              return {"dx": rel_error(dx, num(x)), "dw": rel_error(dw, num(w)), "db": rel_error(db, num(b))}
+          # Key idea: L is linear in the output, so its upstream gradient is exactly dout.
+          # A random dout (not ones) also catches bugs that only show with unequal output weights.
+        check: |
+          from cardtest import against, rand_cases
+          from numpy.lib.stride_tricks import sliding_window_view as _swv
+
+          def _rel(a, b):
+              return float(np.max(np.abs(a - b) / np.maximum(1e-8, np.abs(a) + np.abs(b))))
+
+          _isclose = lambda got, exp: isinstance(got, (float, np.floating)) and abs(float(got) - exp) <= 1e-9 * max(1.0, abs(exp))
+          _rng = np.random.default_rng(0)
+          _hand = [(np.array([1.0, 2.0]), np.array([1.0, 2.0])), (np.zeros(3), np.zeros(3)), (np.array([1.0, 0.0]), np.array([3.0, 0.0])),
+                   (np.array([[1.0, -1.0], [2.0, 0.0]]), np.array([[1.0, 1.0], [2.0, 1e-9]]))]
+          def _gen_ab(r):
+              g = np.random.default_rng(r.randrange(10**9))
+              a = g.standard_normal(tuple(g.integers(1, 4, size=g.integers(1, 4))))
+              return (a, a + g.standard_normal(a.shape) * 10.0 ** g.integers(-9, 1))
+          against(rel_error, _rel, _hand + rand_cases(_gen_ab, 200), same=_isclose, show=lambda a, b: f"(a {a.shape}, b {b.shape})")
+
+          _good = conv2d_backward
+          def _bug_db(dout, x, w, s, p):
+              dx, dw, db = _good(dout, x, w, s, p)
+              return dx, dw, 2 * db
+          def _bug_dw(dout, x, w, s, p):
+              dx, dw, db = _good(dout, x, w, s, p)
+              return dx, dw[:, :, ::-1, ::-1], db
+          def _bug_dx(dout, x, w, s, p):                         # '=' instead of '+='
+              dx, dw, db = _good(dout, x, w, s, p)
+              H, W = x.shape[2:]
+              Kh, Kw = w.shape[2:]
+              Ho, Wo = dout.shape[2:]
+              xp = np.pad(x, ((0, 0), (0, 0), (p, p), (p, p)))
+              dxp = np.zeros_like(xp)
+              for i in range(Kh):
+                  for j in range(Kw):
+                      dxp[:, :, i:i + s * Ho:s, j:j + s * Wo:s] = np.einsum('bohw,oc->bchw', dout, w[:, :, i, j])
+              return dxp[:, :, p:p + H, p:p + W], dw, db
+
+          def _num(f, a):
+              g = np.zeros_like(a)
+              for idx in np.ndindex(a.shape):
+                  old = a[idx]
+                  a[idx] = old + 1e-6
+                  fp = f()
+                  a[idx] = old - 1e-6
+                  g[idx] = (fp - f()) / 2e-6
+                  a[idx] = old
+              return g
+
+          def _expected(back, x, w, b, s, p, dout):
+              x, w, b = x.copy(), w.copy(), b.copy()
+              f = lambda: np.sum(conv2d_forward(x, w, b, s, p) * dout)
+              dx, dw, db = back(dout, x, w, s, p)
+              return {"dx": _rel(dx, _num(f, x)), "dw": _rel(dw, _num(f, w)), "db": _rel(db, _num(f, b))}
+
+          def _case(rng, B, Cin, Cout, H, W, K, s, p):
+              Ho, Wo = (H + 2 * p - K) // s + 1, (W + 2 * p - K) // s + 1
+              return (rng.standard_normal((B, Cin, H, W)), rng.standard_normal((Cout, Cin, K, K)), rng.standard_normal(Cout),
+                      s, p, rng.standard_normal((B, Cout, Ho, Wo)))
+
+          _cases = [_case(_rng, *a) for a in [(1, 1, 1, 3, 3, 2, 1, 0), (2, 2, 3, 4, 4, 3, 1, 1), (1, 2, 2, 5, 4, 2, 2, 1),
+                                              (1, 1, 2, 5, 5, 3, 2, 0), (2, 1, 1, 4, 3, 2, 1, 0)]]
+          for _back, _name in [(_good, "correct"), (_bug_db, "db doubled"), (_bug_dw, "dw flipped"), (_bug_dx, "dx with = not +=")]:
+              for _x, _w, _b, _s, _p, _dout in _cases:
+                  _exp = _expected(_back, _x, _w, _b, _s, _p, _dout)
+                  _args = [a.copy() for a in (_x, _w, _b, _dout)]
+                  conv2d_backward = _back
+                  try:
+                      _got = check_conv_grads(_args[0], _args[1], _args[2], _s, _p, _args[3])
+                  finally:
+                      conv2d_backward = _good
+                  _where = f"with a {_name} conv2d_backward, x {_x.shape}, w {_w.shape}, stride={_s}, pad={_p}"
+                  assert isinstance(_got, dict) and set(_got) == {"dx", "dw", "db"}, f"{_where}: returned {_got!r}, expected keys dx, dw, db"
+                  for _k in ("dx", "dw", "db"):
+                      _v = _got[_k]
+                      assert isinstance(_v, (float, np.floating)) and abs(float(_v) - _exp[_k]) <= 1e-4, \
+                          f"{_where}: {_k} = {_v!r}, expected about {_exp[_k]:.3g}"
+                  for _n, _a, _o in zip(("x", "w", "b", "dout"), _args, (_x, _w, _b, _dout)):
+                      assert np.allclose(_a, _o, rtol=0, atol=1e-12), f"{_where}: input {_n} was changed"

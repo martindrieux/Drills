@@ -1,0 +1,191 @@
+id: py-stack
+title: Stack — list as LIFO, monotonic stack
+summary: A plain list used last-in-first-out; the tool for matching brackets and "next greater element".
+links:
+  - to: py-lists
+    kind: prereq
+    note: A stack is just a list where you only touch the end.
+  - to: py-deque
+    kind: contrast
+    note: A list is a fine stack (pop from the end is O(1)) but a bad queue; for FIFO use deque.popleft().
+lesson: |
+  Python has no stack class: a **list** is the stack. Only ever touch its end.
+
+  ```python
+  stack = []
+  stack.append(1)        # push, O(1)
+  stack.append(2)
+  top = stack[-1]        # peek, O(1)  -> 2
+  x = stack.pop()        # pop,  O(1)  -> 2
+  if stack: ...          # non-empty check (not len(stack) > 0)
+  if not stack: ...      # empty check
+  ```
+
+  `stack.pop()` and `stack[-1]` on an empty list raise `IndexError`, so guard them. The idiom that
+  shows up everywhere:
+
+  ```python
+  while stack and stack[-1] < x:   # `stack and` comes first: short-circuits on empty
+      stack.pop()
+  ```
+
+  **Pattern 1: matching pairs** (brackets, tags, undo). Push openers; on a closer, the top must be
+  its partner. At the end the stack must be empty.
+
+  ```python
+  pairs = {")": "(", "]": "[", "}": "{"}      # closer -> opener
+  for ch in s:
+      if ch in pairs:
+          if not stack or stack.pop() != pairs[ch]:
+              return False
+      else:
+          stack.append(ch)
+  return not stack                             # leftovers = unclosed openers
+  ```
+
+  **Pattern 2: monotonic stack** ("next greater / smaller element", spans, histograms).
+  Keep the stack **decreasing**; when a bigger value arrives, it is the answer for everything it
+  pops. Store **indices**, not values, so you can compute distances and write into a result array.
+
+  ```python
+  res = [-1] * len(nums)          # next greater VALUE, -1 if none
+  stack = []                      # indices, nums[stack] decreasing
+  for i, x in enumerate(nums):
+      while stack and nums[stack[-1]] < x:
+          res[stack.pop()] = x
+      stack.append(i)
+  ```
+
+  Each index is pushed once and popped at most once → **O(n)** total despite the nested `while`.
+  Variants: `>` instead of `<` for next smaller; iterate right-to-left for "previous" greater;
+  `<=` vs `<` decides what happens on equal values.
+
+  **Pitfalls**
+  - `stack[-1]` / `stack.pop()` on empty → `IndexError`. Write `while stack and ...`, in that order.
+  - Forgetting the final `return not stack` in bracket matching (`"(("` is invalid).
+  - Storing values when you need positions (distances, widths) → store indices.
+  - `list.pop(0)` is a queue operation and costs O(n). Not a stack thing; see deque.
+drills:
+  - id: push-pop
+    prompt: Push `1`, `2`, `3` onto `stack` (in that order), then pop the top into `top`.
+    setup: |
+      stack = []
+    solution: |
+      stack.append(1); stack.append(2); stack.append(3)
+      top = stack.pop()
+    check: |
+      assert top == 3, f"top = {top!r}"
+      assert stack == [1, 2], f"stack = {stack!r}"
+  - id: safe-peek
+    prompt: Set `top` to the top of `stack` without removing it, or `None` if the stack is empty (no try/except).
+    setup: |
+      stack = []
+    solution: |
+      top = stack[-1] if stack else None
+    check: |
+      assert top is None, f"top = {top!r}"
+      assert stack == [], f"stack = {stack!r}"
+  - id: pop-while
+    prompt: Pop from `stack` while its top is smaller than `x` (careful when it empties), then push `x`.
+    setup: |
+      stack = [5, 3, 2]
+      x = 4
+    solution: |
+      while stack and stack[-1] < x:
+          stack.pop()
+      stack.append(x)
+    check: |
+      assert stack == [5, 4], f"stack = {stack!r}"
+  - id: remove-adjacent-dups
+    prompt: Repeatedly delete pairs of equal adjacent letters in `s` using a stack; put the final string in `res` (`"abbaca"` → `"ca"`).
+    setup: |
+      s = "abbaca"
+    solution: |
+      stack = []
+      for ch in s:
+          if stack and stack[-1] == ch: stack.pop()
+          else: stack.append(ch)
+      res = "".join(stack)
+    check: |
+      assert res == "ca", f"res = {res!r}"
+  - id: path-tokens
+    prompt: Walk `parts` with `stack`. A name is pushed, `"."` is ignored, `".."` pops (only if non-empty). End with the remaining names in `stack`.
+    setup: |
+      parts = ["..", "a", ".", "b", "..", "c"]
+      stack = []
+    solution: |
+      for p in parts:
+          if p == "..":
+              if stack: stack.pop()
+          elif p != ".":
+              stack.append(p)
+    check: |
+      assert stack == ["a", "c"], f"stack = {stack!r}"
+classics:
+  - id: valid-parentheses
+    title: Valid Parentheses
+    url: https://leetcode.com/problems/valid-parentheses/
+    difficulty: Easy
+    prompt: |
+      Given `s` made of `()[]{}`, return `True` if every bracket is closed by the same type, in the
+      right order.
+    starter: |
+      def isValid(s):
+          pass
+    hints:
+      - Push openers. On a closer, the top of the stack must be the matching opener.
+      - A dict `closer -> opener` avoids a chain of ifs.
+      - Two ways to fail besides a mismatch. Closer with an empty stack, and openers left at the end.
+    solution: |
+      def isValid(s):
+          pairs = {")": "(", "]": "[", "}": "{"}
+          stack = []
+          for ch in s:
+              if ch in pairs:
+                  if not stack or stack.pop() != pairs[ch]:
+                      return False
+              else:
+                  stack.append(ch)
+          return not stack
+    check: |
+      for s, want in [("()[]{}", True), ("{[]}", True), ("([)]", False),
+                      ("(", False), ("]", False), ("((", False), ("", True)]:
+          res = isValid(s)
+          assert res is want, f"isValid({s!r}) = {res!r}"
+    takeaway: Nested pairs → push openers, pop-and-compare on closers, stack must end empty.
+  - id: daily-temperatures
+    title: Daily Temperatures
+    url: https://leetcode.com/problems/daily-temperatures/
+    difficulty: Medium
+    prompt: |
+      Given daily `temperatures`, return `answer` where `answer[i]` is the number of days after day
+      `i` until a strictly warmer temperature, or `0` if there is none. O(n).
+    starter: |
+      def dailyTemperatures(temperatures):
+          pass
+    hints:
+      - "Each day is waiting for its next greater element: keep the waiting days on a stack."
+      - Store indices. When today is warmer than the day on top, pop it and write `i - j`.
+      - The stack stays decreasing in temperature; every index is pushed and popped once.
+    solution: |
+      def dailyTemperatures(temperatures):
+          answer = [0] * len(temperatures)
+          stack = []
+          for i, t in enumerate(temperatures):
+              while stack and temperatures[stack[-1]] < t:
+                  j = stack.pop()
+                  answer[j] = i - j
+              stack.append(i)
+          return answer
+    check: |
+      res = dailyTemperatures([73, 74, 75, 71, 69, 72, 76, 73])
+      assert res == [1, 1, 4, 2, 1, 1, 0, 0], f"res = {res!r}"
+      res = dailyTemperatures([30, 40, 50, 60])
+      assert res == [1, 1, 1, 0], f"res = {res!r}"
+      res = dailyTemperatures([90, 80, 70])
+      assert res == [0, 0, 0], f"res = {res!r}"
+      res = dailyTemperatures([50, 50, 51])
+      assert res == [2, 1, 0], f"res = {res!r}"
+      res = dailyTemperatures([50])
+      assert res == [0], f"res = {res!r}"
+    takeaway: '"Next greater element" → monotonic decreasing stack of indices; the newcomer resolves everything it pops.'

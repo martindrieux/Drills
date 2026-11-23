@@ -1,0 +1,444 @@
+id: rl-reinforce
+title: REINFORCE (policy gradient)
+intro: |
+  No lesson: write the whole thing from memory, then run it. The checks are strict.
+problems: [Reward-to-go on padded episodes, Discounted returns with dones, REINFORCE loss, REINFORCE update with a baseline]
+atoms: []
+skills:
+  - id: rl-reinforce.returns
+    name: Discounted reward-to-go
+    teach: |
+      Reward-to-go of step t: the discounted sum of the rewards from t to the end of its episode,
+      G_t = Σ_{k≥t} γ^{k−t} r_k, computed backwards as G_t = r_t + γ·G_{t+1}.
+      Padded batch: (B, T), `mask` True on real steps (a prefix of each row), G = 0 on padding.
+      Rollout of E parallel envs: time-major (T, E); `done[t]` True means the episode ends after step t, so
+      G_{t+1} is not added; after the last step, the return is bootstrapped with `last_value` if the episode still runs.
+    cards:
+      - id: a
+        prompt: |
+          Compute the reward-to-go of every step in a padded batch of episodes.
+          - `rewards` (B, T) float: reward of each step; padded positions hold arbitrary values
+          - `mask` (B, T) bool: True on real steps, a prefix of each row (a row may be all False)
+          - `gamma` (float in [0, 1]): discount
+          - returns `reward_to_go(rewards, mask, gamma)` (B, T), dtype of `rewards`:
+            `G[b, t] = Σ_{k ≥ t, k real} γ^(k−t) · rewards[b, k]` on real steps, 0 on padding
+          - no Python loop over the batch (a loop over T is fine); don't modify the inputs
+        setup: |
+          import torch
+        starter: |
+          def reward_to_go(rewards, mask, gamma):
+              raise NotImplementedError
+        solution: |
+          def reward_to_go(rewards, mask, gamma):
+              r = rewards.masked_fill(~mask, 0.0)              # (B, T) padding -> 0
+              G = torch.zeros_like(r)                          # (B, T)
+              g = torch.zeros_like(r[:, 0])                    # (B,) running return
+              for t in range(r.shape[1] - 1, -1, -1):
+                  g = r[:, t] + gamma * g                      # (B,)
+                  G[:, t] = g
+              return G                                         # 0 on padding (mask is a prefix)
+          # Follow-ups:
+          # Why reward-to-go, not the full episode return? action t can't change earlier rewards (causality):
+          #   dropping them keeps the gradient unbiased and lowers its variance.
+          # No loop at all? G = r @ D.T with D[t, k] = γ^(k−t)·[k ≥ t] (T, T); the cumsum(r·γ^t)/γ^t trick
+          #   overflows / loses precision for small γ or long T.
+        check: |
+          import time
+          import torch
+          from cardtest import against, rand_cases
+
+          def _ref(rewards, mask, gamma):
+              B, T = rewards.shape
+              out = [[0.0] * T for _ in range(B)]
+              for b in range(B):
+                  n = int(mask[b].sum())
+                  for t in range(n):
+                      out[b][t] = sum(gamma ** (k - t) * rewards[b, k].item() for k in range(t, n))
+              return torch.tensor(out, dtype=rewards.dtype).reshape(B, T)
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, rtol=1e-5, atol=1e-5))
+
+          def _show(rewards, mask, gamma):
+              return (f"(rewards={[[round(v, 3) for v in row] for row in rewards.tolist()]}, "
+                      f"lengths={mask.sum(1).tolist()}, gamma={gamma})")
+
+          def _mk(rows, lens, gamma, dtype=torch.float32):
+              r = torch.tensor(rows, dtype=dtype)
+              m = torch.arange(r.shape[1])[None, :] < torch.tensor(lens)[:, None]
+              return (r, m, gamma)
+
+          _edge = [
+              _mk([[1., 2., 3.]], [3], 0.5),                               # 2.75, 3.5, 3
+              _mk([[1., 1., 1., 99.], [2., 77., 77., 77.]], [3, 1], 0.9),  # padding rewards must not leak
+              _mk([[5., 5.], [1., 2.]], [0, 2], 0.9),                      # all-padding row
+              _mk([[1., -2., 3.]], [3], 0.0),                              # γ = 0: G = r
+              _mk([[1., -2., 3., 4.]], [3], 1.0),                          # γ = 1: suffix sums
+              _mk([[7.]], [1], 0.99),
+              _mk([[1., 2., 3.]], [3], 0.5, torch.float64),
+          ]
+
+          def _gen(r):
+              B, T = r.randint(1, 5), r.randint(1, 8)
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              dt = r.choice([torch.float32, torch.float64])
+              lens = [r.randint(0, T) for _ in range(B)]
+              m = torch.arange(T)[None, :] < torch.tensor(lens)[:, None]
+              rew = torch.randn(B, T, generator=gg, dtype=dt)
+              rew = torch.where(m, rew, 100 + 100 * torch.rand(B, T, generator=gg, dtype=dt))   # garbage padding
+              return (rew, m, r.choice([0.0, 0.5, 0.9, 0.99, 1.0]))
+
+          against(reward_to_go, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          rr, mm, _ = _mk([[1., 2., 3.], [4., 5., 6.]], [2, 3], 0.9)
+          r0, m0 = rr.clone(), mm.clone()
+          reward_to_go(rr, mm, 0.9)
+          assert torch.equal(rr, r0) and torch.equal(mm, m0), "reward_to_go modified its inputs"
+
+          # vectorized over the batch: 50000 episodes of 10 steps must be fast
+          gg = torch.Generator().manual_seed(1)
+          Rb = torch.randn(50000, 10, generator=gg)
+          Mb = torch.arange(10)[None, :] < torch.randint(0, 11, (50000, 1), generator=gg)
+          t0 = time.perf_counter()
+          reward_to_go(Rb, Mb, 0.9)
+          dt = time.perf_counter() - t0
+          assert dt < 0.5, f"B=50000, T=10 took {dt:.2f} s: Python loop over the batch?"
+      - id: b
+        prompt: |
+          Compute the discounted returns of a time-major rollout of `E` parallel environments, where episodes end and
+          restart inside the rollout.
+          - `rewards` (T, E) float: reward of step t in env e
+          - `dones` (T, E) bool: True if the episode ends after step t (step t+1 starts a new episode)
+          - `gamma` (float in [0, 1]); `last_value` (E,), dtype of `rewards`: estimated return after step T−1
+          - returns `discounted_returns(rewards, dones, gamma, last_value)` (T, E), dtype of `rewards`:
+            `G[t] = rewards[t] + γ · (1 − dones[t]) · G[t+1]`, with `G[T] = last_value`
+          - no Python loop over envs (a loop over T is fine); don't modify the inputs
+        setup: |
+          import torch
+        starter: |
+          def discounted_returns(rewards, dones, gamma, last_value):
+              raise NotImplementedError
+        solution: |
+          def discounted_returns(rewards, dones, gamma, last_value):
+              G = torch.empty_like(rewards)                    # (T, E)
+              notdone = (~dones).to(rewards.dtype)             # (T, E) 1 = episode continues
+              g = last_value                                   # (E,) G[T]
+              for t in range(rewards.shape[0] - 1, -1, -1):
+                  g = rewards[t] + gamma * notdone[t] * g      # (E,) reset where the episode ended
+                  G[t] = g
+              return G
+          # Follow-ups:
+          # Why (1 − done[t])? step t+1 belongs to a new episode: its rewards are not consequences of action t.
+          # Termination vs truncation (time limit)? terminated -> 0 after; truncated -> bootstrap with V(s_next),
+          #   treating a time limit as a terminal state biases the returns.
+        check: |
+          import time
+          import torch
+          from cardtest import against, rand_cases
+
+          def _ref(rewards, dones, gamma, last_value):
+              T, E = rewards.shape
+              out = [[0.0] * E for _ in range(T)]
+              for e in range(E):
+                  for t in range(T):
+                      g, k = 0.0, t
+                      while True:                               # forward sum to the end of the episode
+                          g += gamma ** (k - t) * rewards[k, e].item()
+                          if dones[k, e]:
+                              break
+                          k += 1
+                          if k == T:
+                              g += gamma ** (k - t) * last_value[e].item()
+                              break
+                      out[t][e] = g
+              return torch.tensor(out, dtype=rewards.dtype).reshape(T, E)
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, rtol=1e-5, atol=1e-5))
+
+          def _show(rewards, dones, gamma, last_value):
+              return (f"(rewards={[[round(v, 3) for v in row] for row in rewards.tolist()]}, "
+                      f"dones={dones.int().tolist()}, gamma={gamma}, last_value={[round(v, 3) for v in last_value.tolist()]})")
+
+          def _mk(rows, dn, gamma, lv, dtype=torch.float32):
+              return (torch.tensor(rows, dtype=dtype), torch.tensor(dn, dtype=torch.bool), gamma,
+                      torch.tensor(lv, dtype=dtype))
+
+          _edge = [
+              _mk([[1.], [1.], [1.]], [[0], [1], [0]], 0.5, [10.]),        # 1.5, 1, 6
+              _mk([[1.], [2.], [3.]], [[0], [0], [1]], 0.5, [100.]),       # last step done: last_value unused
+              _mk([[1.], [2.], [3.]], [[0], [0], [0]], 0.9, [5.]),         # no done: bootstrap through all
+              _mk([[1., 2.], [3., 4.]], [[1, 1], [1, 1]], 0.9, [9., 9.]),  # every step done: G = r
+              _mk([[1., 2.], [3., 4.]], [[0, 1], [0, 0]], 0.0, [9., 9.]),  # γ = 0
+              _mk([[1., 0., 2.], [0., 1., 0.], [2., 2., 2.], [1., 0., 3.]],
+                  [[0, 1, 0], [1, 0, 0], [0, 0, 1], [0, 1, 0]], 0.9, [1., -2., 3.]),
+              _mk([[4.]], [[0]], 0.99, [-1.], torch.float64),
+          ]
+
+          def _gen(r):
+              T, E = r.randint(1, 8), r.randint(1, 5)
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              dt = r.choice([torch.float32, torch.float64])
+              rew = torch.randn(T, E, generator=gg, dtype=dt)
+              dn = torch.rand(T, E, generator=gg) < r.choice([0.1, 0.3, 0.6])
+              lv = 3 * torch.randn(E, generator=gg, dtype=dt)
+              return (rew, dn, r.choice([0.0, 0.5, 0.9, 0.99, 1.0]), lv)
+
+          against(discounted_returns, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          a = _mk([[1., 2.], [3., 4.]], [[0, 1], [0, 0]], 0.9, [9., 9.])
+          b = tuple(x.clone() if isinstance(x, torch.Tensor) else x for x in a)
+          discounted_returns(*a)
+          assert all(torch.equal(x, y) for x, y in zip(a, b) if isinstance(x, torch.Tensor)), \
+              "discounted_returns modified its inputs"
+
+          # vectorized over envs: 50000 envs, 10 steps must be fast
+          gg = torch.Generator().manual_seed(1)
+          Rb, Db = torch.randn(10, 50000, generator=gg), torch.rand(10, 50000, generator=gg) < 0.2
+          t0 = time.perf_counter()
+          discounted_returns(Rb, Db, 0.9, torch.zeros(50000))
+          dt = time.perf_counter() - t0
+          assert dt < 0.5, f"T=10, E=50000 took {dt:.2f} s: Python loop over envs?"
+
+  - id: rl-reinforce.loss
+    name: REINFORCE loss and update
+    teach: |
+      Policy gradient: ∇J = E[Σ_t ∇log π(a_t|s_t) · G_t]. Minimize the surrogate L = −(1/n) Σ_{real steps} log π(a_t|s_t)·G_t
+      (n = number of real steps; G_t is a constant). log π(a_t|s_t) = `log_softmax(logits)` taken at index a_t.
+      Baseline: replace G_t by the advantage Â_t = (G_t − μ)/(σ + 1e-8), μ, σ = mean and std (unbiased=False) of G over
+      the batch's real steps. Batch-major padded tensors (B, T, ...), `mask` True on real steps.
+    cards:
+      - id: a
+        prompt: |
+          Compute the REINFORCE (Monte Carlo policy-gradient) loss of a padded batch of episodes.
+          - `policy`: a `Policy` (setup) mapping states (..., obs_dim) to logits (..., A)
+          - `states` (B, T, obs_dim) float; `actions` (B, T) int64 in [0, A); `rewards` (B, T) float; `gamma` (float)
+          - `mask` (B, T) bool: True on real steps (a prefix of each row; ≥ 1 real step in the batch); padded positions
+            hold arbitrary values (actions still in [0, A))
+          - returns `reinforce_loss(policy, states, actions, rewards, mask, gamma)` () scalar tensor, differentiable
+            w.r.t. `policy`'s parameters: `L = −(1/n) Σ_{real (b, t)} log π(actions[b, t] | states[b, t]) · G[b, t]`,
+            n = number of real steps, `G = reward_to_go(rewards, mask, gamma)` (setup), a constant
+          - padding must not change the value or the gradients
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+
+          class Policy(nn.Module):
+              """states (..., obs_dim) -> logits (..., n_actions)."""
+              def __init__(self, obs_dim, n_actions, hidden=16):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(obs_dim, hidden), nn.ReLU(), nn.Linear(hidden, n_actions))
+
+              def forward(self, s):
+                  return self.net(s)
+
+          def reward_to_go(rewards, mask, gamma):
+              """(B, T) -> (B, T): G[b, t] = Σ_{k ≥ t real} γ^(k−t) r[b, k], 0 on padding."""
+              r, G, g = rewards.masked_fill(~mask, 0.0), torch.zeros_like(rewards), 0.0
+              for t in range(r.shape[1] - 1, -1, -1):
+                  g = r[:, t] + gamma * g
+                  G[:, t] = g
+              return G
+        starter: |
+          def reinforce_loss(policy, states, actions, rewards, mask, gamma):
+              raise NotImplementedError
+        solution: |
+          def reinforce_loss(policy, states, actions, rewards, mask, gamma):
+              G = reward_to_go(rewards, mask, gamma)                                 # (B, T), no grad
+              logp = F.log_softmax(policy(states), dim=-1)                           # (B, T, A)
+              logp_a = logp.gather(-1, actions.unsqueeze(-1)).squeeze(-1)            # (B, T)
+              return -(logp_a * G)[mask].mean()                                      # () mean over real steps
+          # Follow-ups:
+          # Why log_softmax, not log(softmax)? softmax underflows to 0 for very negative logits -> log 0 = -inf
+          #   (and -inf · 0 = NaN on padding); log_softmax = x − logsumexp(x) is stable.
+          # Is L the expected return? No: only its gradient matters, it is the Monte Carlo estimate of −∇J.
+        check: |
+          import copy
+          import torch
+          from cardtest import rand_cases
+
+          def _ref(policy, states, actions, rewards, mask, gamma):
+              terms = []
+              for b in range(mask.shape[0]):
+                  n = int(mask[b].sum())
+                  for t in range(n):
+                      G = sum(gamma ** (k - t) * float(rewards[b, k]) for k in range(t, n))
+                      z = policy(states[b, t])                                       # (A,)
+                      terms.append(-(z[actions[b, t]] - torch.logsumexp(z, 0)) * G)
+              return torch.stack(terms).mean()
+
+          def _make(seed, B, T, obs, A, lens, gamma, scale=1.0):
+              g = torch.Generator().manual_seed(seed)
+              torch.manual_seed(seed)
+              pol = Policy(obs, A).double()
+              mask = torch.arange(T)[None, :] < torch.tensor(lens)[:, None]
+              states = torch.randn(B, T, obs, generator=g, dtype=torch.float64) * scale
+              states = torch.where(mask[..., None], states, 1e5 * torch.randn(B, T, obs, generator=g, dtype=torch.float64))
+              actions = torch.randint(A, (B, T), generator=g)
+              rewards = torch.randn(B, T, generator=g, dtype=torch.float64)
+              rewards = torch.where(mask, rewards, 1e3 + torch.rand(B, T, generator=g, dtype=torch.float64))
+              return pol, states, actions, rewards, mask, gamma
+
+          def _test(seed, B, T, obs, A, lens, gamma, scale=1.0):
+              pol, states, actions, rewards, mask, gamma = _make(seed, B, T, obs, A, lens, gamma, scale)
+              tag = f"(B={B}, T={T}, obs_dim={obs}, A={A}, lengths={lens}, gamma={gamma}, seed={seed})"
+              p1 = copy.deepcopy(pol)
+              ins = [x.clone() for x in (states, actions, rewards, mask)]
+              out = reinforce_loss(p1, *ins, gamma)
+              assert isinstance(out, torch.Tensor) and out.shape == (), \
+                  f"{tag}: expected a () scalar tensor, got {getattr(out, 'shape', type(out))}"
+              assert out.requires_grad, f"{tag}: the loss has no gradient path to the policy parameters"
+              assert all(torch.equal(x, y) for x, y in zip(ins, (states, actions, rewards, mask))), \
+                  f"{tag}: reinforce_loss modified its inputs"
+              p2 = copy.deepcopy(pol)
+              exp = _ref(p2, states, actions, rewards, mask, gamma)
+              assert torch.allclose(out.detach().double(), exp.detach(), rtol=1e-6, atol=1e-8), \
+                  f"{tag}: loss = {out.item()!r}, expected {exp.item()!r}"
+              out.backward()
+              exp.backward()
+              for (name, a), b in zip(p1.named_parameters(), p2.parameters()):
+                  assert a.grad is not None, f"{tag}: {name}.grad is None: no gradient reached the policy"
+                  assert torch.allclose(a.grad, b.grad, rtol=1e-6, atol=1e-8), \
+                      f"{tag}: wrong gradient for {name}: max abs diff {(a.grad - b.grad).abs().max().item():.3g}"
+
+          _test(0, 1, 3, 2, 2, [3], 0.9)                       # one full episode
+          _test(1, 3, 4, 3, 3, [4, 1, 2], 0.9)                 # padding (garbage states/rewards)
+          _test(2, 2, 3, 2, 4, [0, 3], 0.99)                   # an empty row
+          _test(3, 2, 2, 2, 2, [1, 1], 0.0)                    # γ = 0
+          _test(4, 2, 5, 3, 3, [5, 2], 1.0)                    # γ = 1
+          _test(5, 2, 3, 2, 3, [3, 2], 0.9, scale=300.0)       # very large logits on real steps
+
+          def _gen(r):
+              B, T = r.randint(1, 4), r.randint(1, 6)
+              lens = [r.randint(0, T) for _ in range(B)]
+              lens[r.randrange(B)] = r.randint(1, T)
+              return (r.randint(0, 10**6), B, T, r.randint(1, 4), r.randint(2, 5), lens,
+                      r.choice([0.0, 0.5, 0.9, 0.99, 1.0]))
+
+          for args in rand_cases(_gen, 200):
+              _test(*args)
+      - id: b
+        prompt: |
+          Do one REINFORCE update step, using normalized returns as the baseline.
+          - `policy`: a `Policy` (setup); `opt`: a torch optimizer over `policy.parameters()` (may hold stale gradients)
+          - `states` (B, T, obs_dim), `actions` (B, T) int64, `rewards` (B, T), `mask` (B, T) bool (True = real step,
+            prefix of each row, padding holds arbitrary values), `gamma`: as in `reinforce_loss`
+          - advantage `Â = (G − μ) / (σ + 1e-8)`, `G = reward_to_go(rewards, mask, gamma)` (setup), μ and σ = mean and std
+            (`unbiased=False`) of G over all real steps of the batch
+          - loss `L = −(1/n) Σ_{real (b, t)} log π(actions[b, t] | states[b, t]) · Â[b, t]`; compute its gradient and take
+            one `opt` step
+          - returns `reinforce_update(policy, opt, states, actions, rewards, mask, gamma)` (Python float): L before the step
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+
+          class Policy(nn.Module):
+              """states (..., obs_dim) -> logits (..., n_actions)."""
+              def __init__(self, obs_dim, n_actions, hidden=16):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(obs_dim, hidden), nn.ReLU(), nn.Linear(hidden, n_actions))
+
+              def forward(self, s):
+                  return self.net(s)
+
+          def reward_to_go(rewards, mask, gamma):
+              """(B, T) -> (B, T): G[b, t] = Σ_{k ≥ t real} γ^(k−t) r[b, k], 0 on padding."""
+              r, G, g = rewards.masked_fill(~mask, 0.0), torch.zeros_like(rewards), 0.0
+              for t in range(r.shape[1] - 1, -1, -1):
+                  g = r[:, t] + gamma * g
+                  G[:, t] = g
+              return G
+        starter: |
+          def reinforce_update(policy, opt, states, actions, rewards, mask, gamma):
+              raise NotImplementedError
+        solution: |
+          def reinforce_update(policy, opt, states, actions, rewards, mask, gamma):
+              G = reward_to_go(rewards, mask, gamma)                                 # (B, T)
+              g = G[mask]                                                            # (n,) real steps only
+              adv = (G - g.mean()) / (g.std(unbiased=False) + 1e-8)                  # (B, T), padding != 0
+              logp = F.log_softmax(policy(states), dim=-1)                           # (B, T, A)
+              logp_a = logp.gather(-1, actions.unsqueeze(-1)).squeeze(-1)            # (B, T)
+              loss = -(logp_a * adv)[mask].mean()                                    # ()
+              opt.zero_grad()
+              loss.backward()
+              opt.step()
+              return loss.item()
+          # Follow-ups:
+          # Why is a baseline unbiased? E_a[∇log π(a|s)·b] = b·Σ_a ∇π(a|s) = b·∇1 = 0 (b must not depend on a).
+          # Why normalize? lower variance and a step size independent of the reward scale; a learned V(s_t)
+          #   baseline (actor-critic) cuts variance further. The batch μ, σ use the sampled actions: tiny bias, accepted.
+        check: |
+          import copy
+          import torch
+          from cardtest import rand_cases
+
+          LR = 0.1
+
+          def _ref(policy, states, actions, rewards, mask, gamma):
+              Gs = {}
+              for b in range(mask.shape[0]):
+                  n = int(mask[b].sum())
+                  for t in range(n):
+                      Gs[(b, t)] = sum(gamma ** (k - t) * float(rewards[b, k]) for k in range(t, n))
+              vals = list(Gs.values())
+              mu = sum(vals) / len(vals)
+              sd = (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5
+              terms = []
+              for (b, t), G in Gs.items():
+                  z = policy(states[b, t])
+                  terms.append(-(z[actions[b, t]] - torch.logsumexp(z, 0)) * ((G - mu) / (sd + 1e-8)))
+              loss = torch.stack(terms).mean()
+              grads = torch.autograd.grad(loss, list(policy.parameters()))
+              with torch.no_grad():
+                  for p, gr in zip(policy.parameters(), grads):
+                      p -= LR * gr
+              return loss.item()
+
+          def _test(seed, B, T, obs, A, lens, gamma):
+              g = torch.Generator().manual_seed(seed)
+              torch.manual_seed(seed)
+              pol = Policy(obs, A).double()
+              mask = torch.arange(T)[None, :] < torch.tensor(lens)[:, None]
+              states = torch.randn(B, T, obs, generator=g, dtype=torch.float64)
+              states = torch.where(mask[..., None], states, 1e3 * torch.randn(B, T, obs, generator=g, dtype=torch.float64))
+              actions = torch.randint(A, (B, T), generator=g)
+              rewards = torch.randn(B, T, generator=g, dtype=torch.float64) * 2
+              rewards = torch.where(mask, rewards, 1e3 + torch.rand(B, T, generator=g, dtype=torch.float64))
+              tag = f"(B={B}, T={T}, obs_dim={obs}, A={A}, lengths={lens}, gamma={gamma}, seed={seed})"
+
+              p1 = copy.deepcopy(pol)
+              for p in p1.parameters():                                              # stale gradients
+                  p.grad = torch.randn(p.shape, generator=g, dtype=p.dtype)
+              opt = torch.optim.SGD(p1.parameters(), lr=LR)
+              ins = [x.clone() for x in (states, actions, rewards, mask)]
+              out = reinforce_update(p1, opt, *ins, gamma)
+              assert isinstance(out, float), f"{tag}: expected a Python float, got {type(out).__name__}"
+              assert all(torch.equal(x, y) for x, y in zip(ins, (states, actions, rewards, mask))), \
+                  f"{tag}: reinforce_update modified its inputs"
+              p2 = copy.deepcopy(pol)
+              exp = _ref(p2, states, actions, rewards, mask, gamma)
+              assert abs(out - exp) <= 1e-6 + 1e-6 * abs(exp), f"{tag}: returned loss {out!r}, expected {exp!r}"
+              for (name, a), b in zip(p1.named_parameters(), p2.parameters()):
+                  assert torch.allclose(a.detach(), b.detach(), rtol=1e-6, atol=1e-8), \
+                      (f"{tag}: {name} after the step is off by up to {(a.detach() - b.detach()).abs().max().item():.3g} "
+                       f"(lr={LR} SGD)")
+
+          _test(0, 1, 4, 2, 2, [4], 0.9)                       # one full episode
+          _test(1, 3, 4, 3, 3, [4, 1, 2], 0.9)                 # padding: μ, σ over real steps only
+          _test(2, 2, 3, 2, 3, [0, 1], 0.9)                    # one real step: σ = 0 -> Â = 0
+          _test(3, 2, 3, 2, 3, [2, 3], 0.0)                    # γ = 0
+          _test(4, 3, 5, 3, 4, [5, 3, 0], 1.0)                 # γ = 1, empty row
+
+          def _gen(r):
+              B, T = r.randint(1, 4), r.randint(1, 6)
+              lens = [r.randint(0, T) for _ in range(B)]
+              lens[r.randrange(B)] = r.randint(1, T)
+              return (r.randint(0, 10**6), B, T, r.randint(1, 4), r.randint(2, 5), lens,
+                      r.choice([0.0, 0.5, 0.9, 0.99, 1.0]))
+
+          for args in rand_cases(_gen, 200):
+              _test(*args)

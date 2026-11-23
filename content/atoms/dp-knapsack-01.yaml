@@ -1,0 +1,259 @@
+id: dp-knapsack-01
+title: 0/1 knapsack (subset sum)
+summary: "Each item used at most once: dp over capacity, take-or-skip, and in 1D iterate the capacity BACKWARDS."
+links:
+  - to: dp-1d
+    kind: prereq
+    note: "Take-or-skip per item, like house robber, but the second index is a capacity / target sum."
+  - to: py-sets
+    kind: uses
+    note: "Feasibility subset sum can be written as a growing set of reachable sums: sums |= {s + x for s in sums}."
+lesson: |
+  **Shape:** a list of items (numbers, weights with values) and a **capacity / target**.
+  Each item is either taken **once** or not at all.
+
+  **Recognition signals**
+  - "Choose a **subset** whose sum is exactly / at most T" → subset sum.
+  - "Partition the array into two parts with equal sum" → subset sum to `total / 2`.
+  - "Assign + or - to each number to reach `target`" → if `P` is the plus-set: `P - (total - P) = target`,
+    so count subsets with sum `(total + target) / 2`.
+  - "Max value with a weight limit, each item once" → classic knapsack.
+  - "Last stone weight II", "ones and zeroes" (two capacities) → same pattern.
+  - The target is small (≤ ~10^4) even though `2^n` subsets is huge: O(n · T) is "pseudo-polynomial".
+
+  **2D form (easiest to reason about)**
+
+  | Question | Answer |
+  |---|---|
+  | State | `dp[i][c]` = can we make sum `c` using the **first `i` items**? |
+  | Transition | skip item `i`: `dp[i-1][c]`; take it (if `w <= c`): `dp[i-1][c-w]` → `or` them |
+  | Base | `dp[0][0] = True` (empty set makes 0), `dp[0][c>0] = False` |
+  | Order | `i` ascending; any order of `c` (row `i` only reads row `i-1`) |
+  | Answer | `dp[n][T]` |
+
+  The same skeleton serves three questions, only the combine changes:
+
+  | Question | `dp[0]` | combine |
+  |---|---|---|
+  | feasibility | `True` | `dp[c] or dp[c - w]` |
+  | count subsets | `1` | `dp[c] + dp[c - w]` |
+  | max value | `0` | `max(dp[c], dp[c - w] + v)` |
+
+  **1D form: iterate capacity BACKWARDS.**
+
+  ```python
+  dp = [False] * (T + 1)
+  dp[0] = True
+  for w in nums:
+      for c in range(T, w - 1, -1):     # T down to w
+          dp[c] = dp[c] or dp[c - w]
+  answer = dp[T]
+  ```
+
+  Why backwards: while processing item `w`, `dp[c - w]` must still mean "**without** this item" (the old row).
+  Going down, `c - w < c` hasn't been updated yet in this round. Going **up**, `dp[c - w]` may already
+  include `w`, so `w` gets used twice. Trace `nums = [2]`, `T = 4` forwards: `dp[2] = True`, then
+  `dp[4] = dp[2] = True`, i.e. 2 + 2: wrong. That forwards loop *is* unbounded knapsack.
+
+  Top-down version (state = item index + remaining capacity):
+
+  ```python
+  from functools import cache
+
+  @cache
+  def can(i, rem):                       # using nums[i:], can we make rem?
+      if rem == 0: return True
+      if i == len(nums) or rem < 0: return False
+      return can(i + 1, rem - nums[i]) or can(i + 1, rem)
+  ```
+
+  **Set form** for feasibility, short and fast in Python:
+
+  ```python
+  sums = {0}
+  for x in nums:
+      sums |= {s + x for s in sums}      # the right side is built from the old set
+  ```
+
+  **Pitfalls**
+  - Forward capacity loop in 1D = items reused. 0/1 means **backwards**.
+  - Partition: if `total` is odd, answer `False` immediately.
+  - Target sum: if `(total + target)` is odd or `abs(target) > total`, there are 0 ways.
+  - Zeros in counting problems double the count (+0 and -0 are different assignments); the DP handles it if `dp[c] += dp[c - 0]` runs once per zero.
+
+  **Complexity:** O(n · T) time, O(T) space in 1D.
+drills:
+  - id: backwards-loop
+    prompt: |
+      Boolean subset sum, 1D. `dp[c]` = some subset of the items seen so far sums to `c`.
+      Write the **inner capacity loop** (backwards!) and the transition for item `w`.
+    setup: |
+      nums = [2, 3, 7]
+      T = 12
+    starter: |
+      dp = [False] * (T + 1)
+      dp[0] = True
+      for w in nums:
+          pass  # loop over c, then the transition
+    solution: |
+      dp = [False] * (T + 1)
+      dp[0] = True
+      for w in nums:
+          for c in range(T, w - 1, -1):
+              dp[c] = dp[c] or dp[c - w]
+    check: |
+      reach = [c for c in range(T + 1) if dp[c]]
+      assert not dp[4], f"dp[4] is True: item 2 was used twice (loop forwards?). reachable = {reach!r}"
+      assert reach == [0, 2, 3, 5, 7, 9, 10, 12], f"reachable = {reach!r}"
+  - id: count-subsets
+    prompt: |
+      Count the subsets of `nums` that sum to `T` (`dp[c]` = number of subsets with sum `c`).
+      Write the **transition line** inside the backwards loop. The skeleton puts `dp[T]` in `res`.
+    setup: |
+      nums = [1, 1, 2, 3]
+      T = 4
+    starter: |
+      dp = [0] * (T + 1)
+      dp[0] = 1
+      for w in nums:
+          for c in range(T, w - 1, -1):
+              pass
+      res = dp[T]
+    solution: |
+      dp = [0] * (T + 1)
+      dp[0] = 1
+      for w in nums:
+          for c in range(T, w - 1, -1):
+              dp[c] += dp[c - w]
+      res = dp[T]
+    check: |
+      assert res == 3, f"res = {res!r}  (1+3, 1+3, 1+1+2)"
+  - id: max-value
+    prompt: |
+      Classic knapsack: item `k` has weight `weights[k]` and value `values[k]`, capacity `W`.
+      `dp[c]` = best value with total weight ≤ `c`. Write the **transition line**. The skeleton puts `dp[W]` in `res`.
+    setup: |
+      weights = [1, 3, 4, 5]
+      values = [1, 4, 5, 7]
+      W = 7
+    starter: |
+      dp = [0] * (W + 1)
+      for w, v in zip(weights, values):
+          for c in range(W, w - 1, -1):
+              pass
+      res = dp[W]
+    solution: |
+      dp = [0] * (W + 1)
+      for w, v in zip(weights, values):
+          for c in range(W, w - 1, -1):
+              dp[c] = max(dp[c], dp[c - w] + v)
+      res = dp[W]
+    check: |
+      assert res == 9, f"res = {res!r}  (weights 3 + 4)"
+  - id: two-d-take-skip
+    prompt: |
+      2D subset sum. `dp[i][c]` = can the **first `i` items** make sum `c`. Write the transition:
+      skip item `i` (`w = nums[i-1]`), or take it if it fits. The skeleton puts `dp[n][T]` in `res`.
+    setup: |
+      nums = [1, 5, 11, 5]
+      n = len(nums)
+      T = 11
+    starter: |
+      dp = [[False] * (T + 1) for _ in range(n + 1)]
+      dp[0][0] = True
+      for i in range(1, n + 1):
+          w = nums[i - 1]
+          for c in range(T + 1):
+              pass
+      res = dp[n][T]
+    solution: |
+      dp = [[False] * (T + 1) for _ in range(n + 1)]
+      dp[0][0] = True
+      for i in range(1, n + 1):
+          w = nums[i - 1]
+          for c in range(T + 1):
+              dp[i][c] = dp[i - 1][c] or (c >= w and dp[i - 1][c - w])
+      res = dp[n][T]
+    check: |
+      assert res is True, f"res = {res!r}"
+      reach = [c for c in range(T + 1) if dp[n][c]]
+      assert reach == [0, 1, 5, 6, 10, 11], f"reachable with all items = {reach!r}"
+  - id: set-of-sums
+    prompt: |
+      Feasibility with a set: grow `sums` (all subset sums so far) for each `x` in `nums`, in one line inside the loop.
+    setup: |
+      nums = [3, 1, 4]
+    starter: |
+      sums = {0}
+      for x in nums:
+          pass
+    solution: |
+      sums = {0}
+      for x in nums:
+          sums |= {s + x for s in sums}
+    check: |
+      assert sorted(sums) == [0, 1, 3, 4, 5, 7, 8], f"sums = {sorted(sums)!r}"
+classics:
+  - id: partition-equal-subset-sum
+    title: Partition Equal Subset Sum
+    url: https://leetcode.com/problems/partition-equal-subset-sum/
+    difficulty: Medium
+    prompt: |
+      Given positive integers `nums`, return `True` if the array can be split into two subsets with equal sums.
+    starter: |
+      def canPartition(nums):
+          pass
+    hints:
+      - Two equal halves means one subset sums to exactly total / 2. If total is odd, it's impossible.
+      - "Subset sum to T = total // 2: dp[c] = some subset makes c; dp[0] = True."
+      - Each number is used at most once, so iterate c from T down to the number.
+    solution: |
+      def canPartition(nums):
+          total = sum(nums)
+          if total % 2:
+              return False
+          T = total // 2
+          dp = [False] * (T + 1)
+          dp[0] = True
+          for w in nums:
+              for c in range(T, w - 1, -1):
+                  dp[c] = dp[c] or dp[c - w]
+          return dp[T]
+    check: |
+      for nums, want in [([1, 5, 11, 5], True), ([1, 2, 3, 5], False), ([1], False),
+                         ([2, 2], True), ([1, 2, 5], False), ([2, 2, 3, 5], False), ([3, 3, 3, 4, 5], True)]:
+          got = canPartition(nums)
+          assert got == want, f"canPartition({nums!r}) = {got!r}, expected {want}"
+    takeaway: "Equal partition → subset sum to total/2; 0/1 items → 1D boolean dp with the capacity loop going backwards."
+  - id: target-sum
+    title: Target Sum
+    url: https://leetcode.com/problems/target-sum/
+    difficulty: Medium
+    prompt: |
+      Put `+` or `-` in front of each number of `nums` (non-negative integers). Return how many
+      assignments make the expression evaluate to `target`.
+    starter: |
+      def findTargetSumWays(nums, target):
+          pass
+    hints:
+      - "Call P the numbers with +, N those with -. P - N = target and P + N = total."
+      - "So P = (total + target) / 2: count subsets with that sum. If it's not a non-negative integer, the answer is 0."
+      - "Counting 0/1 knapsack: dp[0] = 1, dp[c] += dp[c - x], capacity loop backwards."
+    solution: |
+      def findTargetSumWays(nums, target):
+          total = sum(nums)
+          if abs(target) > total or (total + target) % 2:
+              return 0
+          P = (total + target) // 2
+          dp = [0] * (P + 1)
+          dp[0] = 1
+          for x in nums:
+              for c in range(P, x - 1, -1):
+                  dp[c] += dp[c - x]
+          return dp[P]
+    check: |
+      for nums, t, want in [([1, 1, 1, 1, 1], 3, 5), ([1], 1, 1), ([1], 2, 0), ([1, 2], -1, 1),
+                            ([1, 2], 5, 0), ([0, 0, 0, 0, 0, 0, 0, 0, 1], 1, 256), ([2, 3], 2, 0)]:
+          got = findTargetSumWays(nums, t)
+          assert got == want, f"findTargetSumWays({nums!r}, {t}) = {got!r}, expected {want}"
+    takeaway: "+/- assignments reduce to counting subsets with sum (total + target) / 2; check parity and range first."

@@ -1,0 +1,756 @@
+id: scratch-core
+title: "From scratch: core layers"
+intro: |
+  The classic "implement X in PyTorch without the built-in" questions: softmax and cross-entropy,
+  Linear, LayerNorm, BatchNorm, dropout, an Adam step and a hand-written backward. Each one is a
+  formula plus a few lines of tensor code, checked against the real PyTorch op.
+problems:
+  - Implement a numerically stable softmax and cross-entropy loss
+  - Write nn.Linear from scratch with proper initialization
+  - Implement LayerNorm / BatchNorm, and explain train vs eval for BatchNorm
+  - Implement dropout, and why we scale by 1/(1-p)
+  - Write one Adam / AdamW update step by hand
+  - Derive and code the gradient of linear regression without autograd
+atoms: []
+skills:
+  - id: scratch-core.softmax-ce
+    name: stable softmax & cross-entropy from logits
+    teach: |
+      ```python
+      # Softmax turns each row of raw scores ("logits") into probabilities (all > 0, row sums to 1):
+      #   softmax(x)_i = exp(x_i - m) / sum_j exp(x_j - m),   m = max_j x_j
+      #   (subtracting the row max m gives the same result but keeps exp from overflowing)
+      # x.amax(dim, keepdim=True): max along dim; that dim is kept with size 1 so it broadcasts against x
+      x = torch.tensor([[1., 3.], [0., 0.]])          # (N, C) = (2, 2): N rows, C classes
+      m = x.amax(-1, keepdim=True)                    # (2, 1): [[3.], [0.]]
+      e = (x - m).exp()                               # (2, 2)
+      p = e / e.sum(-1, keepdim=True)                 # (2, 2): [[0.1192, 0.8808], [0.5, 0.5]]
+      # Cross-entropy is the mean over rows of -log(probability of the correct class y_i), computed from logits:
+      #   CE = mean_i [ logsumexp(x_i) - x_i[y_i] ]
+      # x.logsumexp(dim): log(sum(exp(x))) along dim, computed stably; (N, C) -> (N,)
+      # x[torch.arange(N), y]: for each row i picks x[i, y[i]]; y: (N,) int64 -> (N,)
+      y = torch.tensor([1, 0])                        # (N,) correct class of each row
+      ce = (x.logsumexp(-1) - x[torch.arange(2), y]).mean()   # (2,) - (2,) -> scalar: tensor(0.4100)
+      ```
+      Pitfall: `-log(softmax(x)[y])` gives `inf` when the target logit is far below the max; use logsumexp.
+    cards:
+      - id: a
+        prompt: |
+          **Write** `softmax(x)`:
+          - `x`: float tensor of any shape; softmax is taken over the **last** dim
+          - **Returns**: same shape as `x`; every last-dim slice is positive and sums to 1
+          - Must be stable: subtract the max of each slice before `exp`
+
+          **Write** `cross_entropy(logits, y)`:
+          - `logits`: (N, C) float scores; `y`: (N,) int64 class indices in `[0, C)`
+          - **Returns**: scalar (0-dim) tensor = mean over the N rows of `-log softmax(logits)[i, y[i]]`
+
+          - **Don't use**: `F.softmax`, `F.log_softmax`, `torch.log_softmax`, `F.cross_entropy`
+          - **Checked on**: the setup's (4, 5) `logits` vs `F.softmax` / `F.cross_entropy`; huge logits
+            `[[1000, 1001, 1002]]`; logits `[[0, 200]]` with target 0 (loss must be 200, not `inf`)
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          logits = torch.randn(4, 5)
+          y = torch.tensor([1, 0, 4, 2])
+        starter: |
+          def softmax(x):
+              ...
+
+          def cross_entropy(logits, y):
+              ...
+        solution: |
+          def softmax(x):
+              z = x - x.amax(-1, keepdim=True)
+              e = z.exp()
+              return e / e.sum(-1, keepdim=True)
+
+          def cross_entropy(logits, y):
+              n = logits.shape[0]
+              return (logits.logsumexp(-1) - logits[torch.arange(n), y]).mean()
+        check: |
+          p = softmax(logits)
+          assert torch.is_tensor(p), f"softmax returned {p!r}"
+          assert torch.allclose(p, F.softmax(logits, -1), atol=1e-5), f"softmax(logits)[0] = {p[0]}"
+          big = torch.tensor([[1000., 1001., 1002.]])
+          pb = softmax(big)
+          assert torch.allclose(pb, F.softmax(big, -1), atol=1e-5), f"softmax({big.tolist()}) = {pb} (subtract the max)"
+          loss = cross_entropy(logits, y)
+          assert torch.is_tensor(loss) and loss.dim() == 0, f"cross_entropy returned {loss!r}, expected a scalar tensor"
+          ref = F.cross_entropy(logits, y)
+          assert torch.allclose(loss, ref, atol=1e-5), f"loss = {loss.item():.5f}, F.cross_entropy = {ref.item():.5f}"
+          far = torch.tensor([[0., 200.]])
+          lf = cross_entropy(far, torch.tensor([0]))
+          assert torch.allclose(lf, torch.tensor(200.), atol=1e-3), f"cross_entropy([[0, 200]], [0]) = {lf} (expected 200, use logsumexp)"
+      - id: b
+        prompt: |
+          **Write** `lm_loss(logits, targets, ignore_index=-100)`, a language-model loss with padding:
+          - `logits`: (B, T, V) float: scores over V vocabulary tokens at each of the B×T positions
+          - `targets`: (B, T) int64: the correct token at each position, or `ignore_index` at padding positions
+          - **Returns**: scalar tensor = cross-entropy averaged over the positions whose target `!= ignore_index` only
+          - **Don't use**: `F.cross_entropy`, `F.log_softmax`, `F.nll_loss`
+          - **Checked on**: the setup's (2, 4, 6) `logits` with `-100` padding, and the same logits with `ignore_index=0`
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          logits = torch.randn(2, 4, 6)
+          targets = torch.tensor([[1, 5, 2, -100], [3, -100, -100, -100]])
+        starter: |
+          def lm_loss(logits, targets, ignore_index=-100):
+              ...
+        solution: |
+          def lm_loss(logits, targets, ignore_index=-100):
+              logits = logits.reshape(-1, logits.shape[-1])
+              targets = targets.reshape(-1)
+              keep = targets != ignore_index
+              logits, targets = logits[keep], targets[keep]
+              n = targets.shape[0]
+              return (logits.logsumexp(-1) - logits[torch.arange(n), targets]).mean()
+        check: |
+          loss = lm_loss(logits, targets)
+          assert torch.is_tensor(loss) and loss.dim() == 0, f"lm_loss returned {loss!r}, expected a scalar tensor"
+          ref = F.cross_entropy(logits.reshape(-1, 6), targets.reshape(-1), ignore_index=-100)
+          assert torch.allclose(loss, ref, atol=1e-5), f"loss = {loss.item():.5f}, expected {ref.item():.5f}"
+          t0 = torch.tensor([[1, 0, 2, 0], [3, 4, 0, 0]])
+          l0 = lm_loss(logits, t0, ignore_index=0)
+          r0 = F.cross_entropy(logits.reshape(-1, 6), t0.reshape(-1), ignore_index=0)
+          assert torch.allclose(l0, r0, atol=1e-5), f"with ignore_index=0: loss = {l0.item():.5f}, expected {r0.item():.5f}"
+
+  - id: scratch-core.linear
+    name: nn.Linear from scratch
+    teach: |
+      ```python
+      # A linear layer maps each input vector of size in_f to a vector of size out_f:
+      #   y = x @ W.T + b       x: (..., in_f), W: (out_f, in_f), b: (out_f,) -> y: (..., out_f)
+      # nn.Parameter(t): wraps tensor t; assigned as self.<name> in a Module, it is registered
+      #   (listed by .parameters(), so the optimizer trains it; requires_grad=True)
+      # torch.empty(*shape): new float tensor of that shape holding garbage values, to be filled right after
+      self.weight = nn.Parameter(torch.empty(out_f, in_f))     # (out_f, in_f)
+      self.bias = nn.Parameter(torch.empty(out_f))             # (out_f,)
+      # nn.init.uniform_(t, a, b): fills t in place with values drawn uniformly from [a, b]; returns t
+      # PyTorch's default init for Linear: weight and bias uniform in [-k, k], k = 1/sqrt(in_f)
+      k = 1 / math.sqrt(in_f)
+      nn.init.uniform_(self.weight, -k, k)
+      y = x @ self.weight.T + self.bias      # (B, in_f) @ (in_f, out_f) + (out_f,) -> (B, out_f)
+      ```
+      Pitfall: a plain tensor attribute (`self.weight = torch.randn(...)`) is not registered, so the optimizer never updates it.
+    cards:
+      - id: a
+        prompt: |
+          **Write** the module `MyLinear(in_f, out_f)`:
+          - Parameters: `weight` (out_f, in_f) and `bias` (out_f,), both initialised uniformly in `[-1/sqrt(in_f), 1/sqrt(in_f)]`
+          - `forward(x)`: `x` is (..., in_f) float, with any number of leading dims
+          - **Returns**: (..., out_f) = `x @ weight.T + bias`
+          - **Don't use**: `nn.Linear`, `F.linear`
+          - **Checked on**: `MyLinear(16, 3)`: parameter names and shapes, init range, and the output on a (2, 5, 16) input vs `F.linear`
+        setup: |
+          import math
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+        starter: |
+          class MyLinear(nn.Module):
+              def __init__(self, in_f, out_f):
+                  super().__init__()
+                  ...
+
+              def forward(self, x):
+                  ...
+        solution: |
+          class MyLinear(nn.Module):
+              def __init__(self, in_f, out_f):
+                  super().__init__()
+                  k = 1 / math.sqrt(in_f)
+                  self.weight = nn.Parameter(torch.empty(out_f, in_f))
+                  self.bias = nn.Parameter(torch.empty(out_f))
+                  nn.init.uniform_(self.weight, -k, k)
+                  nn.init.uniform_(self.bias, -k, k)
+
+              def forward(self, x):
+                  return x @ self.weight.T + self.bias
+        check: |
+          torch.manual_seed(0)
+          m = MyLinear(16, 3)
+          names = sorted(n for n, _ in m.named_parameters())
+          assert names == ["bias", "weight"], f"registered parameters = {names}"
+          assert m.weight.shape == (3, 16) and m.bias.shape == (3,), f"weight {tuple(m.weight.shape)}, bias {tuple(m.bias.shape)}"
+          k = 1 / math.sqrt(16)
+          wmax, bmax = m.weight.abs().max().item(), m.bias.abs().max().item()
+          assert wmax <= k + 1e-6 and bmax <= k + 1e-6, f"max |weight| = {wmax:.3f}, max |bias| = {bmax:.3f}, bound {k:.3f}"
+          assert m.weight.std().item() > 0.05, f"weight std = {m.weight.std().item():.4f}: weights not initialized"
+          x = torch.randn(2, 5, 16)
+          out = m(x)
+          assert torch.is_tensor(out) and out.shape == (2, 5, 3), f"out = {out if not torch.is_tensor(out) else tuple(out.shape)}"
+          ref = F.linear(x, m.weight, m.bias)
+          assert torch.allclose(out, ref, atol=1e-5), f"out[0, 0] = {out[0, 0]}, expected {ref[0, 0]}"
+      - id: b
+        prompt: |
+          **Write** the module `LowRankLinear(in_f, out_f, r)`: a linear layer whose (out_f, in_f) weight is the
+          product `U @ V` of two thin matrices (rank `r`, fewer parameters):
+          - Parameters: `U` (out_f, r), uniform in `[-1/sqrt(r), 1/sqrt(r)]`; `V` (r, in_f), uniform in
+            `[-1/sqrt(in_f), 1/sqrt(in_f)]`; `bias` (out_f,), same range as `V`
+          - `forward(x)`: `x` is (..., in_f) float
+          - **Returns**: (..., out_f) = `x @ (U @ V).T + bias`
+          - **Don't use**: `nn.Linear`, `F.linear`
+          - **Checked on**: `LowRankLinear(64, 8, 4)`: parameter names and shapes, init ranges, and the output on a (3, 64) input
+        setup: |
+          import math
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+        starter: |
+          class LowRankLinear(nn.Module):
+              def __init__(self, in_f, out_f, r):
+                  super().__init__()
+                  ...
+
+              def forward(self, x):
+                  ...
+        solution: |
+          class LowRankLinear(nn.Module):
+              def __init__(self, in_f, out_f, r):
+                  super().__init__()
+                  self.U = nn.Parameter(torch.empty(out_f, r))
+                  self.V = nn.Parameter(torch.empty(r, in_f))
+                  self.bias = nn.Parameter(torch.empty(out_f))
+                  nn.init.uniform_(self.U, -1 / math.sqrt(r), 1 / math.sqrt(r))
+                  nn.init.uniform_(self.V, -1 / math.sqrt(in_f), 1 / math.sqrt(in_f))
+                  nn.init.uniform_(self.bias, -1 / math.sqrt(in_f), 1 / math.sqrt(in_f))
+
+              def forward(self, x):
+                  return (x @ self.V.T) @ self.U.T + self.bias
+        check: |
+          torch.manual_seed(0)
+          m = LowRankLinear(64, 8, 4)
+          names = sorted(n for n, _ in m.named_parameters())
+          assert names == ["U", "V", "bias"], f"registered parameters = {names}"
+          assert m.U.shape == (8, 4) and m.V.shape == (4, 64) and m.bias.shape == (8,), f"U {tuple(m.U.shape)}, V {tuple(m.V.shape)}, bias {tuple(m.bias.shape)}"
+          assert m.U.abs().max() <= 0.5 + 1e-6 and m.U.std() > 0.1, f"U range/std off: max {m.U.abs().max().item():.3f}, std {m.U.std().item():.3f}"
+          assert m.V.abs().max() <= 0.125 + 1e-6 and m.V.std() > 0.03, f"V range/std off: max {m.V.abs().max().item():.3f}, std {m.V.std().item():.3f}"
+          x = torch.randn(3, 64)
+          out = m(x)
+          assert torch.is_tensor(out) and out.shape == (3, 8), f"out = {out if not torch.is_tensor(out) else tuple(out.shape)}"
+          ref = F.linear(x, m.U @ m.V, m.bias)
+          assert torch.allclose(out, ref, atol=1e-5), f"out[0] = {out[0]}, expected {ref[0]}"
+
+  - id: scratch-core.layernorm
+    name: LayerNorm from scratch
+    teach: |
+      ```python
+      # LayerNorm normalises each row (the last dim) to mean 0 and variance 1, then rescales:
+      #   y = (x - mean) / sqrt(var + eps) * gamma + beta      mean/var over the LAST dim, var biased (divide by D)
+      # x: (N, D) float, gamma/beta: (D,) learned scale/shift -> y: (N, D)
+      # x.var(dim, keepdim=True, unbiased=False): variance along dim, dividing by D (biased);
+      #   the default unbiased=True divides by D-1
+      torch.tensor([1., 3.]).var(0, unbiased=False)        # tensor(1.)   (default unbiased: tensor(2.))
+      mean = x.mean(-1, keepdim=True)                      # (N, 1)
+      var = x.var(-1, keepdim=True, unbiased=False)        # (N, 1)
+      y = (x - mean) / torch.sqrt(var + eps) * gamma + beta   # (N, D)
+      ```
+      Pitfall: `x.var(-1)` alone is unbiased (divides by D-1) and will not match `F.layer_norm`.
+    cards:
+      - id: a
+        prompt: |
+          **Write** `layer_norm(x, gamma, beta, eps=1e-5)`:
+          - `x`: (..., D) float tensor, any number of leading dims; `gamma`, `beta`: (D,)
+          - **Returns**: same shape as `x`; each last-dim vector normalised over its D values (biased variance), then `* gamma + beta`
+          - **Don't use**: `F.layer_norm`, `nn.LayerNorm`
+          - **Checked on**: the setup's (2, 3, 8) `x` vs `F.layer_norm`, and a (4, 8) input with `eps=0.1`
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          x = torch.randn(2, 3, 8) * 3 + 1
+          gamma = torch.randn(8)
+          beta = torch.randn(8)
+        starter: |
+          def layer_norm(x, gamma, beta, eps=1e-5):
+              ...
+        solution: |
+          def layer_norm(x, gamma, beta, eps=1e-5):
+              mu = x.mean(-1, keepdim=True)
+              var = x.var(-1, unbiased=False, keepdim=True)
+              return (x - mu) / torch.sqrt(var + eps) * gamma + beta
+        check: |
+          y = layer_norm(x, gamma, beta)
+          assert torch.is_tensor(y) and y.shape == x.shape, f"y = {y if not torch.is_tensor(y) else tuple(y.shape)}"
+          ref = F.layer_norm(x, (8,), gamma, beta, 1e-5)
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0] = {y[0, 0]}, expected {ref[0, 0]}"
+          small = torch.randn(4, 8) * 0.1
+          y2 = layer_norm(small, gamma, beta, eps=0.1)
+          r2 = F.layer_norm(small, (8,), gamma, beta, 0.1)
+          assert torch.allclose(y2, r2, atol=1e-5), f"with eps=0.1: y[0] = {y2[0]}, expected {r2[0]}"
+      - id: b
+        prompt: |
+          **Write** the module `MyLayerNorm(d, eps=1e-5)`:
+          - Parameters: `weight` (d,) initialised to ones (the gamma), `bias` (d,) initialised to zeros (the beta)
+          - `forward(x)`: `x` is (..., d) float
+          - **Returns**: same shape as `x`: layer norm over the last dim, then `* weight + bias`
+          - **Don't use**: `nn.LayerNorm`, `F.layer_norm`
+          - **Checked on**: `MyLayerNorm(6)`: parameter names and init, then random weight/bias on a (2, 4, 6) input vs `F.layer_norm`
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+        starter: |
+          class MyLayerNorm(nn.Module):
+              def __init__(self, d, eps=1e-5):
+                  super().__init__()
+                  ...
+
+              def forward(self, x):
+                  ...
+        solution: |
+          class MyLayerNorm(nn.Module):
+              def __init__(self, d, eps=1e-5):
+                  super().__init__()
+                  self.eps = eps
+                  self.weight = nn.Parameter(torch.ones(d))
+                  self.bias = nn.Parameter(torch.zeros(d))
+
+              def forward(self, x):
+                  mu = x.mean(-1, keepdim=True)
+                  var = x.var(-1, keepdim=True, unbiased=False)
+                  return (x - mu) / torch.sqrt(var + self.eps) * self.weight + self.bias
+        check: |
+          m = MyLayerNorm(6)
+          names = sorted(n for n, _ in m.named_parameters())
+          assert names == ["bias", "weight"], f"registered parameters = {names}"
+          assert torch.all(m.weight == 1) and torch.all(m.bias == 0), f"init weight = {m.weight}, bias = {m.bias}"
+          with torch.no_grad():
+              m.weight.copy_(torch.randn(6))
+              m.bias.copy_(torch.randn(6))
+          x = torch.randn(2, 4, 6) * 2 + 3
+          y = m(x)
+          assert torch.is_tensor(y) and y.shape == x.shape, f"y = {y if not torch.is_tensor(y) else tuple(y.shape)}"
+          ref = F.layer_norm(x, (6,), m.weight, m.bias, 1e-5)
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0] = {y[0, 0]}, expected {ref[0, 0]}"
+
+  - id: scratch-core.batchnorm
+    name: BatchNorm from scratch (train vs eval)
+    teach: |
+      ```python
+      # BatchNorm normalises each feature (column / channel) with statistics taken over the BATCH, then rescales.
+      # Train mode: y = (x - mean_B) / sqrt(var_B + eps) * weight + bias     mean_B, var_B over the N rows, var biased
+      # x: (N, C) float, weight/bias: (C,) -> y: (N, C)
+      x = torch.tensor([[1., 10.], [3., 30.]])             # (N, C) = (2, 2)
+      mean, var = x.mean(0), x.var(0, unbiased=False)      # (C,) each: [2., 20.] and [1., 100.]
+      # Train mode also updates running averages of the stats (momentum = 0.1; start: running_mean 0, running_var 1):
+      #   running = (1 - momentum) * running + momentum * batch_stat
+      # Eval mode: same formula as train, with running_mean / running_var instead of mean_B / var_B (no update)
+      # self.register_buffer(name, t): stores tensor t as self.<name>; it is module state (saved in state_dict,
+      #   moved by .to()) but NOT a Parameter, so the optimizer ignores it
+      self.register_buffer("running_mean", torch.zeros(C))  # (C,)
+      # self.training: bool, True after m.train() (the default), False after m.eval()
+      ```
+      Pitfall: running_var is updated with the **unbiased** batch var (`x.var(0)`, divides by N-1), the output uses the biased one.
+    cards:
+      - id: a
+        prompt: |
+          **Write** the module `MyBatchNorm1d(C, eps=1e-5, momentum=0.1)` for input `x` of shape (N, C):
+          - Parameters: `weight` (C,) ones, `bias` (C,) zeros
+          - Buffers: `running_mean` (C,) zeros, `running_var` (C,) ones
+          - Train mode (`self.training` True): normalise each column with the batch mean and **biased** var, then
+            update `running = (1 - momentum) * running + momentum * batch_stat` (the **unbiased** var for `running_var`)
+          - Eval mode: normalise with `running_mean` / `running_var`, no update
+          - **Returns**: (N, C) = normalised `x * weight + bias`
+          - **Don't use**: `nn.BatchNorm1d`, `F.batch_norm`
+          - **Checked on**: parameter and buffer names; 2 train steps on (8, 3) inputs (outputs and running stats
+            vs `nn.BatchNorm1d`), then one eval step
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+        starter: |
+          class MyBatchNorm1d(nn.Module):
+              def __init__(self, C, eps=1e-5, momentum=0.1):
+                  super().__init__()
+                  ...
+
+              def forward(self, x):
+                  ...
+        solution: |
+          class MyBatchNorm1d(nn.Module):
+              def __init__(self, C, eps=1e-5, momentum=0.1):
+                  super().__init__()
+                  self.eps, self.momentum = eps, momentum
+                  self.weight = nn.Parameter(torch.ones(C))
+                  self.bias = nn.Parameter(torch.zeros(C))
+                  self.register_buffer("running_mean", torch.zeros(C))
+                  self.register_buffer("running_var", torch.ones(C))
+
+              def forward(self, x):
+                  if self.training:
+                      mean, var = x.mean(0), x.var(0, unbiased=False)
+                      m = self.momentum
+                      self.running_mean = (1 - m) * self.running_mean + m * mean.detach()
+                      self.running_var = (1 - m) * self.running_var + m * x.var(0).detach()
+                  else:
+                      mean, var = self.running_mean, self.running_var
+                  return (x - mean) / torch.sqrt(var + self.eps) * self.weight + self.bias
+        check: |
+          mine, ref = MyBatchNorm1d(3), nn.BatchNorm1d(3)
+          assert sorted(n for n, _ in mine.named_parameters()) == ["bias", "weight"], f"parameters = {[n for n, _ in mine.named_parameters()]}"
+          bufs = sorted(n for n, _ in mine.named_buffers())
+          assert bufs == ["running_mean", "running_var"], f"buffers = {bufs}"
+          with torch.no_grad():
+              w, b = torch.randn(3), torch.randn(3)
+              mine.weight.copy_(w); mine.bias.copy_(b)
+              ref.weight.copy_(w); ref.bias.copy_(b)
+          for step in range(2):
+              x = torch.randn(8, 3) * 2 + 5
+              y, r = mine(x), ref(x)
+              assert torch.is_tensor(y), f"train forward returned {y!r}"
+              assert torch.allclose(y, r, atol=1e-5), f"train step {step}: y[0] = {y[0]}, expected {r[0]}"
+          assert torch.allclose(mine.running_mean, ref.running_mean, atol=1e-5), f"running_mean = {mine.running_mean}, expected {ref.running_mean}"
+          assert torch.allclose(mine.running_var, ref.running_var, atol=1e-5), f"running_var = {mine.running_var}, expected {ref.running_var}"
+          mine.eval(); ref.eval()
+          x = torch.randn(4, 3) * 2 + 5
+          y, r = mine(x), ref(x)
+          assert torch.allclose(y, r, atol=1e-5), f"eval: y[0] = {y[0]}, expected {r[0]}"
+      - id: b
+        prompt: |
+          **Write** `batch_norm_2d(x, running_mean, running_var, weight, bias, training, momentum=0.1, eps=1e-5)` for images:
+          - `x`: (N, C, H, W) float; `running_mean`, `running_var`, `weight`, `bias`: (C,); `training`: bool
+          - Stats are per channel `c`, over all N×H×W values of that channel (dims `(0, 2, 3)`)
+          - If `training`: normalise with the batch mean / biased var, and update `running_mean` / `running_var`
+            **in place** with the BatchNorm rule (unbiased var for `running_var`); `t.copy_(new)` overwrites `t`'s values in place
+          - Else: normalise with `running_mean` / `running_var`
+          - **Returns**: `y` (N, C, H, W) = normalised `x * weight + bias` (per channel)
+          - **Don't use**: `F.batch_norm`, `nn.BatchNorm2d`
+          - **Checked on**: a (4, 3, 5, 5) train call (output and both running stats vs `F.batch_norm`), then an eval call
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+        starter: |
+          def batch_norm_2d(x, running_mean, running_var, weight, bias, training, momentum=0.1, eps=1e-5):
+              ...
+        solution: |
+          def batch_norm_2d(x, running_mean, running_var, weight, bias, training, momentum=0.1, eps=1e-5):
+              dims = (0, 2, 3)
+              if training:
+                  mean, var = x.mean(dims), x.var(dims, unbiased=False)
+                  running_mean.copy_((1 - momentum) * running_mean + momentum * mean)
+                  running_var.copy_((1 - momentum) * running_var + momentum * x.var(dims))
+              else:
+                  mean, var = running_mean, running_var
+              shape = (1, -1, 1, 1)
+              return (x - mean.view(shape)) / torch.sqrt(var.view(shape) + eps) * weight.view(shape) + bias.view(shape)
+        check: |
+          w, b = torch.randn(3), torch.randn(3)
+          rm, rv = torch.zeros(3), torch.ones(3)
+          rm_ref, rv_ref = torch.zeros(3), torch.ones(3)
+          x = torch.randn(4, 3, 5, 5) * 2 + 1
+          y = batch_norm_2d(x, rm, rv, w, b, training=True)
+          r = F.batch_norm(x, rm_ref, rv_ref, w, b, training=True, momentum=0.1, eps=1e-5)
+          assert torch.is_tensor(y) and y.shape == x.shape, f"y = {y if not torch.is_tensor(y) else tuple(y.shape)}"
+          assert torch.allclose(y, r, atol=1e-5), f"train: y[0, :, 0, 0] = {y[0, :, 0, 0]}, expected {r[0, :, 0, 0]}"
+          assert torch.allclose(rm, rm_ref, atol=1e-5), f"running_mean = {rm}, expected {rm_ref}"
+          assert torch.allclose(rv, rv_ref, atol=1e-5), f"running_var = {rv}, expected {rv_ref}"
+          x2 = torch.randn(2, 3, 5, 5)
+          y2 = batch_norm_2d(x2, rm, rv, w, b, training=False)
+          r2 = F.batch_norm(x2, rm_ref, rv_ref, w, b, training=False)
+          assert torch.allclose(y2, r2, atol=1e-5), f"eval: y[0, :, 0, 0] = {y2[0, :, 0, 0]}, expected {r2[0, :, 0, 0]}"
+
+  - id: scratch-core.dropout
+    name: inverted dropout from scratch
+    teach: |
+      ```python
+      # Dropout, in training only, zeroes each entry independently with probability p and multiplies the kept
+      # entries by 1/(1-p), so each output's expected value equals the input ("inverted" dropout). Eval: y = x.
+      #   y = x * mask / (1 - p),   mask = 1 with probability 1-p, else 0       x: any shape -> y: same shape
+      # torch.rand_like(x): new float tensor with x's shape, entries uniform in [0, 1)
+      x, p = torch.ones(2, 4), 0.5                    # (2, 4)
+      mask = torch.rand_like(x) >= p                  # (2, 4) bool, True (= keep) with probability 1-p
+      y = x * mask / (1 - p)                          # (2, 4), e.g. [[0., 2., 0., 0.], [0., 2., 0., 2.]]
+      ```
+      Pitfall: the scaling happens at **train** time ("inverted"), so eval is the plain identity.
+    cards:
+      - id: a
+        prompt: |
+          **Write** `dropout(x, p, training)`:
+          - `x`: float tensor of any shape; `p`: float in `[0, 1)`, the drop probability; `training`: bool
+          - **Returns**: same shape as `x`. If `training`: each entry is 0 with probability `p`, else `x / (1 - p)`.
+            If not `training`: `x` unchanged
+          - **Don't use**: `F.dropout`, `nn.Dropout`
+          - **Checked on**: the setup's (1000, 100) `x` with `p=0.3`: eval returns `x`; kept values equal `x / 0.7`;
+            fraction zeroed ≈ 0.3 (±0.02); mean of `y` ≈ mean of `x`
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          x = torch.randn(1000, 100) + 2
+        starter: |
+          def dropout(x, p, training):
+              ...
+        solution: |
+          def dropout(x, p, training):
+              if not training:
+                  return x
+              mask = torch.rand_like(x) >= p
+              return x * mask / (1 - p)
+        check: |
+          y = dropout(x, 0.3, training=False)
+          assert torch.is_tensor(y) and torch.equal(y, x), "eval mode must return x unchanged"
+          y = dropout(x, 0.3, training=True)
+          assert torch.is_tensor(y) and y.shape == x.shape, f"y = {y if not torch.is_tensor(y) else tuple(y.shape)}"
+          kept = y != 0
+          assert torch.allclose(y[kept], x[kept] / 0.7, atol=1e-5), "kept values must be x / (1 - p)"
+          frac = 1 - kept.float().mean().item()
+          assert abs(frac - 0.3) < 0.02, f"fraction zeroed = {frac:.3f}, expected ~0.3"
+          assert abs(y.mean().item() - x.mean().item()) < 0.05, f"mean(y) = {y.mean().item():.3f}, mean(x) = {x.mean().item():.3f}"
+      - id: b
+        prompt: |
+          **Write** `channel_dropout(x, p, training)`, dropout of **whole channels**:
+          - `x`: (N, C, H, W) float; `p`: float drop probability; `training`: bool
+          - **Returns**: same shape. If `training`: each (H, W) map `x[n, c]` is, as a whole, all zeros with
+            probability `p`, else `x[n, c] / (1 - p)`. If not `training`: `x` unchanged
+          - **Don't use**: `F.dropout2d`, `nn.Dropout2d`, `F.dropout`
+          - **Checked on**: the setup's (64, 32, 2, 2) `x` with `p=0.5`: eval returns `x`; every map is all-zero or
+            fully scaled; fraction of maps dropped ≈ 0.5 (±0.05)
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          x = torch.randn(64, 32, 2, 2) + 2
+        starter: |
+          def channel_dropout(x, p, training):
+              ...
+        solution: |
+          def channel_dropout(x, p, training):
+              if not training:
+                  return x
+              N, C = x.shape[:2]
+              mask = torch.rand(N, C, 1, 1) >= p
+              return x * mask / (1 - p)
+        check: |
+          y = channel_dropout(x, 0.5, training=False)
+          assert torch.is_tensor(y) and torch.equal(y, x), "eval mode must return x unchanged"
+          y = channel_dropout(x, 0.5, training=True)
+          assert torch.is_tensor(y) and y.shape == x.shape, f"y = {y if not torch.is_tensor(y) else tuple(y.shape)}"
+          dropped = (y == 0).flatten(2).all(-1)
+          kept = torch.isclose(y, x / 0.5, atol=1e-5).flatten(2).all(-1)
+          assert torch.all(dropped | kept), "some channel is partly dropped: drop whole (n, c) maps"
+          frac = dropped.float().mean().item()
+          assert abs(frac - 0.5) < 0.05, f"fraction of channels dropped = {frac:.3f}, expected ~0.5"
+
+  - id: scratch-core.adam-step
+    name: Adam / AdamW update by hand
+    teach: |
+      ```python
+      # Adam moves a parameter p against its gradient g, scaled per entry by running averages of g (m) and of g**2 (v):
+      #   m = b1*m + (1-b1)*g          v = b2*v + (1-b2)*g**2        m, v start at 0 (usually b1=0.9, b2=0.999)
+      #   m_hat = m / (1 - b1**t)      v_hat = v / (1 - b2**t)       bias correction (undoes the start at 0); t = step number, from 1
+      #   p = p - lr * m_hat / (sqrt(v_hat) + eps)                    all elementwise
+      # AdamW = Adam + weight decay applied directly to p (not added to g), before the step: p = p - lr * wd * p
+      # p, g, m, v: same shape, e.g. (D,); t: int
+      p = p - lr * wd * p                                          # (D,)   AdamW only
+      m = b1 * m + (1 - b1) * g                                    # (D,)
+      v = b2 * v + (1 - b2) * g ** 2                               # (D,)
+      p = p - lr * (m / (1 - b1 ** t)) / ((v / (1 - b2 ** t)).sqrt() + eps)   # (D,)
+      ```
+      Pitfall: eps goes **outside** the sqrt, and t starts at 1 (t = 0 divides by zero).
+    cards:
+      - id: a
+        prompt: |
+          **Write** `adamw_step(p, g, m, v, t, lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)`, one AdamW update:
+          - `p`, `g`, `m`, `v`: same-shape float tensors (parameter, its gradient, the two running averages);
+            `t`: int step number, starting at 1; `betas` = `(b1, b2)`
+          - **Returns**: tuple `(p, m, v)` of the updated tensors
+          - With `weight_decay=0` this is plain Adam
+          - **Don't use**: `torch.optim`
+          - **Checked on**: 3 steps on a (5,) parameter with `lr=0.1`, vs `torch.optim.Adam` (`weight_decay=0`)
+            and vs `torch.optim.AdamW` (`weight_decay=0.1`)
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          p0 = torch.randn(5)
+          grads = [torch.randn(5) for _ in range(3)]
+        starter: |
+          def adamw_step(p, g, m, v, t, lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0):
+              ...
+        solution: |
+          def adamw_step(p, g, m, v, t, lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0):
+              b1, b2 = betas
+              p = p - lr * weight_decay * p
+              m = b1 * m + (1 - b1) * g
+              v = b2 * v + (1 - b2) * g ** 2
+              m_hat = m / (1 - b1 ** t)
+              v_hat = v / (1 - b2 ** t)
+              p = p - lr * m_hat / (v_hat.sqrt() + eps)
+              return p, m, v
+        check: |
+          def ref(opt_cls, wd):
+              q = torch.nn.Parameter(p0.clone())
+              opt = opt_cls([q], lr=0.1, betas=(0.9, 0.999), eps=1e-8, weight_decay=wd)
+              for g in grads:
+                  q.grad = g.clone()
+                  opt.step()
+              return q.detach()
+
+          for opt_cls, wd in ((torch.optim.Adam, 0.0), (torch.optim.AdamW, 0.1)):
+              p, m, v = p0.clone(), torch.zeros(5), torch.zeros(5)
+              for t, g in enumerate(grads, start=1):
+                  out = adamw_step(p, g, m, v, t, lr=0.1, weight_decay=wd)
+                  assert isinstance(out, tuple) and len(out) == 3, f"adamw_step returned {out!r}, expected (p, m, v)"
+                  p, m, v = out
+              r = ref(opt_cls, wd)
+              assert torch.allclose(p, r, atol=1e-5), f"weight_decay={wd}: p after 3 steps = {p}, {opt_cls.__name__} gives {r}"
+      - id: b
+        prompt: |
+          **Write** the optimizer class `MyAdam(params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8)` (Adam, no weight decay):
+          - `params`: an iterable of parameter tensors (e.g. `model.parameters()`); store it as a list in
+            `self.params` (the starter's `zero_grad` uses it)
+          - State: one `m` and one `v` per parameter (zeros, same shape), one shared step count starting at 0
+          - `step()`: add 1 to the step count, then update every `p` **in place** from `p.grad` with the Adam rule.
+            In-place changes to a parameter must run under `torch.no_grad()` (e.g. decorate `step` with `@torch.no_grad()`)
+          - **Returns**: `step()` returns nothing
+          - **Don't use**: `torch.optim`
+          - **Checked on**: 3 training steps of a small MLP (`lr=0.05`) vs `torch.optim.Adam`: all parameters must match
+        setup: |
+          import copy
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          model = nn.Sequential(nn.Linear(4, 8), nn.Tanh(), nn.Linear(8, 1))
+          X, Y = torch.randn(16, 4), torch.randn(16, 1)
+        starter: |
+          class MyAdam:
+              def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
+                  ...
+
+              def zero_grad(self):
+                  for p in self.params:
+                      p.grad = None
+
+              def step(self):
+                  ...
+        solution: |
+          class MyAdam:
+              def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
+                  self.params = list(params)
+                  self.lr, self.betas, self.eps = lr, betas, eps
+                  self.m = [torch.zeros_like(p) for p in self.params]
+                  self.v = [torch.zeros_like(p) for p in self.params]
+                  self.t = 0
+
+              def zero_grad(self):
+                  for p in self.params:
+                      p.grad = None
+
+              @torch.no_grad()
+              def step(self):
+                  self.t += 1
+                  b1, b2 = self.betas
+                  for i, p in enumerate(self.params):
+                      g = p.grad
+                      self.m[i] = b1 * self.m[i] + (1 - b1) * g
+                      self.v[i] = b2 * self.v[i] + (1 - b2) * g ** 2
+                      m_hat = self.m[i] / (1 - b1 ** self.t)
+                      v_hat = self.v[i] / (1 - b2 ** self.t)
+                      p -= self.lr * m_hat / (v_hat.sqrt() + self.eps)
+        check: |
+          mine_model, ref_model = copy.deepcopy(model), copy.deepcopy(model)
+          opt, ref_opt = MyAdam(mine_model.parameters(), lr=0.05), torch.optim.Adam(ref_model.parameters(), lr=0.05)
+          for net, o in ((mine_model, opt), (ref_model, ref_opt)):
+              for _ in range(3):
+                  o.zero_grad()
+                  ((net(X) - Y) ** 2).mean().backward()
+                  o.step()
+          for (name, a), b in zip(mine_model.named_parameters(), ref_model.parameters()):
+              assert torch.allclose(a, b, atol=1e-5), f"{name} after 3 steps differs from torch.optim.Adam: max diff {(a - b).abs().max().item():.2e}"
+
+  - id: scratch-core.manual-backward
+    name: linear-regression gradients by hand
+    teach: |
+      ```python
+      # Gradients of the mean squared error of a linear model, derived by hand (no autograd):
+      #   L = (1/N) * sum_i (X[i] @ w + b - y[i])**2        X[i] = row i of X
+      #   r = X @ w + b - y                                  residuals (prediction minus target)
+      #   dL/dw = (2/N) * X.T @ r          dL/db = (2/N) * sum_i r[i]
+      # X: (N, D) float, w: (D,), b: 0-dim tensor, y: (N,) -> dw: (D,), db: 0-dim tensor
+      N = X.shape[0]
+      r = X @ w + b - y                    # (N, D) @ (D,) -> (N,)
+      dw = 2 / N * X.T @ r                 # (D, N) @ (N,) -> (D,)
+      db = 2 / N * r.sum()                 # () scalar
+      ```
+      Pitfall: the `1/N` comes from the **mean**; for a summed loss drop it.
+    cards:
+      - id: a
+        prompt: |
+          **Write** `mse_grads(X, w, b, y)`:
+          - `X`: (N, D) float; `w`: (D,); `b`: 0-dim (scalar) tensor; `y`: (N,)
+          - **Returns**: tuple `(dw, db)`: the gradients of `L = ((X @ w + b - y) ** 2).mean()` with respect to
+            `w` (shape (D,)) and `b` (scalar)
+          - **Don't use**: `.backward()`, `torch.autograd`
+          - **Checked on**: the setup's (10, 3) data vs autograd
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          X = torch.randn(10, 3)
+          w = torch.randn(3)
+          b = torch.tensor(0.5)
+          y = torch.randn(10)
+        starter: |
+          def mse_grads(X, w, b, y):
+              ...
+        solution: |
+          def mse_grads(X, w, b, y):
+              N = X.shape[0]
+              r = X @ w + b - y
+              return 2 / N * X.T @ r, 2 / N * r.sum()
+        check: |
+          out = mse_grads(X, w, b, y)
+          assert isinstance(out, tuple) and len(out) == 2, f"mse_grads returned {out!r}, expected (dw, db)"
+          dw, db = out
+          wr, br = w.clone().requires_grad_(), b.clone().requires_grad_()
+          ((X @ wr + br - y) ** 2).mean().backward()
+          assert torch.allclose(dw, wr.grad, atol=1e-5), f"dw = {dw}, autograd = {wr.grad}"
+          assert torch.allclose(torch.as_tensor(db), br.grad, atol=1e-5), f"db = {db}, autograd = {br.grad}"
+      - id: b
+        prompt: |
+          **Write** `fit(X, y, lr, steps)`, linear regression by plain gradient descent on the mean squared error:
+          - `X`: (N, D) float; `y`: (N,); `lr`: float learning rate; `steps`: int
+          - Start from `w = torch.zeros(D)` and `b = 0`; repeat `steps` times: compute `dw`, `db` by hand, then
+            `w = w - lr * dw` and `b = b - lr * db`
+          - **Returns**: tuple `(w, b)`: `w` (D,), `b` scalar (0-dim tensor or float)
+          - **Don't use**: `.backward()`, `torch.autograd`, `torch.optim`
+          - **Checked on**: the setup's (50, 3) data: 20 steps with `lr=0.1` vs the same loop with autograd, and
+            300 steps must recover `w_true = [2, -1, 0.5]`
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          X = torch.randn(50, 3)
+          w_true = torch.tensor([2.0, -1.0, 0.5])
+          y = X @ w_true + 0.3
+        starter: |
+          def fit(X, y, lr, steps):
+              ...
+        solution: |
+          def fit(X, y, lr, steps):
+              N, D = X.shape
+              w, b = torch.zeros(D), torch.tensor(0.0)
+              for _ in range(steps):
+                  r = X @ w + b - y
+                  w = w - lr * 2 / N * X.T @ r
+                  b = b - lr * 2 / N * r.sum()
+              return w, b
+        check: |
+          out = fit(X, y, lr=0.1, steps=20)
+          assert isinstance(out, tuple) and len(out) == 2, f"fit returned {out!r}, expected (w, b)"
+          w, b = out
+          wr = torch.zeros(3, requires_grad=True)
+          br = torch.zeros((), requires_grad=True)
+          for _ in range(20):
+              ((X @ wr + br - y) ** 2).mean().backward()
+              with torch.no_grad():
+                  wr -= 0.1 * wr.grad
+                  br -= 0.1 * br.grad
+              wr.grad = None
+              br.grad = None
+          assert torch.allclose(w, wr.detach(), atol=1e-4), f"w after 20 steps = {w}, expected {wr.detach()}"
+          assert torch.allclose(torch.as_tensor(b, dtype=torch.float32), br.detach(), atol=1e-4), f"b after 20 steps = {b}, expected {br.item():.4f}"
+          w, b = fit(X, y, lr=0.1, steps=300)
+          assert torch.allclose(w, w_true, atol=1e-3), f"w after 300 steps = {w}, expected ~{w_true}"

@@ -1,0 +1,218 @@
+id: py-numbers
+title: Numbers — division, infinity, bits
+summary: Floor division and modulo with negatives, infinity sentinels, modular arithmetic, max/min with key, and bit tricks.
+links:
+  - to: py-sets
+    kind: contrast
+    note: XOR finds the one unpaired number in O(1) space, where a seen-set needs O(n).
+lesson: |
+  Python ints are **arbitrary precision**: they never overflow. When a problem says
+  "32-bit", you check the range yourself: `-2**31 <= x <= 2**31 - 1`.
+
+  **Infinity sentinels**
+
+  ```python
+  best = float("inf")          # or math.inf; -float("inf") for a running max
+  best = min(best, cost)       # compares fine with ints
+  ```
+
+  `int(float("inf"))` raises `OverflowError`, and `inf - inf` is `nan`. Return `-1` (or whatever the
+  problem asks) when the answer is still `inf`.
+
+  **Division and modulo**
+
+  ```python
+  7 / 2        # 3.5     always a float
+  7 // 2       # 3       floor division
+  -7 // 2      # -4      floors toward -infinity, NOT toward zero
+  -7 % 2       # 1       result takes the sign of the divisor
+  int(-7 / 2)  # -3      truncation toward zero (C/Java style)
+  divmod(17, 5)          # (3, 2) -> quotient and remainder in one call
+  -(-a // b)             # ceiling of a / b with ints only (or math.ceil(a / b))
+  ```
+
+  `i % n` is always in `[0, n)` for positive `n`, which makes circular indexing safe even when `i` is negative.
+
+  **Powers and modular arithmetic**
+
+  ```python
+  MOD = 10**9 + 7      # an int. 1e9 + 7 is a float, don't use it
+  ways = (ways + x) % MOD          # reduce at every step
+  pow(a, b, MOD)                   # fast modular exponentiation, O(log b)
+  pow(a, -1, MOD)                  # modular inverse (MOD prime)
+  abs(-5), 2 ** 10                 # 5, 1024
+  ```
+
+  **Converting**
+
+  ```python
+  int("042"), int("-7")      # 42, -7
+  int("1010", 2)             # 10 (parse in base 2)
+  str(123)                   # '123'
+  digits = [int(d) for d in str(n)]
+  while n:                   # or peel digits arithmetically
+      n, d = divmod(n, 10)
+  ```
+
+  **max / min**
+
+  ```python
+  max(a, b), max(nums)
+  max(words, key=len)        # longest word (first one on ties)
+  max(d, key=d.get)          # key with the largest value (arg-max)
+  min(nums, default=0)       # no ValueError on an empty iterable
+  ```
+
+  Other handy ones: `math.gcd`, `math.lcm`, `math.isqrt` (exact integer square root), `math.comb(n, k)`.
+  `round(2.5) == 2` (banker's rounding), so avoid `round` for "round half up".
+
+  **Bits**
+
+  | Expression | Meaning |
+  |---|---|
+  | `a & b`, `a \| b`, `a ^ b` | and, or, xor |
+  | `~x` | `-x - 1` |
+  | `x << k`, `x >> k` | `x * 2**k`, `x // 2**k` |
+  | `x & 1` | 1 if odd |
+  | `(x >> i) & 1` | i-th bit |
+  | `x & (x - 1)` | clear the lowest set bit (0 iff x is a power of two, for x > 0) |
+  | `x & -x` | only the lowest set bit |
+  | `bin(x).count("1")`, `x.bit_count()` | number of set bits |
+
+  XOR facts: `a ^ a == 0`, `a ^ 0 == a`, and order doesn't matter, so XOR-ing a list cancels every pair.
+
+  **Pitfalls**
+  - `x & 1 == 0` parses as `x & (1 == 0)`. Comparisons bind tighter than `&`, `|`, `^`: write `(x & 1) == 0`.
+  - `-7 // 2` is -4. Use `int(a / b)` when the problem wants truncation (e.g. evaluating expressions).
+  - `bin(5)` is `'0b101'`, with a prefix. Use `f"{5:b}"` for the bare digits.
+drills:
+  - id: floor-vs-trunc
+    prompt: With `divmod`, set `q, r` to Python's floor quotient and remainder of `a / b`. Set `t` to the quotient truncated toward zero.
+    setup: |
+      a, b = -7, 2
+    solution: |
+      q, r = divmod(a, b)
+      t = int(a / b)
+    check: |
+      assert (q, r) == (-4, 1), f"q, r = {q!r}, {r!r}"
+      assert t == -3, f"t = {t!r}"
+  - id: min-max-key
+    prompt: In one call each, set `lo` to the minimum of `nums` (0 if it is empty) and `longest` to the longest word in `words`.
+    setup: |
+      nums = []
+      words = ["kiwi", "banana", "fig"]
+    solution: |
+      lo = min(nums, default=0)
+      longest = max(words, key=len)
+    check: |
+      assert lo == 0, f"lo = {lo!r}"
+      assert longest == "banana", f"longest = {longest!r}"
+  - id: modpow
+    prompt: Set `MOD` to 10^9 + 7 (as an int) and `res` to `3**200 % MOD`, computed with three-argument `pow`.
+    solution: |
+      MOD = 10**9 + 7
+      res = pow(3, 200, MOD)
+    check: |
+      assert isinstance(MOD, int) and MOD == 1000000007, f"MOD = {MOD!r}"
+      assert res == (3 ** 200) % 1000000007, f"res = {res!r}"
+  - id: digits
+    prompt: Set `digits` to the list of digits of `n` (as ints) and `back` to the int read from `n`'s digits reversed.
+    setup: |
+      n = 9041
+    solution: |
+      digits = [int(d) for d in str(n)]
+      back = int(str(n)[::-1])
+    check: |
+      assert digits == [9, 0, 4, 1], f"digits = {digits!r}"
+      assert back == 1409, f"back = {back!r}"
+  - id: bits
+    prompt: |
+      For `x`, set `ones` to its number of set bits, `odd` to `x & 1`, `low` to `x` with its lowest
+      set bit cleared, and `bit3` to the value (0 or 1) of bit 3.
+    setup: |
+      x = 0b101101
+    solution: |
+      ones = bin(x).count("1")
+      odd = x & 1
+      low = x & (x - 1)
+      bit3 = (x >> 3) & 1
+    check: |
+      assert ones == 4, f"ones = {ones!r}"
+      assert odd == 1, f"odd = {odd!r}"
+      assert low == 0b101100, f"low = {low!r} ({bin(low)})"
+      assert bit3 == 1, f"bit3 = {bit3!r}"
+  - id: inf-ceil
+    prompt: Set `INF` to positive infinity. Set `pages` to the ceiling of `a / b` using only integer `//`.
+    setup: |
+      a, b = 17, 5
+    solution: |
+      INF = float("inf")
+      pages = -(-a // b)
+    check: |
+      assert INF == float("inf"), f"INF = {INF!r}"
+      assert pages == 4 and isinstance(pages, int), f"pages = {pages!r}"
+classics:
+  - id: reverse-integer
+    title: Reverse Integer
+    url: https://leetcode.com/problems/reverse-integer/
+    difficulty: Medium
+    prompt: |
+      Reverse the digits of the signed integer `x`. If the result falls outside the signed
+      32-bit range `[-2**31, 2**31 - 1]`, return 0.
+    starter: |
+      def reverse(x):
+          pass
+    hints:
+      - Work on `abs(x)` and put the sign back at the end. `divmod` on a negative number floors, which breaks digit peeling.
+      - "Peel digits with `x, d = divmod(x, 10)` and build `r = r * 10 + d`."
+      - Python won't overflow, so just range-check the final result.
+    solution: |
+      def reverse(x):
+          sign = -1 if x < 0 else 1
+          x = abs(x)
+          r = 0
+          while x:
+              x, d = divmod(x, 10)
+              r = r * 10 + d
+          r *= sign
+          return r if -2**31 <= r <= 2**31 - 1 else 0
+    check: |
+      r = reverse(123)
+      assert r == 321, f"reverse(123) = {r!r}"
+      r = reverse(-123)
+      assert r == -321, f"reverse(-123) = {r!r}"
+      r = reverse(120)
+      assert r == 21, f"reverse(120) = {r!r}"
+      r = reverse(0)
+      assert r == 0, f"reverse(0) = {r!r}"
+      r = reverse(1534236469)
+      assert r == 0, f"overflow case: reverse(1534236469) = {r!r}"
+    takeaway: Handle the sign separately, peel digits with `divmod(x, 10)`, range-check at the end.
+  - id: single-number
+    title: Single Number
+    url: https://leetcode.com/problems/single-number/
+    difficulty: Easy
+    prompt: |
+      Every element of `nums` appears twice except one. Return that one, in O(n) time and O(1) extra space.
+    starter: |
+      def singleNumber(nums):
+          pass
+    hints:
+      - A set would work but costs O(n) space.
+      - "`a ^ a == 0` and `a ^ 0 == a`. What is left after XOR-ing everything together?"
+    solution: |
+      def singleNumber(nums):
+          res = 0
+          for x in nums:
+              res ^= x
+          return res
+    check: |
+      r = singleNumber([2, 2, 1])
+      assert r == 1, f"r = {r!r}"
+      r = singleNumber([4, 1, 2, 1, 2])
+      assert r == 4, f"r = {r!r}"
+      r = singleNumber([1])
+      assert r == 1, f"r = {r!r}"
+      r = singleNumber([-3, 7, 7])
+      assert r == -3, f"negative single: r = {r!r}"
+    takeaway: Pairs cancel under XOR, so XOR-ing everything leaves the unpaired value.

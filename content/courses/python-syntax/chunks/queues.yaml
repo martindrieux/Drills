@@ -1,0 +1,423 @@
+id: queues
+title: Queues with deque
+intro: |
+  `collections.deque` is a double-ended queue: O(1) adds and removes at **both** ends. It is the
+  queue behind every BFS (level order, shortest path in a grid) and the sliding-window maximum.
+problems:
+  - Binary Tree Level Order Traversal
+  - Binary Tree Right Side View
+  - Rotting Oranges
+  - Number of Islands
+  - Word Ladder
+  - Sliding Window Maximum
+atoms: [py-deque, graph-bfs]
+skills:
+  - id: queues.ops
+    name: append / popleft / peek
+    teach: |
+      ```python
+      from collections import deque
+      q = deque([1])
+      # q.append(x) / q.appendleft(x): add x on the right / left, O(1)
+      q.appendleft(0)    # deque([0, 1])
+      # q[0] / q[-1] -> front / back, without removing
+      q[0], q[-1]        # (0, 1)
+      # q.popleft() / q.pop() -> remove and return the left / right item, O(1)
+      q.popleft()        # 0  (queue order: BFS)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `q` a deque of ints.
+
+          - **Modify** `q`: add `3` on the right, then `0` on the left.
+          - **Set** `front`, `back`: the front and back items, without removing them.
+          - **Set** `first`: the item removed from the left.
+          - **Set** `last`: the item removed from the right.
+        setup: |
+          from collections import deque
+          q = deque([1, 2])
+        solution: |
+          q.append(3)
+          q.appendleft(0)
+          front, back = q[0], q[-1]
+          first = q.popleft()
+          last = q.pop()
+        check: |
+          assert (front, back) == (0, 3), f"front, back = {front!r}, {back!r}"
+          assert first == 0, f"first = {first!r}"
+          assert last == 3, f"last = {last!r}"
+          assert list(q) == [1, 2], f"q = {q!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `q` a deque of ints.
+
+          - **Set** `front`, `back`: the first and last items of `q`, without removing anything.
+        setup: |
+          from collections import deque
+          q = deque([4, 5, 6])
+        solution: |
+          front, back = q[0], q[-1]
+        check: |
+          assert (front, back) == (4, 6), f"front, back = {front!r}, {back!r}"
+          assert len(q) == 3, f"q = {q!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `q` a deque of ints.
+
+          - **Modify** `q`: add `0` to the **front**.
+          - **Set** `res`: the **back** item, removed from `q`.
+        setup: |
+          from collections import deque
+          q = deque([1, 2, 3])
+        solution: |
+          q.appendleft(0)
+          res = q.pop()
+        check: |
+          assert res == 3, f"res = {res!r}"
+          assert list(q) == [0, 1, 2], f"q = {q!r}"
+
+  - id: queues.why
+    name: why deque, not list
+    teach: |
+      ```python
+      # list.pop(0) shifts every item: O(n); deque.popleft() is O(1)
+      q = deque([1, 2, 3])   # deque(list) -> a deque of the list's items
+      # q[i] -> indexing works
+      q[1]                   # 2
+      # no slicing (q[1:] is a TypeError): convert first
+      list(q)[1:]            # [2, 3]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `nums` a list of ints. Import `deque` yourself.
+
+          - **Set** `q`: a deque of the items of `nums`, then remove its first item in O(1).
+          - **Set** `res`: that removed first item.
+          - **Set** `second`: the item at index 1 of `q` (after the removal).
+          - **Set** `rest`: a **list** of every item of `q` except the first.
+        setup: |
+          nums = [7, 8, 9, 10]
+        solution: |
+          from collections import deque
+          q = deque(nums)
+          res = q.popleft()
+          second = q[1]
+          rest = list(q)[1:]
+        check: |
+          assert res == 7, f"res = {res!r}"
+          assert type(q).__name__ == "deque" and list(q) == [8, 9, 10], f"q = {q!r}"
+          assert second == 9, f"second = {second!r}"
+          assert rest == [9, 10] and isinstance(rest, list), f"rest = {rest!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `q` a deque of ints.
+
+          - **Set** `rest`: a **list** (not a deque) of every item of `q` except the first, in order.
+        setup: |
+          from collections import deque
+          q = deque([1, 2, 3])
+        solution: |
+          rest = list(q)[1:]
+        check: |
+          assert rest == [2, 3] and isinstance(rest, list), f"rest = {rest!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `q` a deque of strings.
+
+          - **Set** `res`: the second item of `q` (index 1).
+        setup: |
+          from collections import deque
+          q = deque(["a", "b", "c"])
+        solution: |
+          res = q[1]
+        check: |
+          assert res == "b", f"res = {res!r}"
+
+  - id: queues.init
+    name: deque([start]) not deque(start)
+    teach: |
+      ```python
+      # deque(iterable) adds EACH element: wrap a single start in a list
+      deque([(0, 0)])    # deque([(0, 0)])  one item
+      ```
+      Pitfall: `deque((0, 0))` is `deque([0, 0])` (two items), and `deque("ab")` is `deque(['a', 'b'])`.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `deque` is imported.
+
+          - **Set** `q`: a deque holding exactly one item, the tuple `(0, 0)`.
+        setup: |
+          from collections import deque
+        solution: |
+          q = deque([(0, 0)])
+        check: |
+          assert list(q) == [(0, 0)], f"q = {q!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `begin` a string.
+
+          - **Set** `q`: a deque holding exactly one item, the string `begin`.
+        setup: |
+          from collections import deque
+          begin = "hit"
+        solution: |
+          q = deque([begin])
+        check: |
+          assert list(q) == ["hit"], f"q = {q!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `sources` a list of `(r, c)` tuples.
+
+          - **Set** `q`: a deque holding every cell of `sources`, in order (multi-source BFS).
+        setup: |
+          from collections import deque
+          sources = [(0, 1), (2, 2)]
+        solution: |
+          q = deque(sources)
+        check: |
+          assert list(q) == [(0, 1), (2, 2)], f"q = {q!r}"
+
+  - id: queues.levels
+    name: BFS level by level
+    teach: |
+      ```python
+      while q:
+          level = []
+          for _ in range(len(q)):          # len(q) is read once: exactly the current level
+              node = q.popleft()
+              level.append(node)
+              q.extend(children[node])     # q.extend(it): append each item (the next level)
+          levels.append(level)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Write** `bfs_levels(children, root)`: BFS from `root` with a deque.
+
+          - **Given**: `children` a dict mapping every node of a tree to the list of its children (in order); `root` the root node.
+          - **Returns**: list of lists, one list per level (root level first), each level's nodes left to right in BFS order.
+          - **Checked on**: a single node, a chain, children listed in non-sorted order, plus random trees of up to 12 nodes.
+        setup: |
+          from collections import deque
+        solution: |
+          def bfs_levels(children, root):
+              q, levels = deque([root]), []
+              while q:
+                  level = []
+                  for _ in range(len(q)):
+                      node = q.popleft()
+                      level.append(node)
+                      q.extend(children[node])
+                  levels.append(level)
+              return levels
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(children, root):
+              levels, cur = [], [root]
+              while cur:
+                  levels.append(cur)
+                  cur = [c for node in cur for c in children[node]]
+              return levels
+
+          def _gen(r):  # random tree with random labels and child order
+              n = r.randint(1, 12)
+              labels = r.sample(range(1, 50), n)
+              children = {x: [] for x in labels}
+              for i in range(1, n):
+                  children[labels[r.randrange(i)]].append(labels[i])
+              for x in labels:
+                  r.shuffle(children[x])
+              return (children, labels[0])
+
+          _edge = [({1: [2, 3], 2: [4], 3: [], 4: []}, 1), ({1: [2, 3], 2: [4, 5], 3: [6], 4: [], 5: [], 6: []}, 1),
+                   ({7: []}, 7), ({1: [2], 2: [3], 3: []}, 1), ({1: [3, 2], 2: [5], 3: [4], 4: [], 5: []}, 1),
+                   ({5: [9, 1, 7], 9: [], 1: [], 7: []}, 5), ({1: [], 2: [1], 3: [2]}, 3)]
+          against(bfs_levels, _ref, _edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          **Given** (see setup): `children` a dict node → list of child nodes; `q` a deque holding the root; `levels` an empty list.
+
+          - **Modify** `levels`: append one list of nodes per level (root level first, nodes left to right), with a BFS on `q`.
+        setup: |
+          from collections import deque
+          children = {1: [2, 3], 2: [4], 3: [], 4: []}
+          q = deque([1])
+          levels = []
+        solution: |
+          while q:
+              level = []
+              for _ in range(len(q)):
+                  node = q.popleft()
+                  level.append(node)
+                  q.extend(children[node])
+              levels.append(level)
+        check: |
+          assert levels == [[1], [2, 3], [4]], f"levels = {levels!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `children` a dict node → list of child nodes; `q` a deque holding the root; `res` an empty list.
+
+          - **Modify** `res`: append the **last** node of each level, root level first (right side view).
+        setup: |
+          from collections import deque
+          children = {1: [2, 3], 2: [4], 3: [], 4: [5], 5: []}
+          q = deque([1])
+          res = []
+        solution: |
+          while q:
+              for _ in range(len(q)):
+                  node = q.popleft()
+                  q.extend(children[node])
+              res.append(node)
+        check: |
+          assert res == [1, 3, 4, 5], f"res = {res!r}"
+
+  - id: queues.maxlen
+    name: maxlen and rotate
+    teach: |
+      ```python
+      # deque(maxlen=k) keeps the last k items: appending to a full one drops the other end
+      last = deque([1, 2, 3], maxlen=3)
+      last.append(4)           # deque([2, 3, 4], maxlen=3)
+      # q.rotate(n): shift right by n steps (negative n: left)
+      q = deque([1, 2, 3])
+      q.rotate(1)              # deque([3, 1, 2])
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `nums` a list of ints; `q` and `p` deques.
+
+          - **Set** `last`: a deque that keeps only the last 3 items, then append every item of `nums` to it.
+          - **Modify** `q`: rotate it one step to the right (the last item comes to the front).
+          - **Modify** `p`: rotate it two steps to the left.
+        setup: |
+          from collections import deque
+          nums = [5, 6, 7, 8, 9]
+          q = deque([1, 2, 3, 4])
+          p = deque([1, 2, 3, 4, 5])
+        solution: |
+          last = deque(maxlen=3)
+          for x in nums:
+              last.append(x)
+          q.rotate(1)
+          p.rotate(-2)
+        check: |
+          assert list(last) == [7, 8, 9], f"last = {last!r}"
+          assert list(q) == [4, 1, 2, 3], f"q = {q!r}"
+          assert list(p) == [3, 4, 5, 1, 2], f"p = {p!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `q` a deque.
+
+          - **Modify** `q`: rotate it one step to the right (the last item comes to the front).
+        setup: |
+          from collections import deque
+          q = deque([1, 2, 3, 4])
+        solution: |
+          q.rotate(1)
+        check: |
+          assert list(q) == [4, 1, 2, 3], f"q = {q!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `q` a deque; an int `k`.
+
+          - **Modify** `q`: rotate it to the **left** by `k` steps (the first `k` items move to the back).
+        setup: |
+          from collections import deque
+          q = deque([1, 2, 3, 4, 5])
+          k = 2
+        solution: |
+          q.rotate(-k)
+        check: |
+          assert list(q) == [3, 4, 5, 1, 2], f"q = {q!r}"
+
+  - id: queues.window
+    name: monotonic deque (window max)
+    teach: |
+      ```python
+      q, res = deque(), []               # indices, values decreasing: q[0] is the window max
+      for i, x in enumerate(nums):
+          while q and nums[q[-1]] < x:   # smaller ones can never be the max
+              q.pop()
+          q.append(i)
+          if q[0] <= i - k:              # front slid out of the window
+              q.popleft()
+          if i >= k - 1:                 # window is full
+              res.append(nums[q[0]])
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Write** `window_max(nums, k)` in O(n) with a monotonic deque of indices.
+
+          - **Given**: `nums` a non-empty list of ints (duplicates allowed); an int `k` with `1 <= k <= len(nums)`.
+          - **Returns**: list of ints, the max of every window `nums[i:i+k]`, left to right (`len(nums) - k + 1` values).
+          - **Checked on**: `k = 1`, `k = len(nums)`, increasing and decreasing lists, equal values, negatives, plus random lists.
+        setup: |
+          from collections import deque
+        solution: |
+          def window_max(nums, k):
+              q, res = deque(), []
+              for i, x in enumerate(nums):
+                  while q and nums[q[-1]] < x:
+                      q.pop()
+                  q.append(i)
+                  if q[0] <= i - k:
+                      q.popleft()
+                  if i >= k - 1:
+                      res.append(nums[q[0]])
+              return res
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(nums, k):
+              return [max(nums[i:i + k]) for i in range(len(nums) - k + 1)]
+
+          def _gen(r):
+              n = r.randint(1, 10)
+              return ([r.randint(-5, 5) for _ in range(n)], r.randint(1, n))
+
+          _edge = [([1, 3, -1, -3, 5, 3, 6, 7], 3), ([9, 8, 7, 6], 2), ([4, 2], 1), ([1, 5, 2], 3), ([7], 1),
+                   ([2, 2, 2, 2], 2), ([1, 2, 3, 4], 2), ([1, 2, 3, 4], 4), ([-1, -2, -3], 1), ([4, 3, 4, 3, 4], 2)]
+          against(window_max, _ref, _edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          **Given** (see setup): `q` a deque of indices (front = oldest); `i` the index where the window of size `k` now ends; an int `k`.
+
+          - **Modify** `q`: remove the front index if it has slid out of the window `[i - k + 1, i]`.
+        setup: |
+          from collections import deque
+          q = deque([1, 3])
+          i, k = 4, 3
+        solution: |
+          if q[0] <= i - k:
+              q.popleft()
+        check: |
+          assert list(q) == [3], f"q = {q!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `nums` a list of ints; an int `k`; `q` an empty deque; `res` an empty list.
+
+          - **Modify** `res`: append the max of every window of size `k` of `nums`, left to right, using `q` as a monotonic deque of indices.
+        setup: |
+          from collections import deque
+          nums = [1, 3, -1, -3, 5, 3, 6, 7]
+          k = 3
+          q = deque()
+          res = []
+        solution: |
+          for i, x in enumerate(nums):
+              while q and nums[q[-1]] < x:
+                  q.pop()
+              q.append(i)
+              if q[0] <= i - k:
+                  q.popleft()
+              if i >= k - 1:
+                  res.append(nums[q[0]])
+        check: |
+          assert res == [3, 3, 5, 5, 6, 7], f"res = {res!r}"

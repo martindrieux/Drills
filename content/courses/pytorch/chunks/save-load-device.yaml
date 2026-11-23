@@ -1,0 +1,160 @@
+id: save-load-device
+title: Saving & loading checkpoints
+intro: |
+  Save the `state_dict` (never the whole model), and checkpoint the optimizer too so training
+  can resume exactly where it stopped.
+problems:
+  - Save the best model and reload it for inference
+  - Resume training from a checkpoint after a crash
+atoms: []
+skills:
+  - id: save-load-device.state-dict
+    name: torch.save / load_state_dict
+    teach: |
+      ```python
+      # model.state_dict() -> dict: name -> tensor (parameters and buffers)
+      list(nn.Linear(4, 2).state_dict())       # ['weight', 'bias']
+      # torch.save(obj, path) -> writes obj to a file;  torch.load(path) -> reads it back
+      torch.save(model.state_dict(), path)
+      # model.load_state_dict(sd) -> copies sd into a model of the SAME architecture
+      model = Net(); model.load_state_dict(torch.load(path))
+      ```
+      Pitfall: `torch.save(model, path)` pickles the class itself and breaks when the code moves.
+    cards:
+      - id: a
+        prompt: |
+          Set: `keys` = list of the names in `model`'s state dict · save that state dict to `path` ·
+          load the file back into the fresh `model2` (same architecture).
+        setup: |
+          import os
+          import tempfile
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          model = nn.Linear(4, 2)
+          model2 = nn.Linear(4, 2)
+          path = os.path.join(tempfile.mkdtemp(), "model.pt")
+        solution: |
+          keys = list(model.state_dict())
+          torch.save(model.state_dict(), path)
+          model2.load_state_dict(torch.load(path))
+        check: |
+          assert keys == ["weight", "bias"], f"keys = {keys}"
+          assert os.path.exists(path), f"nothing saved at {path}"
+          sd = torch.load(path)
+          assert isinstance(sd, dict) and set(sd) == {"weight", "bias"}, f"saved {type(sd).__name__}, expected the state_dict"
+          assert torch.equal(sd["weight"], model.weight.detach()), "saved weight differs from model.weight"
+          assert torch.equal(model2.weight, model.weight), "model2 was not loaded from path"
+      - id: c
+        prompt: Save `model`'s weights to `path`, then build a fresh `model2 = Net()`, load the file into it and put it in eval mode for inference.
+        setup: |
+          import os
+          import tempfile
+          import torch
+          import torch.nn as nn
+          class Net(nn.Module):
+              def __init__(self):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(4, 16), nn.ReLU(), nn.Dropout(0.5), nn.Linear(16, 2))
+              def forward(self, x):
+                  return self.net(x)
+          torch.manual_seed(0)
+          model = Net()
+          path = os.path.join(tempfile.mkdtemp(), "net.pt")
+        solution: |
+          torch.save(model.state_dict(), path)
+          model2 = Net()
+          model2.load_state_dict(torch.load(path))
+          model2.eval()
+        check: |
+          assert os.path.exists(path), "nothing saved at path"
+          assert model2 is not model, "model2 must be a new Net()"
+          assert not model2.training, "call model2.eval()"
+          x = torch.randn(8, 4)
+          model.eval()
+          assert torch.equal(model(x), model2(x)), "model2 outputs differ from model"
+
+  - id: save-load-device.checkpoint
+    name: checkpoints with optimizer state
+    teach: |
+      ```python
+      # opt.state_dict() / opt.load_state_dict(sd) -> optimizer state (Adam moments, lr)
+      torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(), "epoch": epoch}, path)
+      ckpt = torch.load(path)
+      model.load_state_dict(ckpt["model"]); opt.load_state_dict(ckpt["optimizer"])
+      start_epoch = ckpt["epoch"] + 1
+      ```
+      Pitfall: restoring only the model resets Adam's moments, so the loss jumps on resume.
+    cards:
+      - id: a
+        prompt: |
+          Save a checkpoint dict with keys `"model"`, `"optimizer"` and `"epoch"` (the variable `epoch`) to `path` ·
+          then load it back, restore it into the fresh `model2` and `opt2`, and set `start_epoch` = saved epoch + 1.
+        setup: |
+          import os
+          import tempfile
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          model = nn.Linear(3, 1)
+          opt = torch.optim.Adam(model.parameters(), lr=1e-2)
+          for _ in range(3):
+              opt.zero_grad()
+              model(torch.randn(8, 3)).pow(2).mean().backward()
+              opt.step()
+          epoch = 5
+          path = os.path.join(tempfile.mkdtemp(), "ckpt.pt")
+          model2 = nn.Linear(3, 1)
+          opt2 = torch.optim.Adam(model2.parameters(), lr=1e-2)
+        solution: |
+          torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(), "epoch": epoch}, path)
+          ckpt = torch.load(path)
+          model2.load_state_dict(ckpt["model"])
+          opt2.load_state_dict(ckpt["optimizer"])
+          start_epoch = ckpt["epoch"] + 1
+        check: |
+          assert os.path.exists(path), "nothing saved at path"
+          ckpt = torch.load(path)
+          assert set(ckpt) == {"model", "optimizer", "epoch"}, f"keys = {set(ckpt)}"
+          assert ckpt["epoch"] == 5, f"epoch = {ckpt['epoch']}"
+          assert ckpt["optimizer"]["state"], "optimizer state is empty: save opt.state_dict()"
+          assert torch.equal(model2.weight, model.weight), "model2 weights not restored"
+          st = opt2.state_dict()["state"]
+          assert st and torch.equal(st[0]["exp_avg"], opt.state_dict()["state"][0]["exp_avg"]), "opt2 state not restored"
+          assert start_epoch == 6, f"start_epoch = {start_epoch}"
+      - id: c
+        prompt: 'The LR scheduler `sched` has the same `state_dict()` / `load_state_dict()` pair. Save `model`, `opt`, `sched` and `epoch` to `path` (keys `"model"`, `"optimizer"`, `"scheduler"`, `"epoch"`), then restore all of them into the fresh `model2`, `opt2`, `sched2`.'
+        setup: |
+          import os
+          import tempfile
+          import torch
+          import torch.nn as nn
+          from torch.optim.lr_scheduler import StepLR
+          torch.manual_seed(0)
+          model = nn.Linear(3, 1)
+          opt = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+          sched = StepLR(opt, step_size=5, gamma=0.5)
+          for epoch in range(12):
+              opt.zero_grad()
+              model(torch.randn(8, 3)).pow(2).mean().backward()
+              opt.step()
+              sched.step()
+          path = os.path.join(tempfile.mkdtemp(), "ckpt.pt")
+          model2 = nn.Linear(3, 1)
+          opt2 = torch.optim.SGD(model2.parameters(), lr=0.1, momentum=0.9)
+          sched2 = StepLR(opt2, step_size=5, gamma=0.5)
+        solution: |
+          torch.save({"model": model.state_dict(), "optimizer": opt.state_dict(),
+                      "scheduler": sched.state_dict(), "epoch": epoch}, path)
+          ckpt = torch.load(path)
+          model2.load_state_dict(ckpt["model"])
+          opt2.load_state_dict(ckpt["optimizer"])
+          sched2.load_state_dict(ckpt["scheduler"])
+        check: |
+          ckpt = torch.load(path)
+          assert set(ckpt) == {"model", "optimizer", "scheduler", "epoch"}, f"keys = {set(ckpt)}"
+          assert torch.equal(model2.weight.detach(), model.weight.detach()), "model2 weights not restored"
+          assert sched2.last_epoch == 12, f"sched2.last_epoch = {sched2.last_epoch}, expected 12"
+          lr = opt2.param_groups[0]["lr"]
+          assert abs(lr - 0.025) < 1e-9, f"opt2 lr = {lr}, expected 0.025"
+          assert opt2.state_dict()["state"], "opt2 momentum buffers not restored"

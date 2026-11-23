@@ -1,0 +1,289 @@
+id: graph-bfs
+title: BFS — breadth-first search
+summary: Explore a graph ring by ring with a deque. Gives shortest paths when every edge costs 1.
+links:
+  - to: graph-adjacency
+    kind: prereq
+    note: BFS walks an adjacency list (or a grid's 4 neighbors); build that first.
+  - to: py-deque
+    kind: uses
+    note: The BFS queue is a deque; popleft is O(1), list.pop(0) is O(n).
+  - to: py-sets
+    kind: uses
+    note: The visited set gives O(1) "have I seen this node?" checks.
+  - to: graph-dfs
+    kind: contrast
+    note: Same visited-set skeleton with a queue instead of a stack; only BFS gives shortest paths.
+lesson: |
+  BFS visits nodes in order of distance from the start: first the start, then all nodes 1 edge away,
+  then 2 edges away... So the **first time** you reach a node is along a **shortest path**
+  (counting edges).
+
+  **Template (distance to every reachable node)**
+
+  ```python
+  from collections import deque
+
+  def bfs(adj, start):
+      dist = {start: 0}              # doubles as the visited set
+      q = deque([start])
+      while q:
+          u = q.popleft()
+          for v in adj[u]:
+              if v not in dist:      # mark when you ENQUEUE
+                  dist[v] = dist[u] + 1
+                  q.append(v)
+      return dist
+  ```
+
+  **Mark visited on enqueue, not on dequeue.** If you only mark a node when it is popped, every
+  neighbor that sees it before then pushes it again. The queue fills with duplicates (up to O(E)
+  entries instead of O(V)), work is repeated, and grid problems TLE. Marking on enqueue guarantees
+  each node enters the queue exactly once.
+
+  **Level by level** (when you need "number of steps" or per-level processing):
+
+  ```python
+  q = deque([start])
+  seen = {start}
+  steps = 0
+  while q:
+      for _ in range(len(q)):        # exactly the nodes of the current level
+          u = q.popleft()
+          if u == target:
+              return steps
+          for v in adj[u]:
+              if v not in seen:
+                  seen.add(v)
+                  q.append(v)
+      steps += 1
+  return -1                          # target unreachable
+  ```
+
+  **Multi-source BFS:** put **all** sources in the queue at distance 0 before the loop
+  (rotting oranges, distance to nearest gate/zero). It computes distance to the *nearest* source
+  in one pass, instead of one BFS per source.
+
+  **Grid BFS:** nodes are `(r, c)` tuples.
+
+  ```python
+  q = deque([(0, 0)])
+  seen = {(0, 0)}
+  while q:
+      r, c = q.popleft()
+      for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+          nr, nc = r + dr, c + dc
+          if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 0 and (nr, nc) not in seen:
+              seen.add((nr, nc))
+              q.append((nr, nc))
+  ```
+
+  **When BFS is (not) enough**
+  - Unweighted / all edges cost 1 → BFS gives shortest paths.
+  - Non-negative weights → Dijkstra (BFS with a heap instead of a queue).
+  - Weights 0 or 1 only → "0-1 BFS": `appendleft` for 0-edges, `append` for 1-edges.
+
+  **Pitfalls**
+  - `deque((0, 0))` iterates the tuple and gives `deque([0, 0])`. Write `deque([(0, 0)])`.
+  - `list.pop(0)` is O(n): always `collections.deque` + `popleft()`.
+  - Forgetting to mark the **start** as visited.
+  - Off-by-one on steps: decide whether you count nodes or edges, and whether the start is step 0 or 1.
+
+  **Complexity:** O(V + E) time, O(V) space. Grid: O(R·C).
+drills:
+  - id: bfs-order
+    prompt: |
+      Run BFS from node `0` over `adj` and put the nodes into `order`, in the order they are popped.
+      Visit neighbors in the order they appear in `adj[u]`.
+    setup: |
+      from collections import deque
+      adj = {0: [1, 2], 1: [3], 2: [3, 4], 3: [], 4: [0]}
+    solution: |
+      q = deque([0])
+      seen = {0}
+      order = []
+      while q:
+          u = q.popleft()
+          order.append(u)
+          for v in adj[u]:
+              if v not in seen:
+                  seen.add(v)
+                  q.append(v)
+    check: |
+      assert order == [0, 1, 2, 3, 4], f"order = {order!r}"
+  - id: bfs-dist
+    prompt: |
+      Build `dist`, a dict mapping every node reachable from `0` to its shortest distance (in edges).
+      Use `dist` itself as the visited set.
+    setup: |
+      from collections import deque
+      adj = {0: [1, 4], 1: [2], 2: [3], 3: [], 4: [3], 5: [0]}
+    solution: |
+      dist = {0: 0}
+      q = deque([0])
+      while q:
+          u = q.popleft()
+          for v in adj[u]:
+              if v not in dist:
+                  dist[v] = dist[u] + 1
+                  q.append(v)
+    check: |
+      assert dist == {0: 0, 1: 1, 4: 1, 2: 2, 3: 2}, f"dist = {dist!r}"
+  - id: levels
+    prompt: |
+      BFS from `0`, collecting nodes **level by level**: `levels` is a list of lists, one per distance.
+      Use the `for _ in range(len(q))` trick.
+    setup: |
+      from collections import deque
+      adj = {0: [1, 4], 1: [2], 2: [3], 3: [], 4: [3]}
+    solution: |
+      q = deque([0])
+      seen = {0}
+      levels = []
+      while q:
+          level = []
+          for _ in range(len(q)):
+              u = q.popleft()
+              level.append(u)
+              for v in adj[u]:
+                  if v not in seen:
+                      seen.add(v)
+                      q.append(v)
+          levels.append(level)
+    check: |
+      assert [sorted(l) for l in levels] == [[0], [1, 4], [2, 3]], f"levels = {levels!r}"
+  - id: multi-source
+    prompt: |
+      Multi-source BFS: build `dist` mapping every node to its distance to the **nearest** node in `sources`.
+    setup: |
+      from collections import deque
+      adj = {0: [1], 1: [0, 2], 2: [1, 3], 3: [2, 4], 4: [3, 5], 5: [4, 6], 6: [5]}
+      sources = [0, 6]
+    solution: |
+      dist = {s: 0 for s in sources}
+      q = deque(sources)
+      while q:
+          u = q.popleft()
+          for v in adj[u]:
+              if v not in dist:
+                  dist[v] = dist[u] + 1
+                  q.append(v)
+    check: |
+      assert dist == {0: 0, 6: 0, 1: 1, 5: 1, 2: 2, 4: 2, 3: 3}, f"dist = {dist!r}"
+  - id: grid-start
+    prompt: |
+      Start a grid BFS at the top-left cell: create `q`, a deque holding the single tuple `(0, 0)`,
+      and `seen`, a set containing that cell.
+    setup: |
+      from collections import deque
+    solution: |
+      q = deque([(0, 0)])
+      seen = {(0, 0)}
+    check: |
+      assert isinstance(q, deque), f"q = {q!r}"
+      assert list(q) == [(0, 0)], f"q = {q!r} (deque((0, 0)) unpacks the tuple!)"
+      assert seen == {(0, 0)}, f"seen = {seen!r}"
+classics:
+  - id: rotting-oranges
+    title: Rotting Oranges
+    url: https://leetcode.com/problems/rotting-oranges/
+    difficulty: Medium
+    prompt: |
+      `grid` cells are `0` (empty), `1` (fresh orange) or `2` (rotten). Every minute, each fresh orange
+      4-adjacent to a rotten one becomes rotten. Return the minutes until no fresh orange is left,
+      or `-1` if that never happens.
+    starter: |
+      from collections import deque
+
+      def orangesRotting(grid):
+          pass
+    hints:
+      - All rotten oranges start spreading at the same time, so seed the queue with **all** of them (multi-source BFS).
+      - Count fresh oranges up front; decrement when one rots. Process level by level and count minutes.
+      - If fresh oranges remain at the end, return -1. If there were none to begin with, the answer is 0.
+    solution: |
+      from collections import deque
+
+      def orangesRotting(grid):
+          R, C = len(grid), len(grid[0])
+          q = deque()
+          fresh = 0
+          for r in range(R):
+              for c in range(C):
+                  if grid[r][c] == 2:
+                      q.append((r, c))
+                  elif grid[r][c] == 1:
+                      fresh += 1
+          minutes = 0
+          while q and fresh:
+              for _ in range(len(q)):
+                  r, c = q.popleft()
+                  for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                      nr, nc = r + dr, c + dc
+                      if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 1:
+                          grid[nr][nc] = 2      # mark on enqueue
+                          fresh -= 1
+                          q.append((nr, nc))
+              minutes += 1
+          return minutes if fresh == 0 else -1
+    check: |
+      res = orangesRotting([[2, 1, 1], [1, 1, 0], [0, 1, 1]])
+      assert res == 4, f"res = {res!r}"
+      res = orangesRotting([[2, 1, 1], [0, 1, 1], [1, 0, 1]])
+      assert res == -1, f"unreachable fresh orange: res = {res!r}"
+      res = orangesRotting([[0, 2]])
+      assert res == 0, f"no fresh oranges: res = {res!r}"
+      res = orangesRotting([[2, 1, 1, 1, 1, 2]])
+      assert res == 2, f"two sources spreading together: res = {res!r}"
+      res = orangesRotting([[1]])
+      assert res == -1, f"fresh but no rotten: res = {res!r}"
+    takeaway: Several starting points spreading simultaneously → multi-source BFS, level by level; the number of levels is the time.
+  - id: shortest-path-binary-matrix
+    title: Shortest Path in Binary Matrix
+    url: https://leetcode.com/problems/shortest-path-in-binary-matrix/
+    difficulty: Medium
+    prompt: |
+      In an n x n `grid` of `0`/`1`, return the length (number of **cells**) of the shortest clear path
+      from the top-left to the bottom-right cell, moving in **8 directions** through `0` cells only.
+      Return `-1` if there is none.
+    starter: |
+      from collections import deque
+
+      def shortestPathBinaryMatrix(grid):
+          pass
+    hints:
+      - Unweighted shortest path → BFS from (0, 0). Check the start and end cells are 0 first.
+      - Store the path length with each cell in the queue, `(r, c, d)` with d = 1 at the start.
+      - 8 directions = every (dr, dc) in {-1, 0, 1}² except (0, 0).
+    solution: |
+      from collections import deque
+
+      def shortestPathBinaryMatrix(grid):
+          n = len(grid)
+          if grid[0][0] or grid[n - 1][n - 1]:
+              return -1
+          q = deque([(0, 0, 1)])
+          seen = {(0, 0)}
+          while q:
+              r, c, d = q.popleft()
+              if (r, c) == (n - 1, n - 1):
+                  return d
+              for dr in (-1, 0, 1):
+                  for dc in (-1, 0, 1):
+                      nr, nc = r + dr, c + dc
+                      if 0 <= nr < n and 0 <= nc < n and grid[nr][nc] == 0 and (nr, nc) not in seen:
+                          seen.add((nr, nc))
+                          q.append((nr, nc, d + 1))
+          return -1
+    check: |
+      res = shortestPathBinaryMatrix([[0, 1], [1, 0]])
+      assert res == 2, f"diagonal move: res = {res!r}"
+      res = shortestPathBinaryMatrix([[0, 0, 0], [1, 1, 0], [1, 1, 0]])
+      assert res == 4, f"res = {res!r}"
+      res = shortestPathBinaryMatrix([[1, 0, 0], [1, 1, 0], [1, 1, 0]])
+      assert res == -1, f"blocked start: res = {res!r}"
+      res = shortestPathBinaryMatrix([[0]])
+      assert res == 1, f"1x1 grid counts one cell: res = {res!r}"
+      res = shortestPathBinaryMatrix([[0, 0, 0], [0, 1, 1], [0, 1, 0]])
+      assert res == -1, f"walled-off end: res = {res!r}"
+    takeaway: Shortest path on an unweighted grid → BFS; carry the distance in the queue and mark cells when you enqueue them.

@@ -1,0 +1,354 @@
+id: tricks-sequences
+title: "Tricks: sequences & algorithmic vectorization"
+intro: |
+  Classic algorithms rewritten as a few tensor ops: answer many interval queries after one O(N) pass,
+  and run one step of batched beam search for every batch row and beam at once.
+problems:
+  - Range sum queries (1D and 2D) without a loop over queries
+  - One step of batched beam search for sequence generation
+atoms: []
+skills:
+  - id: tricks-sequences.prefix-sums
+    name: Interval sums for many queries (Easy)
+    teach: |
+      ```text
+      values (N,), starts (Q,), ends (Q,) int64 -> out (Q,), dtype of values
+      out[q] = values[starts[q]:ends[q]].sum()   (half-open; empty interval -> 0)
+      Example: values [3, 1, 4, 1, 5], starts [0, 1, 2, 4], ends [5, 3, 2, 5] -> [14, 5, 0, 5]
+      Constraints: O(N) preprocessing, O(1) per query, no Python loops.
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Implement `interval_sums(values, starts, ends)`: answer many half-open range-sum queries on one array.
+          - `values` (N,), int or float: the array
+          - `starts`, `ends` (Q,) int64: query `q` covers `values[starts[q]:ends[q]]`, with `0 <= starts[q] <= ends[q] <= N`
+          - returns (Q,), dtype of `values`: `out[q] = values[starts[q]:ends[q]].sum()`, `0` if the interval is empty
+
+          <details><summary>Hint 1</summary>sum(values[s:e]) = (sum before e) - (sum before s).</details>
+          <details><summary>Hint 2</summary>Prefix sums `P` (N+1,) with `P[0] = 0`, from `cumsum`.</details>
+          <details><summary>Hint 3</summary>`P = torch.cat([values.new_zeros(1), values.cumsum(0)])`; `P[ends] - P[starts]`.</details>
+        setup: |
+          import torch
+        starter: |
+          def interval_sums(values, starts, ends):
+              raise NotImplementedError
+        solution: |
+          def interval_sums(values, starts, ends):
+              P = torch.cat([values.new_zeros(1), values.cumsum(0)])    # (N+1,), P[i] = sum(values[:i])
+              return P[ends] - P[starts]                                 # (Q,)
+
+          # Trick: exclusive prefix sum P[i] = sum(values[:i]), so sum(values[s:e]) = P[e] - P[s] (leading 0: no special case).
+          # Cost: O(N + Q) vs O(N * Q) by slicing each query.
+          # NumPy: P = np.concatenate([[0], np.cumsum(values)]); same indexing.
+          # Mistake: cumsum without the leading 0 -> off by one, and P[s - 1] with s = 0 wraps to -1.
+          # Follow-up: rectangle sums (card b); batched rows: cumsum(-1), then gather.
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(values, starts, ends):
+              out = []
+              for s, e in zip(starts.tolist(), ends.tolist()):
+                  tot = 0
+                  for i in range(s, e):
+                      tot += values[i].item()
+                  out.append(tot)
+              return torch.tensor(out, dtype=values.dtype)
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got.double(), exp.double(), rtol=1e-5, atol=1e-4))
+
+          def _show(values, starts, ends):
+              v = values.tolist() if values.numel() <= 8 else f"<{tuple(values.shape)} {values.dtype}>"
+              q = list(zip(starts.tolist(), ends.tolist()))
+              return f"(values={v}, [start, end) pairs={q if len(q) <= 6 else str(len(q)) + ' queries'})"
+
+          def _T(x):
+              return torch.tensor(x, dtype=torch.int64)
+
+          def _case(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              N, Q = r.randint(0, 40), r.randint(0, 30)
+              if r.random() < 0.5:
+                  values = torch.randint(-50, 50, (N,), generator=g)
+              else:
+                  values = torch.randn(N, 2, generator=g)[:, 0]          # non-contiguous float32
+              a = torch.randint(0, N + 1, (Q,), generator=g)
+              b = torch.randint(0, N + 1, (Q,), generator=g)
+              return (values, torch.minimum(a, b), torch.maximum(a, b))
+
+          _ex = _T([3, 1, 4, 1, 5])
+          _edge = [
+              (_ex, _T([0, 1, 2, 4]), _T([5, 3, 2, 5])),
+              (_T([]), _T([0]), _T([0])),
+              (_T([7]), _T([]), _T([])),
+              (_T([7]), _T([0, 0, 1]), _T([1, 0, 1])),
+              (_T([-2, 5, -3]), _T([0, 0, 1, 2, 3]), _T([3, 1, 3, 3, 3])),
+              (torch.tensor([1.5, -2.0, 4.0, 0.25]), _T([0, 3, 1, 2]), _T([4, 4, 1, 4])),
+              (torch.arange(12).reshape(3, 4).t()[0], _T([0, 1, 0]), _T([3, 3, 2])),
+          ]
+          against(interval_sums, _ref, _edge + rand_cases(_case, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Follow-up: implement `rect_sums(grid, r0, r1, c0, c1)`: answer many rectangle-sum queries on one 2D grid.
+          - `grid` (H, W), int or float, maybe non-contiguous
+          - `r0`, `r1`, `c0`, `c1` (Q,) int64: query `q` is the half-open block `grid[r0[q]:r1[q], c0[q]:c1[q]]` (`r0 <= r1 <= H`, `c0 <= c1 <= W`)
+          - returns (Q,), dtype of `grid`: the sum of each block, `0` if the block is empty
+
+          <details><summary>Hint 1</summary>Precompute, for every corner (i, j), the sum of everything above-left of it.</details>
+          <details><summary>Hint 2</summary>`S[i, j] = grid[:i, :j].sum()`, (H+1, W+1) with a zero row/column; a rectangle = 4 corners.</details>
+          <details><summary>Hint 3</summary>`S[1:, 1:] = grid.cumsum(0).cumsum(1)`; `S[r1, c1] - S[r0, c1] - S[r1, c0] + S[r0, c0]`.</details>
+        setup: |
+          import torch
+        starter: |
+          def rect_sums(grid, r0, r1, c0, c1):
+              raise NotImplementedError
+        solution: |
+          def rect_sums(grid, r0, r1, c0, c1):
+              H, W = grid.shape
+              S = grid.new_zeros(H + 1, W + 1)                     # S[i, j] = grid[:i, :j].sum()
+              S[1:, 1:] = grid.cumsum(0).cumsum(1)                 # (H, W) inclusive 2D prefix sums
+              return S[r1, c1] - S[r0, c1] - S[r1, c0] + S[r0, c0]   # (Q,)
+
+          # Trick: summed-area table: everything above-left of (r1, c1), minus the strips above and to the left;
+          #   the block above-left of (r0, c0) was subtracted twice, so add it back (inclusion-exclusion).
+          # Cost: O(H·W + Q) vs O(Q·H·W) by slicing.
+          # NumPy: S = np.zeros((H+1, W+1)); S[1:, 1:] = g.cumsum(0).cumsum(1).
+          # Mistakes: no zero row/column (r0 = 0 breaks), wrong sign on S[r0, c0], cumsum along one axis only.
+          # Follow-up: mean of every k×k window in O(1) each (box filter).
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(grid, r0, r1, c0, c1):
+              out = []
+              for a, b, c, d in zip(r0.tolist(), r1.tolist(), c0.tolist(), c1.tolist()):
+                  tot = 0
+                  for i in range(a, b):
+                      for j in range(c, d):
+                          tot += grid[i, j].item()
+                  out.append(tot)
+              return torch.tensor(out, dtype=grid.dtype)
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got.double(), exp.double(), rtol=1e-5, atol=1e-4))
+
+          def _show(grid, r0, r1, c0, c1):
+              g = grid.tolist() if grid.numel() <= 9 else f"<{tuple(grid.shape)} {grid.dtype}>"
+              q = [f"[{a}:{b}, {c}:{d}]" for a, b, c, d in zip(r0.tolist(), r1.tolist(), c0.tolist(), c1.tolist())]
+              return f"(grid={g}, rects={q if len(q) <= 5 else str(len(q)) + ' rects'})"
+
+          def _T(x):
+              return torch.tensor(x, dtype=torch.int64)
+
+          def _span(g, n, Q):
+              a = torch.randint(0, n + 1, (Q,), generator=g)
+              b = torch.randint(0, n + 1, (Q,), generator=g)
+              return torch.minimum(a, b), torch.maximum(a, b)
+
+          def _case(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              H, W, Q = r.randint(0, 9), r.randint(0, 9), r.randint(0, 20)
+              if r.random() < 0.5:
+                  grid = torch.randint(-9, 10, (H, W), generator=g)
+              else:
+                  grid = torch.randn(W, H, generator=g).t()            # non-contiguous float32
+              (a, b), (c, d) = _span(g, H, Q), _span(g, W, Q)
+              return (grid, a, b, c, d)
+
+          _g = _T([[1, 2, 3], [4, 5, 6]])
+          _edge = [
+              (_g, _T([0, 0, 1, 0, 1, 0]), _T([2, 1, 2, 2, 1, 2]), _T([0, 0, 1, 2, 0, 1]), _T([3, 3, 3, 3, 3, 1])),
+              (_T([[5]]), _T([0, 0, 1]), _T([1, 0, 1]), _T([0, 0, 0]), _T([1, 1, 1])),
+              (_T([[5]]), _T([]), _T([]), _T([]), _T([])),
+              (torch.zeros(0, 3, dtype=torch.int64), _T([0]), _T([0]), _T([0]), _T([3])),
+              (torch.zeros(2, 0, dtype=torch.int64), _T([0]), _T([2]), _T([0]), _T([0])),
+              (_T([[1, -1, 2, 7], [0, 3, -4, 1], [2, 2, 2, -9]]), _T([1, 0, 2]), _T([3, 3, 3]), _T([1, 0, 3]), _T([4, 1, 4])),
+              (torch.arange(12.0).reshape(4, 3).t(), _T([0, 1]), _T([3, 3]), _T([1, 0]), _T([4, 2])),
+          ]
+          against(rect_sums, _ref, _edge + rand_cases(_case, 200), same=_same, show=_show)
+
+  - id: tricks-sequences.beam-step
+    name: One batched beam-search step (Medium)
+    teach: |
+      ```text
+      scores (B, K): log-prob of each live beam; logp (B, K, V): log-prob of token v after beam k
+      Candidate (k, v) scores scores[b, k] + logp[b, k, v]; keep the K best of the K*V per row, best first:
+      -> new_scores (B, K), parent (B, K) int64 (beam k), token (B, K) int64 (token v)
+      Example: scores [[-1.0, -3.0]], logp [[[-0.1, -0.5, -3.0], [-0.2, -1.0, -2.0]]]
+               -> new_scores [[-1.1, -1.5]], parent [[0, 0]], token [[0, 1]]
+      Constraints: no Python loops. Follow-up (card b): beams that already ended (EOS).
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Implement one step of batched beam search: extend each row's `K` beams by one token and keep the `K` best candidates.
+          - `scores` (B, K) float: log-prob of each live beam
+          - `logp` (B, K, V) float, maybe non-contiguous: `logp[b, k, v]` = log-prob of token `v` after beam `k`
+          - returns `beam_step(scores, logp)` = `(new_scores, parent, token)`, each (B, K), best first per row:
+            `new_scores` (dtype of `scores`) = `scores[b, parent] + logp[b, parent, token]`, the `K` largest of the row's `K * V` candidates;
+            `parent` int64: the beam extended; `token` int64: the token appended
+          - no ties among candidates
+
+          <details><summary>Hint 1</summary>Per row there are just K*V candidate numbers; you want the K largest.</details>
+          <details><summary>Hint 2</summary>`scores[:, :, None] + logp` (B, K, V); flat index i over (K, V) = beam i // V, token i % V.</details>
+          <details><summary>Hint 3</summary>`cand.reshape(B, K * V).topk(K, dim=1)`, then `idx // V`, `idx % V`.</details>
+        setup: |
+          import torch
+        starter: |
+          def beam_step(scores, logp):
+              raise NotImplementedError
+        solution: |
+          def beam_step(scores, logp):
+              B, K, V = logp.shape
+              cand = scores.unsqueeze(-1) + logp                  # (B, K, 1) + (B, K, V) -> (B, K, V)
+              new_scores, idx = cand.reshape(B, K * V).topk(K, dim=1)   # (B, K), flat index in [0, K*V)
+              return new_scores, idx // V, idx % V                # parent (B, K), token (B, K)
+
+          # Trick: flatten (beam, token) so one topk ranks all K*V candidates of a row jointly;
+          #   flat i = k * V + v, so parent = i // V, token = i % V.
+          # Cost: O(B·K·V) per step; reshape (not view) since logp may be non-contiguous.
+          # NumPy: np.argpartition(-c, K-1, axis=1)[:, :K], sort those K, np.unravel_index.
+          # Mistakes: topk along V per beam (never drops a beam); idx // K instead of idx // V.
+          # Next: seqs = seqs[torch.arange(B)[:, None], parent], then append token.
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(scores, logp):
+              B, K, V = logp.shape
+              S, P, T = [], [], []
+              for b in range(B):
+                  cands = [((scores[b, k] + logp[b, k, v]).item(), k, v) for k in range(K) for v in range(V)]
+                  cands.sort(key=lambda c: -c[0])
+                  S.append([c[0] for c in cands[:K]]); P.append([c[1] for c in cands[:K]]); T.append([c[2] for c in cands[:K]])
+              return (torch.tensor(S, dtype=scores.dtype), torch.tensor(P, dtype=torch.int64), torch.tensor(T, dtype=torch.int64))
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 3 and all(isinstance(t, torch.Tensor) for t in got)):
+                  return False
+              (s, p, t), (es, ep, et) = got, exp
+              return (s.shape == es.shape and s.dtype == es.dtype and torch.allclose(s, es, rtol=1e-5, atol=1e-5)
+                      and p.dtype == torch.int64 and t.dtype == torch.int64 and torch.equal(p, ep) and torch.equal(t, et))
+
+          def _show(scores, logp):
+              if logp.numel() <= 12:
+                  return f"(scores={scores.tolist()}, logp={logp.tolist()})"
+              return f"(scores {tuple(scores.shape)} {scores.dtype}, logp {tuple(logp.shape)})"
+
+          def _case(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              B, K, V = r.randint(1, 4), r.randint(1, 5), r.randint(1, 12)
+              dt = torch.float64 if r.random() < 0.5 else torch.float32
+              scores = (torch.rand(B, K, generator=g, dtype=torch.float64) * -6).to(dt)
+              logp = torch.log_softmax(torch.randn(B, K, V, generator=g, dtype=torch.float64) * 2, -1).to(dt)
+              if r.random() < 0.5:
+                  logp = logp.transpose(1, 2).contiguous().transpose(1, 2)   # same values, non-contiguous
+              return (scores, logp)
+
+          _ex = (torch.tensor([[-1.0, -3.0]]), torch.tensor([[[-0.1, -0.5, -3.0], [-0.2, -1.0, -2.0]]]))
+          _gg = torch.Generator().manual_seed(1)
+          _lp = lambda *s: torch.log_softmax(torch.randn(*s, generator=_gg, dtype=torch.float64), -1)
+          _edge = [
+              _ex,
+              (torch.tensor([[-0.5]]), torch.tensor([[[-0.3]]])),
+              (torch.tensor([[-0.5, -0.7, -0.2]]), torch.tensor([[[-0.1], [-0.9], [-2.0]]])),
+              (torch.tensor([[-0.1, -0.2, -0.3]], dtype=torch.float64), _lp(1, 3, 2)),
+              (torch.tensor([[-1.0, -2.0]], dtype=torch.float64), _lp(1, 2, 7)),
+              (torch.tensor([[-0.01, -50.0, -60.0], [-70.0, -0.02, -80.0]], dtype=torch.float64), _lp(2, 3, 6)),
+              (torch.tensor([[-3.0, -1.0], [-2.0, -4.0]], dtype=torch.float64), _lp(2, 2, 5) * 300),
+              (torch.zeros(1, 4, dtype=torch.float64) - torch.arange(4.0, dtype=torch.float64), _lp(1, 6, 4).transpose(1, 2)),
+          ]
+          against(beam_step, _ref, _edge + rand_cases(_case, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Follow-up: implement `beam_step_eos(scores, logp, finished, eos)`, the beam-search step of card a when some beams have already ended.
+          - `scores` (B, K), `logp` (B, K, V) float: as in card a
+          - `finished` (B, K) bool: `True` = the beam has ended; `eos` (int): the end-of-sequence token id
+          - returns `(new_scores, parent, token)` as in card a, except a finished beam has exactly one candidate: token `eos`, with its score unchanged
+          - don't modify `logp` in place
+
+          <details><summary>Hint 1</summary>Don't branch: change finished beams' `logp` rows so the normal step works.</details>
+          <details><summary>Hint 2</summary>Finished row: `0` at `eos`, `-inf` elsewhere; pick it with `torch.where` and a (B, K, 1) mask.</details>
+          <details><summary>Hint 3</summary>`torch.where(finished[..., None], fixed, logp)`, then the card-a step.</details>
+        setup: |
+          import torch
+        starter: |
+          def beam_step_eos(scores, logp, finished, eos):
+              raise NotImplementedError
+        solution: |
+          def beam_step_eos(scores, logp, finished, eos):
+              B, K, V = logp.shape
+              fixed = torch.full((V,), float("-inf"), dtype=logp.dtype)
+              fixed[eos] = 0.0                                          # finished beam: only eos, at cost 0
+              logp = torch.where(finished.unsqueeze(-1), fixed, logp)  # (B, K, 1) mask -> (B, K, V), new tensor
+              cand = scores.unsqueeze(-1) + logp                        # (B, K, V)
+              new_scores, idx = cand.reshape(B, K * V).topk(K, dim=1)   # (B, K)
+              return new_scores, idx // V, idx % V
+
+          # Trick: mask, don't branch: a finished beam's row becomes [-inf, ..., 0 at eos, ..., -inf], so the
+          #   ordinary step keeps it once with its score unchanged.
+          # Cost: one extra O(B·K·V) where. NumPy: np.where(finished[..., None], fixed, logp).
+          # Mistakes: logp[finished] = ... (mutates the caller's tensor); row all -inf (beam vanishes); row 0 (V copies).
+          # Next: new_finished = finished[torch.arange(B)[:, None], parent] | (token == eos).
+          # Follow-up: length normalization so short finished beams aren't favoured.
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(scores, logp, finished, eos):
+              B, K, V = logp.shape
+              S, P, T = [], [], []
+              for b in range(B):
+                  cands = []
+                  for k in range(K):
+                      if finished[b, k]:
+                          cands.append((scores[b, k].item(), k, eos))
+                      else:
+                          cands += [((scores[b, k] + logp[b, k, v]).item(), k, v) for v in range(V)]
+                  cands.sort(key=lambda c: -c[0])
+                  S.append([c[0] for c in cands[:K]]); P.append([c[1] for c in cands[:K]]); T.append([c[2] for c in cands[:K]])
+              return (torch.tensor(S, dtype=scores.dtype), torch.tensor(P, dtype=torch.int64), torch.tensor(T, dtype=torch.int64))
+
+          def _call(scores, logp, finished, eos):
+              before = logp.clone()
+              res = beam_step_eos(scores, logp, finished, eos)
+              assert torch.equal(logp, before), "beam_step_eos modified logp in place"
+              return res
+          _call.__name__ = "beam_step_eos"
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 3 and all(isinstance(t, torch.Tensor) for t in got)):
+                  return False
+              (s, p, t), (es, ep, et) = got, exp
+              return (s.shape == es.shape and s.dtype == es.dtype and torch.allclose(s, es, rtol=1e-5, atol=1e-5)
+                      and p.dtype == torch.int64 and t.dtype == torch.int64 and torch.equal(p, ep) and torch.equal(t, et))
+
+          def _show(scores, logp, finished, eos):
+              if logp.numel() <= 12:
+                  return f"(scores={scores.tolist()}, logp={logp.tolist()}, finished={finished.tolist()}, eos={eos})"
+              return f"(scores {tuple(scores.shape)}, logp {tuple(logp.shape)}, finished={finished.tolist()}, eos={eos})"
+
+          def _case(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              B, K, V = r.randint(1, 4), r.randint(1, 5), r.randint(1, 10)
+              scores = torch.rand(B, K, generator=g, dtype=torch.float64) * -6
+              logp = torch.log_softmax(torch.randn(B, K, V, generator=g, dtype=torch.float64) * 2, -1)
+              finished = torch.rand(B, K, generator=g) < r.random()
+              return (scores, logp, finished, r.randrange(V))
+
+          _gg = torch.Generator().manual_seed(2)
+          _lp = lambda *s: torch.log_softmax(torch.randn(*s, generator=_gg, dtype=torch.float64), -1)
+          _F = lambda x: torch.tensor(x, dtype=torch.bool)
+          _D = lambda x: torch.tensor(x, dtype=torch.float64)
+          _edge = [
+              (_D([[-1.0, -3.0]]), _D([[[-0.1, -0.5, -3.0], [-0.2, -1.0, -2.0]]]), _F([[False, True]]), 2),
+              (_D([[-1.0, -3.0]]), _D([[[-0.1, -0.5, -3.0], [-0.2, -1.0, -2.0]]]), _F([[True, False]]), 0),
+              (_D([[-0.5]]), _D([[[-0.3]]]), _F([[True]]), 0),
+              (_D([[-0.5]]), _D([[[-0.3]]]), _F([[False]]), 0),
+              (_D([[-0.5, -0.7, -0.2]]), _D([[[-0.1], [-0.9], [-2.0]]]), _F([[True, False, True]]), 0),
+              (_D([[-1.0, -2.0, -3.0]]), _lp(1, 3, 4), _F([[True, True, True]]), 3),
+              (_D([[-1.0, -2.0, -3.0]]), _lp(1, 3, 4), _F([[False, False, False]]), 1),
+              (_D([[-0.01, -50.0, -60.0], [-70.0, -0.02, -80.0]]), _lp(2, 3, 5) * 100, _F([[True, False, False], [False, False, True]]), 4),
+              (_D([[-0.5]]), _lp(1, 1, 6), _F([[True]]), 3),
+          ]
+          against(_call, _ref, _edge + rand_cases(_case, 200), same=_same, show=_show)

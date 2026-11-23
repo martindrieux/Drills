@@ -1,0 +1,297 @@
+id: dp-two-strings
+title: Two-string DP (prefix × prefix)
+summary: "dp[i][j] = answer for a[:i] and b[:j] on an (n+1)×(m+1) table: LCS, edit distance and friends."
+links:
+  - to: dp-grid
+    kind: variant
+    note: "Same table-filling from top, left and diagonal; the rows and columns are prefixes of two strings instead of grid cells."
+  - to: dp-lis
+    kind: contrast
+    note: "LCS compares two sequences; LIS looks for order inside one sequence. Different state, often confused by name."
+  - to: py-strings
+    kind: uses
+    note: "Prefix indexing (a[i-1] is the i-th character) and slicing are everywhere here."
+lesson: |
+  **Shape:** two sequences `a` (length `n`) and `b` (length `m`). The question is about matching,
+  aligning or transforming one into the other.
+
+  **Recognition signals**
+  - "Longest common subsequence / substring" of two strings.
+  - "Minimum number of insert/delete/replace operations to turn `a` into `b`" → edit distance.
+  - "Delete characters so the two strings become equal", "minimum ASCII delete sum" → LCS in disguise.
+  - "Is `s3` an interleaving of `s1` and `s2`", "regex / wildcard matching", "distinct subsequences".
+  - Brute force would try all alignments of two strings → O(n·m) table instead.
+
+  **State:** `dp[i][j]` = answer for the prefixes `a[:i]` and `b[:j]`.
+  Use an **(n+1) × (m+1)** table: row 0 and column 0 stand for the **empty prefix**, which gives you
+  base cases for free and removes all `if i > 0` guards. The last characters of the prefixes are `a[i-1]` and `b[j-1]`.
+
+  **Transition: look at the last characters.**
+
+  | Problem | `a[i-1] == b[j-1]` (match) | mismatch |
+  |---|---|---|
+  | LCS (length) | `dp[i-1][j-1] + 1` | `max(dp[i-1][j], dp[i][j-1])` (drop a char from one side) |
+  | Edit distance | `dp[i-1][j-1]` (free) | `1 + min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])` = delete, insert, replace |
+
+  **Base cases (row 0 / column 0)**
+
+  | Problem | `dp[0][j]` | `dp[i][0]` | meaning |
+  |---|---|---|---|
+  | LCS | 0 | 0 | nothing in common with an empty string |
+  | Edit distance | `j` | `i` | insert `j` chars / delete `i` chars |
+
+  ```python
+  def lcs(a, b):
+      n, m = len(a), len(b)
+      dp = [[0] * (m + 1) for _ in range(n + 1)]
+      for i in range(1, n + 1):
+          for j in range(1, m + 1):
+              if a[i - 1] == b[j - 1]:
+                  dp[i][j] = dp[i - 1][j - 1] + 1
+              else:
+                  dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
+      return dp[n][m]
+  ```
+
+  Top-down reads the same way, and is often the quickest to get right:
+
+  ```python
+  from functools import cache
+
+  def edit(a, b):
+      @cache
+      def go(i, j):                     # answer for a[:i], b[:j]
+          if i == 0: return j
+          if j == 0: return i
+          if a[i - 1] == b[j - 1]:
+              return go(i - 1, j - 1)
+          return 1 + min(go(i - 1, j), go(i, j - 1), go(i - 1, j - 1))
+      return go(len(a), len(b))
+  ```
+
+  **Order:** `i` ascending, `j` ascending: top, left and diagonal are always ready. **Answer:** `dp[n][m]`
+  (for longest common *substring*, the answer is `max` over the table, and a mismatch resets to 0).
+
+  **Space optimisation: two rows.** Row `i` reads only row `i-1` (`prev`) and itself (`cur`):
+
+  ```python
+  prev = [0] * (m + 1)
+  for i in range(1, n + 1):
+      cur = [0] * (m + 1)                 # for edit distance: cur[0] = i
+      for j in range(1, m + 1):
+          cur[j] = prev[j - 1] + 1 if a[i - 1] == b[j - 1] else max(prev[j], cur[j - 1])
+      prev = cur
+  answer = prev[m]
+  ```
+
+  **Pitfalls**
+  - Comparing `a[i]` with `b[j]` in an (n+1)×(m+1) table: off by one. The characters are `a[i-1]`, `b[j-1]`.
+  - Forgetting edit distance's base row/column (they are **not** 0).
+  - Subsequence (gaps allowed, LCS) vs substring (contiguous: reset to 0 on mismatch).
+  - To recover the actual LCS string, walk back from `dp[n][m]`: diagonal on a match, else toward the larger neighbour.
+
+  **Complexity:** O(n·m) time, O(n·m) space, O(m) with two rows.
+drills:
+  - id: table-init
+    prompt: |
+      Create `dp`: an `(len(a) + 1) × (len(b) + 1)` table of zeros, with **independent** rows
+      (row 0 = empty prefix of `a`, column 0 = empty prefix of `b`).
+    setup: |
+      a, b = "abcde", "ace"
+    solution: |
+      dp = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    check: |
+      assert len(dp) == len(a) + 1, f"rows = {len(dp)}, expected {len(a) + 1}"
+      assert all(len(r) == len(b) + 1 for r in dp), f"row lengths = {[len(r) for r in dp]!r}"
+      assert all(v == 0 for r in dp for v in r), f"dp = {dp!r}"
+      assert len({id(r) for r in dp}) == len(dp), "rows are aliases of the same list: use a comprehension"
+  - id: lcs-transition
+    prompt: |
+      LCS. `dp[i][j]` = LCS length of `a[:i]` and `b[:j]`; row/column 0 are 0.
+      Write the match / mismatch transition inside the loops. The skeleton puts the answer in `res`.
+    setup: |
+      a, b = "abcde", "ace"
+      n, m = len(a), len(b)
+    starter: |
+      dp = [[0] * (m + 1) for _ in range(n + 1)]
+      for i in range(1, n + 1):
+          for j in range(1, m + 1):
+              pass  # if match ... else ...
+      res = dp[n][m]
+    solution: |
+      dp = [[0] * (m + 1) for _ in range(n + 1)]
+      for i in range(1, n + 1):
+          for j in range(1, m + 1):
+              if a[i - 1] == b[j - 1]:
+                  dp[i][j] = dp[i - 1][j - 1] + 1
+              else:
+                  dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
+      res = dp[n][m]
+    check: |
+      assert res == 3, f"res = {res!r}"
+      assert dp[2][1] == 1 and dp[3][2] == 2, f"dp[2][1] = {dp[2][1]!r}, dp[3][2] = {dp[3][2]!r}"
+  - id: edit-base
+    prompt: |
+      Edit distance. The transition is written for you; the table starts at all zeros.
+      Fill the **base cases** where marked: `dp[i][0]` and `dp[0][j]`.
+      The skeleton puts the answer in `res`.
+    setup: |
+      a, b = "kitten", "sitting"
+      n, m = len(a), len(b)
+    starter: |
+      dp = [[0] * (m + 1) for _ in range(n + 1)]
+      # base cases here
+
+      for i in range(1, n + 1):
+          for j in range(1, m + 1):
+              if a[i - 1] == b[j - 1]:
+                  dp[i][j] = dp[i - 1][j - 1]
+              else:
+                  dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+      res = dp[n][m]
+    solution: |
+      dp = [[0] * (m + 1) for _ in range(n + 1)]
+      for i in range(n + 1):
+          dp[i][0] = i
+      for j in range(m + 1):
+          dp[0][j] = j
+
+      for i in range(1, n + 1):
+          for j in range(1, m + 1):
+              if a[i - 1] == b[j - 1]:
+                  dp[i][j] = dp[i - 1][j - 1]
+              else:
+                  dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+      res = dp[n][m]
+    check: |
+      assert dp[n][0] == n and dp[0][m] == m, f"dp[n][0] = {dp[n][0]!r}, dp[0][m] = {dp[0][m]!r}"
+      assert res == 3, f"res = {res!r}"
+  - id: edit-transition
+    prompt: |
+      Edit distance with base cases done. Write the transition: free on a match, otherwise
+      1 + the best of delete / insert / replace. The skeleton puts the answer in `res`.
+    setup: |
+      a, b = "sunday", "saturday"
+      n, m = len(a), len(b)
+    starter: |
+      dp = [[0] * (m + 1) for _ in range(n + 1)]
+      for i in range(n + 1):
+          dp[i][0] = i
+      for j in range(m + 1):
+          dp[0][j] = j
+      for i in range(1, n + 1):
+          for j in range(1, m + 1):
+              pass  # transition
+      res = dp[n][m]
+    solution: |
+      dp = [[0] * (m + 1) for _ in range(n + 1)]
+      for i in range(n + 1):
+          dp[i][0] = i
+      for j in range(m + 1):
+          dp[0][j] = j
+      for i in range(1, n + 1):
+          for j in range(1, m + 1):
+              if a[i - 1] == b[j - 1]:
+                  dp[i][j] = dp[i - 1][j - 1]
+              else:
+                  dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+      res = dp[n][m]
+    check: |
+      assert res == 3, f"res = {res!r}"
+  - id: lcs-two-rows
+    prompt: |
+      LCS with two rows: `prev` is row `i-1`, `cur` is row `i`. Write the transition for `cur[j]`
+      using only `prev` and `cur`. The skeleton puts the answer in `res`.
+    setup: |
+      a, b = "AGGTAB", "GXTXAYB"
+      n, m = len(a), len(b)
+    starter: |
+      prev = [0] * (m + 1)
+      for i in range(1, n + 1):
+          cur = [0] * (m + 1)
+          for j in range(1, m + 1):
+              pass
+          prev = cur
+      res = prev[m]
+    solution: |
+      prev = [0] * (m + 1)
+      for i in range(1, n + 1):
+          cur = [0] * (m + 1)
+          for j in range(1, m + 1):
+              if a[i - 1] == b[j - 1]:
+                  cur[j] = prev[j - 1] + 1
+              else:
+                  cur[j] = max(prev[j], cur[j - 1])
+          prev = cur
+      res = prev[m]
+    check: |
+      assert res == 4, f"res = {res!r}  (GTAB)"
+classics:
+  - id: longest-common-subsequence
+    title: Longest Common Subsequence
+    url: https://leetcode.com/problems/longest-common-subsequence/
+    difficulty: Medium
+    prompt: |
+      Return the length of the longest common subsequence of `text1` and `text2`
+      (characters in order, not necessarily contiguous), or 0 if there is none.
+    starter: |
+      def longestCommonSubsequence(text1, text2):
+          pass
+    hints:
+      - "State: dp[i][j] = LCS of text1[:i] and text2[:j]. Use an (n+1) x (m+1) table; the empty prefix row/column is 0."
+      - "Last characters equal: take the diagonal + 1. Otherwise drop the last char of one string: max(top, left)."
+      - Only the previous row is needed if you want O(m) space.
+    solution: |
+      def longestCommonSubsequence(text1, text2):
+          n, m = len(text1), len(text2)
+          prev = [0] * (m + 1)
+          for i in range(1, n + 1):
+              cur = [0] * (m + 1)
+              for j in range(1, m + 1):
+                  if text1[i - 1] == text2[j - 1]:
+                      cur[j] = prev[j - 1] + 1
+                  else:
+                      cur[j] = max(prev[j], cur[j - 1])
+              prev = cur
+          return prev[m]
+    check: |
+      for a, b, want in [("abcde", "ace", 3), ("abc", "abc", 3), ("abc", "def", 0),
+                         ("", "abc", 0), ("bl", "yby", 1), ("ezupkr", "ubmrapg", 2)]:
+          got = longestCommonSubsequence(a, b)
+          assert got == want, f"LCS({a!r}, {b!r}) = {got!r}, expected {want}"
+    takeaway: "Two sequences → dp over prefix pairs; match = diagonal + 1, mismatch = max(top, left)."
+  - id: edit-distance
+    title: Edit Distance
+    url: https://leetcode.com/problems/edit-distance/
+    difficulty: Medium
+    prompt: |
+      Return the minimum number of operations (insert a char, delete a char, replace a char)
+      to convert `word1` into `word2`.
+    starter: |
+      def minDistance(word1, word2):
+          pass
+    hints:
+      - "State: dp[i][j] = edit distance between word1[:i] and word2[:j]."
+      - "Base: turning a prefix of length i into the empty string costs i deletions (and symmetrically j insertions)."
+      - "Match: dp[i-1][j-1]. Mismatch: 1 + min(delete = dp[i-1][j], insert = dp[i][j-1], replace = dp[i-1][j-1])."
+    solution: |
+      def minDistance(word1, word2):
+          n, m = len(word1), len(word2)
+          dp = [[0] * (m + 1) for _ in range(n + 1)]
+          for i in range(n + 1):
+              dp[i][0] = i
+          for j in range(m + 1):
+              dp[0][j] = j
+          for i in range(1, n + 1):
+              for j in range(1, m + 1):
+                  if word1[i - 1] == word2[j - 1]:
+                      dp[i][j] = dp[i - 1][j - 1]
+                  else:
+                      dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+          return dp[n][m]
+    check: |
+      for a, b, want in [("horse", "ros", 3), ("intention", "execution", 5), ("", "abc", 3),
+                         ("abc", "", 3), ("same", "same", 0), ("", "", 0), ("a", "b", 1)]:
+          got = minDistance(a, b)
+          assert got == want, f"minDistance({a!r}, {b!r}) = {got!r}, expected {want}"
+    takeaway: "Edit distance: base row/col = i and j; mismatch = 1 + min(delete, insert, replace) = top, left, diagonal."

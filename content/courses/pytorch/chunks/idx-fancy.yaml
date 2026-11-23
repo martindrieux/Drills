@@ -1,0 +1,619 @@
+id: idx-fancy
+title: Advanced indexing drills
+intro: |
+  Indexing a tensor with other tensors (integer index tensors and boolean masks) picks, reorders and writes
+  many elements at once, with no Python loop. Small drills, easy to harder; every one comes down to one shape rule.
+problems:
+  - Embedding lookup and bag-of-words pooling
+  - Pick the logit (or log-prob) of each row's label
+  - Gather the hidden states of K selected tokens per sequence
+  - Keep only the real (non-padding) tokens of a batch
+  - Accumulate counts or gradients at repeated indices
+atoms: []
+skills:
+  - id: idx-fancy.int-array
+    name: "x[idx]: one index tensor on dim 0"
+    teach: |
+      ```python
+      # x[idx] -> idx.shape + x.shape[1:]: out[j] = x[idx[j]]  (idx int64, repeats ok, -1 = last row)
+      x = torch.tensor([10, 20, 30, 40])                  # (4,)
+      x[torch.tensor([3, 0, 0, -1])]                      # (4,): [40, 10, 10, 40]
+      W = torch.tensor([[0, 1], [2, 3], [4, 5]])          # (V=3, D=2)
+      W[torch.tensor([[2, 0], [1, 1]])]                   # ids (2, 2) -> (2, 2, 2): [[[4, 5], [0, 1]], [[2, 3], [2, 3]]]
+      ```
+      Pitfall: a float index tensor raises `IndexError`.
+    cards:
+      - id: a
+        prompt: |
+          Index `x` and `W` with integer index tensors.
+          - `picked` (4,): the entries of `x` at positions 4, 0, 0, -1, using one index tensor
+          - `rows` (2, 3, 3): the rows of `W` looked up by `ids`: `rows[i, j] = W[ids[i, j]]`
+        setup: |
+          import torch
+          x = torch.tensor([5, 6, 7, 8, 9])
+          W = torch.arange(12).view(4, 3)
+          ids = torch.tensor([[3, 0, 3], [1, 2, 0]])
+        solution: |
+          picked = x[torch.tensor([4, 0, 0, -1])]
+          rows = W[ids]
+        check: |
+          def _chk(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is a {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.equal(got, exp), f"{name} = {got.tolist()}, expected {exp.tolist()}"
+
+          _chk("picked", picked, torch.tensor([9, 5, 5, 9]))
+          _chk("rows", rows, torch.tensor([[[9, 10, 11], [0, 1, 2], [9, 10, 11]], [[3, 4, 5], [6, 7, 8], [0, 1, 2]]]))
+      - id: b
+        prompt: |
+          Write `bag_mean(table, ids)`, which averages the embedding rows of each bag of token ids.
+          - `table` (V, D) float: embedding table; `ids` (B, T) int64 in `[0, V)`: token ids of each bag
+          - returns (B, D), dtype of `table`: `out[b]` = mean over `t` of `table[ids[b, t]]`
+          - no Python loops
+        setup: |
+          import torch
+        starter: |
+          def bag_mean(table, ids):
+              raise NotImplementedError
+        solution: |
+          def bag_mean(table, ids):
+              return table[ids].mean(dim=1)       # (B, T, D) -> (B, D)
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _has_loop(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if hasattr(c, "co_code"))
+              return walk(fn.__code__)
+
+          assert not _has_loop(bag_mean), "bag_mean contains a Python loop (for / while / comprehension): index with the whole tensor"
+
+          def _ref(table, ids):
+              B, T = ids.shape
+              out = torch.zeros(B, table.shape[1], dtype=table.dtype)
+              for b in range(B):
+                  for t in range(T):
+                      out[b] += table[int(ids[b, t])]
+                  out[b] /= T
+              return out
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, atol=1e-5))
+
+          def _show(table, ids):
+              return f"(table {tuple(table.shape)} {table.dtype}, ids {ids.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              V, D, B, T = r.randint(1, 6), r.randint(1, 4), r.randint(1, 4), r.randint(1, 5)
+              table = torch.randn(V, D, generator=g, dtype=r.choice([torch.float32, torch.float64]))
+              return (table, torch.randint(0, V, (B, T), generator=g))
+
+          _t = torch.tensor([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0]])
+          cases = [
+              (_t, torch.tensor([[2]])),                          # B = 1, T = 1
+              (_t, torch.tensor([[0, 2], [1, 1]])),               # B = T, repeated id
+              (torch.tensor([[7.0, -1.0]]), torch.zeros(3, 4, dtype=torch.long)),   # V = 1
+              (_t.double(), torch.tensor([[2, 2, 0]])),           # float64
+          ]
+          against(bag_mean, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: idx-fancy.pairs
+    name: "x[rows, cols]: one element per (row, col) pair"
+    teach: |
+      ```python
+      # x[rows, cols] -> shape of rows: out[k] = x[rows[k], cols[k]]  (pairs, not a grid; an int broadcasts)
+      x = torch.tensor([[0, 1, 2], [3, 4, 5]])               # (2, 3)
+      x[torch.tensor([0, 1, 1]), torch.tensor([2, 0, 2])]    # (3,): [2, 3, 5]
+      x[torch.arange(2), torch.tensor([1, 2])]               # (2,): [1, 5]   one column per row
+      x[torch.arange(2), torch.arange(2)]                    # (2,): [0, 4]   diagonal
+      x[1, torch.tensor([2, 0])]                             # (2,): [5, 3]
+      ```
+      Pitfall: index shapes that don't broadcast, e.g. (3,) and (2,), raise `IndexError`.
+    cards:
+      - id: a
+        prompt: |
+          Pick single elements of `x` (4, 5) with pairs of index tensors.
+          - `diag` (4,): the diagonal, `diag[i] = x[i, i]`
+          - `lab` (4,): one entry per row, `lab[i] = x[i, y[i]]`
+          - `pts` (3,): the entries at the (row, col) pairs of `coords`: `pts[k] = x[coords[k, 0], coords[k, 1]]`
+          - `row2` (3,): `row2[k] = x[2, cols[k]]`
+        setup: |
+          import torch
+          x = torch.arange(20).view(4, 5)
+          y = torch.tensor([4, 0, 2, 2])
+          coords = torch.tensor([[3, 1], [0, 4], [3, 1]])
+          cols = torch.tensor([4, 1, 0])
+        solution: |
+          diag = x[torch.arange(4), torch.arange(4)]
+          lab = x[torch.arange(4), y]
+          pts = x[coords[:, 0], coords[:, 1]]
+          row2 = x[2, cols]
+        check: |
+          def _chk(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is a {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.equal(got, exp), f"{name} = {got.tolist()}, expected {exp.tolist()}"
+
+          _chk("diag", diag, torch.tensor([0, 6, 12, 18]))
+          _chk("lab", lab, torch.tensor([4, 5, 12, 17]))
+          _chk("pts", pts, torch.tensor([16, 4, 16]))
+          _chk("row2", row2, torch.tensor([14, 11, 10]))
+      - id: b
+        prompt: |
+          Write `seq_logprob(logp, tokens)`: the total log-probability of a token sequence under per-step predictions.
+          - `logp` (T, V) float: row `t` holds the log-probabilities of the token at step `t + 1`
+          - `tokens` (T + 1,) int64: the sequence
+          - returns a 0-dim tensor, dtype of `logp`: `Σ_t logp[t, tokens[t + 1]]`
+          - no Python loops
+        setup: |
+          import torch
+        starter: |
+          def seq_logprob(logp, tokens):
+              raise NotImplementedError
+        solution: |
+          def seq_logprob(logp, tokens):
+              T = logp.shape[0]
+              return logp[torch.arange(T), tokens[1:]].sum()     # (T,) & (T,) -> (T,) -> 0-dim
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _has_loop(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if hasattr(c, "co_code"))
+              return walk(fn.__code__)
+
+          assert not _has_loop(seq_logprob), "seq_logprob contains a Python loop (for / while / comprehension): use x[rows, cols]"
+
+          def _ref(logp, tokens):
+              tot = torch.zeros((), dtype=logp.dtype)
+              for t in range(logp.shape[0]):
+                  tot += logp[t, int(tokens[t + 1])]
+              return tot
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, atol=1e-5))
+
+          def _show(logp, tokens):
+              return f"(logp {tuple(logp.shape)} {logp.dtype} = {logp.tolist()}, tokens {tokens.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              T, V = r.randint(1, 6), r.randint(1, 6)
+              logp = torch.randn(T, V, generator=g, dtype=r.choice([torch.float32, torch.float64])).log_softmax(-1)
+              return (logp, torch.randint(0, V, (T + 1,), generator=g))
+
+          _lp = torch.arange(12.0).view(3, 4)        # not real log-probs: easy to read
+          cases = [
+              (torch.tensor([[-0.5, -2.0]]), torch.tensor([0, 1])),            # T = 1
+              (torch.tensor([[0.0], [0.0]]), torch.tensor([0, 0, 0])),         # V = 1
+              (_lp, torch.tensor([3, 1, 1, 2])),                               # T < V, repeat
+              (_lp.t().contiguous(), torch.tensor([0, 2, 0, 1, 2])),           # T > V
+              (_lp.double(), torch.tensor([0, 0, 3, 3])),                      # float64
+          ]
+          against(seq_logprob, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: idx-fancy.grid
+    name: "Broadcasting index tensors: sub-grids and K tokens per batch element"
+    teach: |
+      ```python
+      # index tensors broadcast to S -> S + the non-indexed dims of x
+      x = torch.arange(12).view(3, 4)
+      x[torch.tensor([0, 2])[:, None], torch.tensor([1, 3])]       # (2, 1) & (2,) -> (2, 2): [[1, 3], [9, 11]]
+      # K tokens per row: h (B, T, D), idx (B, K) -> (B, K, D), out[b, k] = h[b, idx[b, k]]
+      h = torch.arange(12).view(2, 3, 2)                           # (B=2, T=3, D=2)
+      h[torch.arange(2)[:, None], torch.tensor([[2, 0], [1, 1]])]  # (2, 1) & (2, 2) -> (2, 2, 2): [[[4, 5], [0, 1]], [[8, 9], [8, 9]]]
+      ```
+      Pitfall: `arange(B)` without `[:, None]` fails, or silently pairs wrong when K == B.
+    cards:
+      - id: a
+        prompt: |
+          Use broadcasting index tensors to cut a sub-grid out of `x` and pick K tokens per batch element of `h`.
+          - `sub` (2, 3): rows `r` × columns `c` of `x`: `sub[i, j] = x[r[i], c[j]]`
+          - `subT` (3, 2): `subT[j, i] = x[r[i], c[j]]`, in one indexing expression
+          - `toks` (2, 2, 3): `toks[b, k] = h[b, idx[b, k]]`
+        setup: |
+          import torch
+          x = torch.arange(20).view(4, 5)
+          r = torch.tensor([3, 1])
+          c = torch.tensor([0, 4, 2])
+          h = torch.arange(24).view(2, 4, 3)
+          idx = torch.tensor([[3, 0], [1, 1]])
+        solution: |
+          sub = x[r[:, None], c]
+          subT = x[r, c[:, None]]
+          toks = h[torch.arange(2)[:, None], idx]
+        check: |
+          def _chk(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is a {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.equal(got, exp), f"{name} = {got.tolist()}, expected {exp.tolist()}"
+
+          _chk("sub", sub, torch.tensor([[15, 19, 17], [5, 9, 7]]))
+          _chk("subT", subT, torch.tensor([[15, 5], [19, 9], [17, 7]]))
+          _chk("toks", toks, torch.tensor([[[9, 10, 11], [0, 1, 2]], [[15, 16, 17], [15, 16, 17]]]))
+      - id: b
+        prompt: |
+          Write `sub_attention(A, keep)`: for each batch element, the attention sub-matrix between its kept positions.
+          - `A` (B, T, T): attention matrices; `keep` (B, K) int64 in `[0, T)`: kept positions of each `b` (repeats allowed)
+          - returns (B, K, K), dtype of `A`: `out[b, i, j] = A[b, keep[b, i], keep[b, j]]`
+          - no Python loops
+        setup: |
+          import torch
+        starter: |
+          def sub_attention(A, keep):
+              raise NotImplementedError
+        solution: |
+          def sub_attention(A, keep):
+              b = torch.arange(A.shape[0])[:, None, None]          # (B, 1, 1)
+              return A[b, keep[:, :, None], keep[:, None, :]]       # broadcast to (B, K, K)
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _has_loop(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if hasattr(c, "co_code"))
+              return walk(fn.__code__)
+
+          assert not _has_loop(sub_attention), "sub_attention contains a Python loop (for / while / comprehension): broadcast the index tensors"
+
+          def _ref(A, keep):
+              B, K = keep.shape
+              out = torch.zeros(B, K, K, dtype=A.dtype)
+              for b in range(B):
+                  for i in range(K):
+                      for j in range(K):
+                          out[b, i, j] = A[b, int(keep[b, i]), int(keep[b, j])]
+              return out
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.equal(got, exp))
+
+          def _show(A, keep):
+              return f"(A {tuple(A.shape)} = {A.tolist()}, keep {keep.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, T, K = r.randint(1, 4), r.randint(1, 5), r.randint(1, 5)
+              return (torch.randn(B, T, T, generator=g), torch.randint(0, T, (B, K), generator=g))
+
+          _A = torch.arange(18.0).view(2, 3, 3)
+          cases = [
+              (_A[:1], torch.tensor([[2]])),                       # B = 1, K = 1
+              (_A[:1], torch.tensor([[2, 0]])),                    # non-symmetric A
+              (_A, torch.tensor([[0, 1, 2], [2, 1, 0]])),          # K = T, a different order per batch element
+              (_A, torch.tensor([[1, 1], [0, 2]])),                # repeated positions, B = K
+              (_A, torch.tensor([[2, 0, 1, 2], [0, 0, 2, 1]])),    # K > T
+          ]
+          against(sub_attention, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: idx-fancy.mixed
+    name: "Slices mixed with an index tensor: x[:, idx], x[..., idx]"
+    teach: |
+      ```python
+      # x[:, idx] -> idx.shape replaces dim 1 in place: (B, T, D), idx (K,) -> (B, K, D), out[b, k] = x[b, idx[k]]
+      x = torch.arange(12).view(2, 3, 2)              # (B=2, T=3, D=2)
+      x[:, torch.tensor([2, 0])]                      # (2, 2, 2): [[[4, 5], [0, 1]], [[10, 11], [6, 7]]]
+      x[:, torch.tensor([[0, 1], [1, 2]])].shape      # idx (2, 2) -> (2, 2, 2, 2)
+      # x[..., idx]: "..." = all leading dims, so idx indexes the last dim
+      x[..., torch.tensor([1])]                       # (2, 3, 1): [[[1], [3], [5]], [[7], [9], [11]]]
+      ```
+      Pitfall: `x[:, idx]` uses the same `idx` for every `b`; per-row indices need the previous skill.
+    cards:
+      - id: a
+        prompt: |
+          Index one dim of `x` (2, 4, 3) with an index tensor, keeping the other dims whole.
+          - `ends` (2, 2, 3): first and last step of each `b`: `ends[b] = [x[b, 0], x[b, -1]]`
+          - `feat` (2, 4, 2): features 2 and 0 of each step, `feat[b, t] = [x[b, t, 2], x[b, t, 0]]`, using `...`
+          - `win` (2, 2, 2, 3): `win[b, i, j] = x[b, w[i, j]]`
+          - don't modify `x`
+        setup: |
+          import torch
+          x = torch.arange(24).view(2, 4, 3)
+          w = torch.tensor([[0, 1], [2, 3]])
+        solution: |
+          ends = x[:, torch.tensor([0, -1])]
+          feat = x[..., torch.tensor([2, 0])]
+          win = x[:, w]
+        check: |
+          def _chk(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is a {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.equal(got, exp), f"{name} = {got.tolist()}, expected {exp.tolist()}"
+
+          _x = torch.arange(24).view(2, 4, 3)
+          assert torch.equal(x, _x), "x was modified"
+          _chk("ends", ends, torch.stack([_x[:, 0], _x[:, 3]], dim=1))
+          _chk("feat", feat, torch.stack([_x[..., 2], _x[..., 0]], dim=-1))
+          _chk("win", win, torch.stack([torch.stack([_x[:, 0], _x[:, 1]], 1), torch.stack([_x[:, 2], _x[:, 3]], 1)], 1))
+      - id: b
+        prompt: |
+          Write `constrained_argmax(logits, allowed)`: at every (b, t), the allowed token with the largest logit.
+          - `logits` (B, T, V) float; `allowed` (K,) int64: distinct token ids in `[0, V)`
+          - returns (B, T) int64: the vocabulary id (not its position in `allowed`) with the largest `logits[b, t, id]` among `allowed`
+          - ties -> the id that comes first in `allowed`; no Python loops
+        setup: |
+          import torch
+        starter: |
+          def constrained_argmax(logits, allowed):
+              raise NotImplementedError
+        solution: |
+          def constrained_argmax(logits, allowed):
+              pos = logits[..., allowed].argmax(dim=-1)     # (B, T, K) -> (B, T), positions in allowed
+              return allowed[pos]                           # (B, T) vocabulary ids
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _has_loop(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if hasattr(c, "co_code"))
+              return walk(fn.__code__)
+
+          assert not _has_loop(constrained_argmax), "constrained_argmax contains a Python loop (for / while / comprehension): index the last dim"
+
+          def _ref(logits, allowed):
+              B, T, V = logits.shape
+              out = torch.zeros(B, T, dtype=torch.long)
+              for b in range(B):
+                  for t in range(T):
+                      best = None
+                      for v in allowed.tolist():
+                          if best is None or logits[b, t, v] > logits[b, t, best]:
+                              best = v
+                      out[b, t] = best
+              return out
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.equal(got, exp))
+
+          def _show(logits, allowed):
+              return f"(logits {tuple(logits.shape)} = {logits.tolist()}, allowed {allowed.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, T, V = r.randint(1, 3), r.randint(1, 4), r.randint(1, 7)
+              K = r.randint(1, V)
+              logits = torch.randint(-3, 4, (B, T, V), generator=g).float()       # small ints: ties happen
+              allowed = torch.randperm(V, generator=g)[:K]
+              return (logits, allowed)
+
+          cases = [
+              (torch.tensor([[[0.0, 5.0, 1.0]]]), torch.tensor([2])),                   # K = 1: forced
+              (torch.tensor([[[0.0, 5.0, 1.0]]]), torch.tensor([0, 2])),                # best overall (1) not allowed
+              (torch.tensor([[[0.0, 5.0, 1.0]]]), torch.tensor([2, 0, 1])),             # K = V, unsorted
+              (torch.tensor([[[2.0, 2.0, 2.0, 0.0]]]), torch.tensor([3, 2, 0])),        # tie: first in allowed (2)
+              (torch.tensor([[[1.0, 4.0], [3.0, 0.0]], [[0.0, 0.0], [5.0, 6.0]]]), torch.tensor([1, 0])),
+          ]
+          against(constrained_argmax, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: idx-fancy.mask
+    name: "Boolean masks: x[m], nonzero, torch.where, x[m] = v"
+    teach: |
+      ```python
+      x = torch.tensor([[1, -2], [-3, 4]])           # (2, 2)
+      # x[m] -> (n_true,) + x.shape[m.ndim:]: the entries where m is True, row-major
+      x[x > 0]                                       # (2,): [1, 4]
+      x[torch.tensor([False, True])]                 # row mask (2,) -> (1, 2): [[-3, 4]]
+      # m.nonzero() -> (n_true, m.ndim) int64: coordinates of each True
+      (x < 0).nonzero()                              # [[0, 1], [1, 0]]
+      # torch.where(m) -> tuple of m.ndim int64 tensors (n_true,): (rows, cols)
+      torch.where(x < 0)                             # (tensor([0, 1]), tensor([1, 0]))
+      # x[m] = v: writes v in place where m is True
+      x[x < 0] = 0                                   # x = [[1, 0], [0, 4]]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Select, locate and overwrite entries of `x` (3, 4) with boolean masks.
+          - `pos` (n,): the entries of `x` that are `> 0`, row-major
+          - `kept` (2, 4): the rows of `x` where `keep` is True
+          - `coords` (n, 2) int64: `(row, col)` of each negative entry, row-major, with `nonzero`
+          - `rr`, `cc` (n,) int64: the same rows and columns as two tensors, with `torch.where`
+          - `y` (3, 4): a copy of `x` with negative entries set to `0.` by masked assignment; don't modify `x`
+        setup: |
+          import torch
+          x = torch.tensor([[1., -2., 0., 3.], [-1., 4., -5., 2.], [0., -3., 6., -4.]])
+          keep = torch.tensor([True, False, True])
+        solution: |
+          pos = x[x > 0]
+          kept = x[keep]
+          coords = (x < 0).nonzero()
+          rr, cc = torch.where(x < 0)
+          y = x.clone()
+          y[y < 0] = 0.
+        check: |
+          def _chk(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is a {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.equal(got, exp), f"{name} = {got.tolist()}, expected {exp.tolist()}"
+
+          _x = torch.tensor([[1., -2., 0., 3.], [-1., 4., -5., 2.], [0., -3., 6., -4.]])
+          assert torch.equal(x, _x), f"x was modified: x = {x.tolist()} (clone before assigning)"
+          _chk("pos", pos, torch.tensor([1., 3., 4., 2., 6.]))
+          _chk("kept", kept, _x[[0, 2]])
+          _chk("coords", coords, torch.tensor([[0, 1], [1, 0], [1, 2], [2, 1], [2, 3]]))
+          _chk("rr", rr, torch.tensor([0, 1, 1, 2, 2]))
+          _chk("cc", cc, torch.tensor([1, 0, 2, 1, 3]))
+          _chk("y", y, _x.clamp(min=0))
+      - id: b
+        prompt: |
+          Write `pack_tokens(h, mask)`, which drops padding: keep only the real tokens of a batch and where each came from.
+          - `h` (B, T, D): token vectors; `mask` (B, T) bool: True = real token
+          - returns `(vals, pos)`: `vals` (n, D): the real `h[b, t]`, row-major (by `b`, then `t`); `pos` (n, 2) int64: their `(b, t)`
+          - no Python loops
+        setup: |
+          import torch
+        starter: |
+          def pack_tokens(h, mask):
+              raise NotImplementedError
+        solution: |
+          def pack_tokens(h, mask):
+              return h[mask], mask.nonzero()      # (n, D), (n, 2)
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _has_loop(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if hasattr(c, "co_code"))
+              return walk(fn.__code__)
+
+          assert not _has_loop(pack_tokens), "pack_tokens contains a Python loop (for / while / comprehension): index with the mask"
+
+          def _ref(h, mask):
+              B, T, D = h.shape
+              vals, pos = [], []
+              for b in range(B):
+                  for t in range(T):
+                      if mask[b, t]:
+                          vals.append(h[b, t])
+                          pos.append([b, t])
+              v = torch.stack(vals) if vals else torch.zeros(0, D, dtype=h.dtype)
+              return v, torch.tensor(pos, dtype=torch.long).reshape(-1, 2)
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 2 and all(torch.is_tensor(g) for g in got)):
+                  return False
+              return all(g.shape == e.shape and g.dtype == e.dtype and torch.equal(g, e) for g, e in zip(got, exp))
+
+          def _show(h, mask):
+              return f"(h {tuple(h.shape)}, mask {mask.int().tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, T, D = r.randint(1, 4), r.randint(1, 5), r.randint(1, 3)
+              return (torch.randn(B, T, D, generator=g), torch.rand(B, T, generator=g) < r.random())
+
+          _h = torch.arange(12.0).view(2, 3, 2)
+          cases = [
+              (_h, torch.zeros(2, 3, dtype=torch.bool)),                       # n = 0
+              (_h, torch.ones(2, 3, dtype=torch.bool)),                        # all real
+              (_h, torch.tensor([[True, True, False], [True, False, False]])),
+              (_h[:1], torch.tensor([[False, False, True]])),                  # B = 1
+              (_h[:, :1], torch.tensor([[False], [True]])),                    # T = 1
+          ]
+          against(pack_tokens, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: idx-fancy.assign
+    name: "Writing through indices: x[idx] = v, index_add_, index_put_(accumulate=True)"
+    teach: |
+      ```python
+      # x[idx] = v: writes v in place at idx
+      x = torch.zeros(3); x[torch.tensor([0, 2])] = 7.                                       # [7, 0, 7]
+      # x.index_add_(dim, idx (K,), src (size K on dim)) -> x: x[idx[k]] += src[k], repeats add up
+      torch.zeros(3).index_add_(0, torch.tensor([1, 1, 2]), torch.tensor([1., 1., 5.]))     # (3,): [0, 2, 5]
+      # x.index_put_((rows, cols), vals, accumulate=True) -> x: x[rows[k], cols[k]] += vals[k], repeats add up
+      torch.zeros(2, 2).index_put_((torch.tensor([0, 0]), torch.tensor([1, 1])), torch.tensor([1., 2.]), accumulate=True)
+      #                                                                                       (2, 2): [[0, 3], [0, 0]]
+      ```
+      Pitfall: `x[idx] += v` adds a repeated index only once.
+    cards:
+      - id: a
+        prompt: |
+          Write values into tensors through index tensors.
+          - `a` (6,) float: zeros, with `-1.` at the positions in `pos`
+          - `cnt` (5,) float: `cnt[c]` = number of times `c` appears in `labels`, with `index_add_`
+          - `M` (3, 3) float: zeros, plus `vals[k]` added at cell `(rows[k], cols[k])` for every `k` (repeated cells add up), with `index_put_`
+        setup: |
+          import torch
+          C = 5
+          pos = torch.tensor([1, 4])
+          labels = torch.tensor([2, 0, 2, 2, 4])
+          rows = torch.tensor([0, 2, 0])
+          cols = torch.tensor([1, 1, 1])
+          vals = torch.tensor([1., 2., 3.])
+        solution: |
+          a = torch.zeros(6)
+          a[pos] = -1.
+          cnt = torch.zeros(C).index_add_(0, labels, torch.ones(5))
+          M = torch.zeros(3, 3).index_put_((rows, cols), vals, accumulate=True)
+        check: |
+          def _chk(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is a {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.equal(got, exp), f"{name} = {got.tolist()}, expected {exp.tolist()}"
+
+          _chk("a", a, torch.tensor([0., -1., 0., 0., -1., 0.]))
+          _chk("cnt", cnt, torch.tensor([1., 0., 3., 0., 1.]))
+          _chk("M", M, torch.tensor([[0., 4., 0.], [0., 0., 0.], [0., 2., 0.]]))
+      - id: b
+        prompt: |
+          Write `adjacency(src, dst, w, N)`: the weighted adjacency matrix of a directed graph whose edges may repeat.
+          - `src`, `dst` (E,) int64 in `[0, N)`: edge `e` goes from `src[e]` to `dst[e]`; `w` (E,) float: edge weights; `N` (int): number of nodes; `E` may be 0
+          - returns `adj` (N, N), dtype of `w`: `adj[s, d]` = sum of `w[e]` over the edges `s -> d`, 0 if none
+          - no Python loops
+        setup: |
+          import torch
+        starter: |
+          def adjacency(src, dst, w, N):
+              raise NotImplementedError
+        solution: |
+          def adjacency(src, dst, w, N):
+              adj = torch.zeros(N, N, dtype=w.dtype)
+              return adj.index_put_((src, dst), w, accumulate=True)     # adj[src[e], dst[e]] += w[e]
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _has_loop(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if hasattr(c, "co_code"))
+              return walk(fn.__code__)
+
+          assert not _has_loop(adjacency), "adjacency contains a Python loop (for / while / comprehension): accumulate with index_put_"
+
+          def _ref(src, dst, w, N):
+              adj = torch.zeros(N, N, dtype=w.dtype)
+              for e in range(len(w)):
+                  adj[int(src[e]), int(dst[e])] += w[e]
+              return adj
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, atol=1e-5))
+
+          def _show(src, dst, w, N):
+              return f"(src {src.tolist()}, dst {dst.tolist()}, w {w.tolist()} {w.dtype}, N={N})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              N, E = r.randint(1, 4), r.randint(0, 8)
+              dt = r.choice([torch.float32, torch.float64])
+              return (torch.randint(0, N, (E,), generator=g), torch.randint(0, N, (E,), generator=g),
+                      torch.randn(E, generator=g, dtype=dt), N)
+
+          _e = torch.zeros(0, dtype=torch.long)
+          cases = [
+              (_e, _e, torch.zeros(0), 3),                                                      # no edge
+              (torch.tensor([0, 0]), torch.tensor([0, 0]), torch.tensor([1.5, 2.0]), 1),        # N = 1, duplicate self-loop
+              (torch.tensor([0]), torch.tensor([2]), torch.tensor([4.0]), 3),                   # direction
+              (torch.tensor([1, 0, 1, 1]), torch.tensor([2, 1, 2, 2]), torch.tensor([1.0, 2.0, 3.0, 4.0]), 3),   # duplicates
+              (torch.tensor([2, 1]), torch.tensor([1, 2]), torch.tensor([1.0, -1.0], dtype=torch.float64), 3),
+          ]
+          against(adjacency, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)

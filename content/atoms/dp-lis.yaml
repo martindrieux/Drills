@@ -1,0 +1,240 @@
+id: dp-lis
+title: Longest increasing subsequence
+summary: "dp[i] = longest increasing run ending at i in O(n²), or the patience 'tails' array with bisect in O(n log n)."
+links:
+  - to: dp-1d
+    kind: prereq
+    note: "A 1D DP of the 'ending exactly at i' flavour, whose transition scans every earlier index instead of the last two."
+  - to: py-bisect
+    kind: uses
+    note: "The O(n log n) version binary-searches the tails array: bisect_left for strictly increasing, bisect_right for non-decreasing."
+  - to: py-sorting
+    kind: uses
+    note: "2D chain problems (Russian dolls, pairs) become LIS after sorting by one key, with a tie-break on the other."
+lesson: |
+  **Shape:** one sequence; find the longest **subsequence** (gaps allowed, order kept) that is increasing,
+  or more generally that forms a "chain" under some comparison.
+
+  **Recognition signals**
+  - "Longest strictly increasing / non-decreasing subsequence."
+  - "Max number of envelopes / boxes / people you can nest or stack" → sort by one dimension, LIS on the other.
+  - "Longest chain of pairs", "longest divisible subset" (chain under divisibility, after sorting).
+  - "Number of longest increasing subsequences" → O(n²) DP with a second `count` array.
+  - "Minimum deletions to make the array sorted" = `n - LIS`.
+
+  **O(n²) DP**
+
+  | Question | Answer |
+  |---|---|
+  | State | `dp[i]` = length of the longest increasing subsequence **ending at index i** (must use `nums[i]`) |
+  | Transition | `dp[i] = 1 + max(dp[j] for j < i if nums[j] < nums[i])`, or 1 if no such `j` |
+  | Base | every `dp[i]` starts at `1` (the element alone) |
+  | Order | `i` ascending, inner `j` over `0..i-1` |
+  | Answer | **`max(dp)`**, not `dp[-1]`: the LIS may end anywhere |
+
+  ```python
+  dp = [1] * n
+  for i in range(n):
+      for j in range(i):
+          if nums[j] < nums[i]:
+              dp[i] = max(dp[i], dp[j] + 1)
+  answer = max(dp)
+  ```
+
+  Why "ending at i": "LIS of the prefix `nums[:i]`" doesn't tell you the last value, so you can't
+  know whether `nums[i]` may extend it. Pinning the end element makes the transition checkable.
+
+  **O(n log n): patience sorting / tails.**
+  `tails[k]` = the **smallest possible last value** of an increasing subsequence of length `k + 1`.
+  `tails` is always sorted, so each new `x` is placed by binary search:
+
+  ```python
+  from bisect import bisect_left
+
+  tails = []
+  for x in nums:
+      i = bisect_left(tails, x)     # first tail >= x
+      if i == len(tails):
+          tails.append(x)           # x extends the longest run
+      else:
+          tails[i] = x              # x is a smaller ending for length i+1: keep it
+  answer = len(tails)
+  ```
+
+  | Variant | search | why |
+  |---|---|---|
+  | strictly increasing | `bisect_left` | an equal `x` must **replace** its twin, not extend past it |
+  | non-decreasing | `bisect_right` | an equal `x` may go **after** its twin |
+
+  `tails` is **not** an actual LIS (it mixes elements from different subsequences); only its length is meaningful.
+  To rebuild the sequence, use the O(n²) DP with a `parent` array.
+
+  **Russian dolls (2D chains):** sort by width **ascending**, and for equal widths by height **descending**,
+  then run strict LIS on the heights. The descending tie-break stops two envelopes of the same width
+  from being chained (`[3,4]` can't hold `[3,3]`).
+
+  ```python
+  envs.sort(key=lambda e: (e[0], -e[1]))
+  heights = [h for _, h in envs]     # then strict LIS on heights
+  ```
+
+  **Number of LIS:** alongside `length[i]`, keep `count[i]` = how many LIS end at `i`.
+  When `length[j] + 1 > length[i]`, reset `count[i] = count[j]`; when equal, add `count[j]`.
+  Answer = sum of `count[i]` over the `i` with maximal length.
+
+  **Pitfalls**
+  - Answer is `max(dp)` for the O(n²) version.
+  - `bisect_left` vs `bisect_right` silently switches between strict and non-strict.
+  - Sorting envelopes by `(w, h)` ascending overcounts same-width envelopes.
+
+  **Complexity:** O(n²) time / O(n) space for the DP; O(n log n) time / O(n) space with tails.
+drills:
+  - id: quadratic-transition
+    prompt: |
+      `dp[i]` = length of the longest strictly increasing subsequence ending at `i`.
+      Write the inner `if` + update. Then put the answer in `res` (careful where it is).
+    setup: |
+      nums = [10, 9, 2, 5, 3, 7, 101, 18]
+      n = len(nums)
+    starter: |
+      dp = [1] * n
+      for i in range(n):
+          for j in range(i):
+              pass
+      res = None
+    solution: |
+      dp = [1] * n
+      for i in range(n):
+          for j in range(i):
+              if nums[j] < nums[i]:
+                  dp[i] = max(dp[i], dp[j] + 1)
+      res = max(dp)
+    check: |
+      assert dp == [1, 1, 1, 2, 2, 3, 4, 4], f"dp = {dp!r}"
+      assert res == 4, f"res = {res!r}"
+  - id: tails-bisect-left
+    prompt: |
+      Strict LIS in O(n log n). For each `x`, find its slot in `tails` with `bisect_left`
+      and either append or replace. The skeleton puts `len(tails)` in `res`.
+    setup: |
+      from bisect import bisect_left
+      nums = [0, 1, 0, 3, 2, 3]
+    starter: |
+      tails = []
+      for x in nums:
+          pass
+      res = len(tails)
+    solution: |
+      tails = []
+      for x in nums:
+          i = bisect_left(tails, x)
+          if i == len(tails):
+              tails.append(x)
+          else:
+              tails[i] = x
+      res = len(tails)
+    check: |
+      assert res == 4, f"res = {res!r}"
+      assert tails == [0, 1, 2, 3], f"tails = {tails!r}"
+  - id: tails-non-decreasing
+    prompt: |
+      Longest **non-decreasing** subsequence (equal neighbours allowed) with the tails method.
+      Pick the right `bisect` function. The skeleton puts `len(tails)` in `res`.
+    setup: |
+      import bisect
+      nums = [1, 3, 3, 3, 2, 2, 4]
+    starter: |
+      tails = []
+      for x in nums:
+          pass
+      res = len(tails)
+    solution: |
+      tails = []
+      for x in nums:
+          i = bisect.bisect_right(tails, x)
+          if i == len(tails):
+              tails.append(x)
+          else:
+              tails[i] = x
+      res = len(tails)
+    check: |
+      assert res != 3, "res = 3: that's the strictly increasing answer (bisect_left)"
+      assert res == 5, f"res = {res!r}  (1 3 3 3 4)"
+  - id: envelope-sort
+    prompt: |
+      Sort `envs` in place so that a **strict** LIS on the heights gives the Russian-doll answer:
+      width ascending, and for equal widths, height descending.
+    setup: |
+      envs = [[5, 4], [6, 4], [6, 7], [2, 3], [5, 2]]
+    solution: |
+      envs.sort(key=lambda e: (e[0], -e[1]))
+    check: |
+      assert envs == [[2, 3], [5, 4], [5, 2], [6, 7], [6, 4]], f"envs = {envs!r}"
+classics:
+  - id: longest-increasing-subsequence
+    title: Longest Increasing Subsequence
+    url: https://leetcode.com/problems/longest-increasing-subsequence/
+    difficulty: Medium
+    prompt: |
+      Return the length of the longest **strictly** increasing subsequence of `nums`.
+      An O(n²) DP passes; aim for O(n log n).
+    starter: |
+      def lengthOfLIS(nums):
+          pass
+    hints:
+      - "O(n²): dp[i] = LIS ending at i = 1 + max dp[j] over j < i with nums[j] < nums[i]. Answer max(dp)."
+      - "O(n log n): keep tails[k] = smallest tail of an increasing subsequence of length k+1. It stays sorted."
+      - For each x, bisect_left into tails; append if it lands at the end, else overwrite.
+    solution: |
+      from bisect import bisect_left
+
+      def lengthOfLIS(nums):
+          tails = []
+          for x in nums:
+              i = bisect_left(tails, x)
+              if i == len(tails):
+                  tails.append(x)
+              else:
+                  tails[i] = x
+          return len(tails)
+    check: |
+      for nums, want in [([10, 9, 2, 5, 3, 7, 101, 18], 4), ([0, 1, 0, 3, 2, 3], 4), ([7, 7, 7, 7], 1),
+                         ([5], 1), ([1, 2, 3, 4, 5], 5), ([5, 4, 3, 2, 1], 1), ([4, 10, 4, 3, 8, 9], 3)]:
+          got = lengthOfLIS(nums)
+          assert got == want, f"lengthOfLIS({nums!r}) = {got!r}, expected {want}"
+    takeaway: "LIS: dp ending at i (answer = max) in O(n²), or tails + bisect_left in O(n log n); tails isn't the sequence itself."
+  - id: russian-doll-envelopes
+    title: Russian Doll Envelopes
+    url: https://leetcode.com/problems/russian-doll-envelopes/
+    difficulty: Hard
+    prompt: |
+      `envelopes[i] = [w, h]`. One envelope fits in another if **both** its width and height are strictly smaller.
+      Return the maximum number of envelopes you can nest. n can be 10^5, so O(n²) is too slow.
+    starter: |
+      def maxEnvelopes(envelopes):
+          pass
+    hints:
+      - Sort by width so any chain is a subsequence of the sorted list. Then you need a strictly increasing run of heights.
+      - Same width can't nest. Sort same-width envelopes by height descending so at most one of them can be picked.
+      - Run the O(n log n) tails LIS (bisect_left) on the heights.
+    solution: |
+      from bisect import bisect_left
+
+      def maxEnvelopes(envelopes):
+          envs = sorted(envelopes, key=lambda e: (e[0], -e[1]))
+          tails = []
+          for _, h in envs:
+              i = bisect_left(tails, h)
+              if i == len(tails):
+                  tails.append(h)
+              else:
+                  tails[i] = h
+          return len(tails)
+    check: |
+      for envs, want in [([[5, 4], [6, 4], [6, 7], [2, 3]], 3), ([[1, 1], [1, 1], [1, 1]], 1),
+                         ([[4, 5], [4, 6], [6, 7], [2, 3], [1, 1]], 4),
+                         ([[1, 3], [3, 5], [6, 7], [6, 8], [8, 4], [9, 5]], 3),
+                         ([[1, 2], [2, 3], [3, 4], [3, 5], [4, 5], [5, 5], [5, 6], [6, 7], [7, 8]], 7)]:
+          got = maxEnvelopes([list(e) for e in envs])
+          assert got == want, f"maxEnvelopes({envs!r}) = {got!r}, expected {want}"
+    takeaway: "2D nesting → sort (w asc, h desc), then strict LIS on h with bisect_left."

@@ -1,0 +1,11 @@
+id: numpy
+title: NumPy for ML
+blob: python-toolkit
+summary: The NumPy you need to write ML code without a framework, from arrays, indexing and broadcasting to softmax, distances and regression from scratch.
+parts:
+  - title: Core
+    chunks: [np-arrays, np-indexing, np-shapes, np-math, np-ml]
+  - title: Problems
+    chunks: [np-attention]
+  - title: Convolution
+    chunks: [conv-forward, conv-backward, conv-im2col, conv-variants, conv-theory]

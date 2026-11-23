@@ -1,0 +1,944 @@
+id: graphs-recursion
+title: Graphs & recursion
+intro: |
+  Six skeletons cover most grid, graph and search problems: BFS, grid DFS, backtracking, topological sort, union-find and memoized recursion.
+problems:
+  - Number of Islands
+  - Rotting Oranges
+  - Course Schedule
+  - Subsets
+  - Redundant Connection
+  - Coin Change
+atoms: []
+skills:
+  - id: graphs-recursion.bfs
+    name: BFS by levels
+    teach: |
+      ```python
+      from collections import deque
+
+      q = deque([start])
+      seen = {start}
+      steps = 0
+
+      while q:
+          for _ in range(len(q)):
+              node = q.popleft()
+              # done? return steps
+
+              for nxt in neighbors(node):
+                  if nxt not in seen:
+                      seen.add(nxt)
+                      q.append(nxt)
+          steps += 1
+      ```
+      Use when: "shortest path", "minimum steps", unweighted graph or grid, spreading level by level.
+      Cost: O(V + E)
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `grid: list[list[int]]`, R × C with R, C ≥ 1; `0` = open cell, `1` = wall.
+          - **Write** `shortest_path(grid)` with a BFS from the top-left cell `(0, 0)` to the bottom-right cell `(R - 1, C - 1)`,
+            moving up / down / left / right (no diagonals) through open cells.
+          - **Returns**: `int`, the fewest moves (`0` for a 1 × 1 open grid); `-1` if there is no path or the start or end cell is a wall.
+          - **Checked on**: walls that force detours (including moves up and left), 1 × 1 grids, a walled start or end,
+            a single row or column, and 300 random grids.
+        starter: |
+          def shortest_path(grid):
+              pass
+        solution: |
+          from collections import deque
+
+          def shortest_path(grid):
+              R, C = len(grid), len(grid[0])
+              if grid[0][0] or grid[R - 1][C - 1]:
+                  return -1
+              q = deque([(0, 0)])
+              seen = {(0, 0)}
+              steps = 0
+              while q:
+                  for _ in range(len(q)):
+                      r, c = q.popleft()
+                      if (r, c) == (R - 1, C - 1):
+                          return steps
+                      for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                          nr, nc = r + dr, c + dc
+                          if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 0 and (nr, nc) not in seen:
+                              seen.add((nr, nc))
+                              q.append((nr, nc))
+                  steps += 1
+              return -1
+        check: |
+          res = shortest_path([[0, 0, 0], [1, 1, 0], [0, 0, 0]])
+          assert res == 4, f"shortest_path(3x3 with wall) = {res!r}, expected 4"
+          res = shortest_path([[0]])
+          assert res == 0, f"shortest_path([[0]]) = {res!r}, expected 0"
+          res = shortest_path([[0, 1], [1, 0]])
+          assert res == -1, f"shortest_path(blocked) = {res!r}, expected -1"
+          res = shortest_path([[1, 0], [0, 0]])
+          assert res == -1, f"shortest_path(start is a wall) = {res!r}, expected -1"
+          res = shortest_path([[0, 0, 0, 0]])
+          assert res == 3, f"shortest_path(one row of 4) = {res!r}, expected 3"
+
+          from cardtest import against, rand_cases
+
+          def _ref(grid):
+              # brute force: relax distances until nothing changes (no queue involved)
+              R, C = len(grid), len(grid[0])
+              if grid[0][0] or grid[R - 1][C - 1]:
+                  return -1
+              INF = float("inf")
+              d = [[INF] * C for _ in range(R)]
+              d[0][0] = 0
+              changed = True
+              while changed:
+                  changed = False
+                  for r in range(R):
+                      for c in range(C):
+                          if grid[r][c] or d[r][c] == INF:
+                              continue
+                          for nr, nc in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                              if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 0 and d[r][c] + 1 < d[nr][nc]:
+                                  d[nr][nc] = d[r][c] + 1
+                                  changed = True
+              return -1 if d[R - 1][C - 1] == INF else d[R - 1][C - 1]
+
+          def _gen(r):
+              R, C = r.randint(1, 6), r.randint(1, 6)
+              p = r.choice([0.0, 0.2, 0.3, 0.4, 0.5])
+              g = [[int(r.random() < p) for _ in range(C)] for _ in range(R)]
+              if r.random() < 0.85:
+                  g[0][0] = g[-1][-1] = 0
+              return (g,)
+
+          _show = lambda g: "([" + ",\n               ".join(map(str, g)) + "])"
+          _edge = [([[1]],), ([[0]],), ([[0, 1]],), ([[0], [1]],), ([[0, 0], [0, 1]],),
+                   ([[0, 0, 0], [1, 1, 0], [0, 0, 0], [0, 1, 1], [0, 0, 0]],),
+                   ([[0, 1, 0, 0, 0], [0, 1, 0, 1, 0], [0, 0, 0, 1, 0]],)]
+          against(shortest_path, _ref, _edge + rand_cases(_gen, 300), show=_show)
+      - id: b
+        prompt: |
+          - **Given**: `grid: list[list[int]]`, R × C with R, C ≥ 1; `0` = empty, `1` = fresh orange, `2` = rotten orange.
+          - **Write** `oranges_rotting(grid)`: each minute, every fresh orange next to a rotten one (up / down / left / right,
+            no diagonals) becomes rotten; all rotten oranges spread at the same time. You may modify `grid`.
+          - **Returns**: `int`, the minutes until no fresh orange is left (`0` if there is none at the start);
+            `-1` if some fresh orange can never rot.
+          - **Checked on**: several rotten starting points, unreachable fresh oranges, no fresh or no rotten oranges,
+            1 × 1 grids, and 300 random grids.
+        starter: |
+          def oranges_rotting(grid):
+              pass
+        solution: |
+          from collections import deque
+
+          def oranges_rotting(grid):
+              R, C = len(grid), len(grid[0])
+              q = deque((r, c) for r in range(R) for c in range(C) if grid[r][c] == 2)
+              fresh = sum(row.count(1) for row in grid)
+              minutes = 0
+              while q and fresh:
+                  for _ in range(len(q)):
+                      r, c = q.popleft()
+                      for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                          nr, nc = r + dr, c + dc
+                          if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 1:
+                              grid[nr][nc] = 2
+                              fresh -= 1
+                              q.append((nr, nc))
+                  minutes += 1
+              return minutes if fresh == 0 else -1
+        check: |
+          res = oranges_rotting([[2, 1, 1], [1, 1, 0], [0, 1, 1]])
+          assert res == 4, f"oranges_rotting(example 1) = {res!r}, expected 4"
+          res = oranges_rotting([[2, 1, 1], [0, 1, 1], [1, 0, 1]])
+          assert res == -1, f"oranges_rotting(isolated fresh) = {res!r}, expected -1"
+          res = oranges_rotting([[0, 2]])
+          assert res == 0, f"oranges_rotting(no fresh) = {res!r}, expected 0"
+          res = oranges_rotting([[1]])
+          assert res == -1, f"oranges_rotting(fresh, no rotten) = {res!r}, expected -1"
+          res = oranges_rotting([[2, 1, 1, 1]])
+          assert res == 3, f"oranges_rotting(one row) = {res!r}, expected 3"
+
+          from cardtest import against, rand_cases
+
+          def _ref(grid):
+              # brute force: simulate minute by minute on a copy
+              g = [row[:] for row in grid]
+              R, C = len(g), len(g[0])
+              minutes = 0
+              while True:
+                  newly = [(r, c) for r in range(R) for c in range(C) if g[r][c] == 1 and any(
+                      0 <= r + dr < R and 0 <= c + dc < C and g[r + dr][c + dc] == 2
+                      for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)))]
+                  if not newly:
+                      break
+                  for r, c in newly:
+                      g[r][c] = 2
+                  minutes += 1
+              return -1 if any(1 in row for row in g) else minutes
+
+          def _gen(r):
+              R, C = r.randint(1, 6), r.randint(1, 6)
+              w = r.choice([(1, 4, 1), (1, 6, 1), (2, 3, 1), (1, 2, 2), (3, 2, 0), (0, 1, 0)])
+              return ([r.choices([0, 1, 2], weights=w, k=C) for _ in range(R)],)
+
+          _show = lambda g: "([" + ",\n                 ".join(map(str, g)) + "])"
+          _edge = [([[0]],), ([[1]],), ([[2]],), ([[2, 0, 1]],), ([[1, 2, 1]],), ([[2, 1, 1], [1, 1, 1]],),
+                   ([[2, 1, 1, 1, 1, 2]],), ([[1, 1, 1], [1, 0, 1], [1, 1, 2]],)]
+          against(oranges_rotting, _ref, _edge + rand_cases(_gen, 300), show=_show)
+
+  - id: graphs-recursion.dfs-grid
+    name: DFS flood fill on a grid
+    teach: |
+      ```python
+      def dfs(r, c):
+          if out_of_bounds or not valid(r, c):
+              return
+          # mark (r, c) as visited
+
+          for dr, dc in dirs:
+              dfs(r + dr, c + dc)
+
+      for r in range(R):
+          for c in range(C):
+              if valid(r, c):
+                  # new component starts here
+                  dfs(r, c)
+      ```
+      Use when: "islands", "regions", "connected cells", count or measure blobs in a grid.
+      Cost: O(R * C)
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `grid: list[list[str]]`, R × C with R, C ≥ 1; `"1"` = land, `"0"` = water (strings, not ints).
+          - **Write** `num_islands(grid)` with a DFS flood fill. You may modify `grid`.
+          - **Returns**: `int`, the number of islands: groups of land cells joined up / down / left / right
+            (cells touching only diagonally are separate).
+          - **Checked on**: diagonal-only neighbours, U- and snake-shaped islands (they need moves up and left),
+            all water, single cells, and 300 random grids.
+        starter: |
+          def num_islands(grid):
+              pass
+        solution: |
+          def num_islands(grid):
+              R, C = len(grid), len(grid[0])
+
+              def dfs(r, c):
+                  if not (0 <= r < R and 0 <= c < C) or grid[r][c] != "1":
+                      return
+                  grid[r][c] = "0"
+                  for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                      dfs(r + dr, c + dc)
+
+              count = 0
+              for r in range(R):
+                  for c in range(C):
+                      if grid[r][c] == "1":
+                          count += 1
+                          dfs(r, c)
+              return count
+        check: |
+          res = num_islands([["1", "1", "0"], ["1", "0", "0"], ["0", "0", "1"]])
+          assert res == 2, f"num_islands(two blobs) = {res!r}, expected 2"
+          res = num_islands([["0", "0"], ["0", "0"]])
+          assert res == 0, f"num_islands(all water) = {res!r}, expected 0"
+          res = num_islands([["1"]])
+          assert res == 1, f"num_islands([['1']]) = {res!r}, expected 1"
+          res = num_islands([["1", "0", "1"], ["0", "1", "0"], ["1", "0", "1"]])
+          assert res == 5, f"num_islands(diagonals don't connect) = {res!r}, expected 5"
+          res = num_islands([["1", "1", "1"], ["0", "1", "0"], ["1", "1", "1"]])
+          assert res == 1, f"num_islands(one snake) = {res!r}, expected 1"
+
+          from cardtest import against, rand_cases
+
+          def _ref(grid):
+              # different method: peel components off a set of land cells
+              R, C = len(grid), len(grid[0])
+              land = {(r, c) for r in range(R) for c in range(C) if grid[r][c] == "1"}
+              count = 0
+              while land:
+                  count += 1
+                  todo = [land.pop()]
+                  while todo:
+                      r, c = todo.pop()
+                      for nb in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                          if nb in land:
+                              land.remove(nb)
+                              todo.append(nb)
+              return count
+
+          def _gen(r):
+              R, C = r.randint(1, 7), r.randint(1, 7)
+              p = r.choice([0.3, 0.5, 0.6, 0.7])
+              return ([["1" if r.random() < p else "0" for _ in range(C)] for _ in range(R)],)
+
+          _show = lambda g: "([" + ",\n             ".join(map(str, g)) + "])"
+          _edge = [([["0"]],), ([["1", "1"], ["1", "1"]],), ([["1", "0", "1"], ["1", "1", "1"]],),
+                   ([["1", "1", "1"], ["1", "0", "1"], ["0", "0", "1"], ["1", "1", "1"]],),
+                   ([["0", "1"], ["1", "1"]],), ([["1"], ["0"], ["1"]],)]
+          against(num_islands, _ref, _edge + rand_cases(_gen, 300), show=_show)
+      - id: b
+        prompt: |
+          - **Given**: `grid: list[list[int]]`, R × C with R, C ≥ 1; `1` = land, `0` = water.
+          - **Write** `max_area(grid)` with a DFS that returns the size of the island it floods. You may modify `grid`.
+          - **Returns**: `int`, the number of cells in the largest island (cells joined up / down / left / right); `0` if there is no land.
+          - **Checked on**: several islands of different sizes, diagonal-only neighbours, U-shaped islands, all water,
+            and 300 random grids.
+        starter: |
+          def max_area(grid):
+              pass
+        solution: |
+          def max_area(grid):
+              R, C = len(grid), len(grid[0])
+
+              def dfs(r, c):
+                  if not (0 <= r < R and 0 <= c < C) or grid[r][c] != 1:
+                      return 0
+                  grid[r][c] = 0
+                  return 1 + sum(dfs(r + dr, c + dc) for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)))
+
+              best = 0
+              for r in range(R):
+                  for c in range(C):
+                      if grid[r][c] == 1:
+                          best = max(best, dfs(r, c))
+              return best
+        check: |
+          res = max_area([[1, 1, 0], [1, 0, 0], [0, 0, 1]])
+          assert res == 3, f"max_area(3-cell and 1-cell islands) = {res!r}, expected 3"
+          res = max_area([[0, 0], [0, 0]])
+          assert res == 0, f"max_area(all water) = {res!r}, expected 0"
+          res = max_area([[1]])
+          assert res == 1, f"max_area([[1]]) = {res!r}, expected 1"
+          res = max_area([[1, 0, 1, 1], [1, 0, 1, 1], [0, 0, 0, 1]])
+          assert res == 5, f"max_area(2 vs 5) = {res!r}, expected 5"
+          res = max_area([[1, 0, 1], [0, 1, 0]])
+          assert res == 1, f"max_area(diagonals only) = {res!r}, expected 1"
+
+          from cardtest import against, rand_cases
+
+          def _ref(grid):
+              # different method: peel components off a set of land cells, keep the biggest
+              R, C = len(grid), len(grid[0])
+              land = {(r, c) for r in range(R) for c in range(C) if grid[r][c] == 1}
+              best = 0
+              while land:
+                  todo, size = [land.pop()], 0
+                  while todo:
+                      r, c = todo.pop()
+                      size += 1
+                      for nb in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                          if nb in land:
+                              land.remove(nb)
+                              todo.append(nb)
+                  best = max(best, size)
+              return best
+
+          def _gen(r):
+              R, C = r.randint(1, 7), r.randint(1, 7)
+              p = r.choice([0.3, 0.5, 0.6, 0.7])
+              return ([[int(r.random() < p) for _ in range(C)] for _ in range(R)],)
+
+          _show = lambda g: "([" + ",\n          ".join(map(str, g)) + "])"
+          _edge = [([[0]],), ([[1, 1], [1, 1]],), ([[1, 0, 1], [1, 1, 1]],), ([[0, 1], [1, 1]],),
+                   ([[1, 1, 1], [1, 0, 1], [0, 0, 1], [1, 1, 1]],), ([[1], [0], [1], [1]],), ([[1, 1, 0, 1, 1, 1]],)]
+          against(max_area, _ref, _edge + rand_cases(_gen, 300), show=_show)
+
+  - id: graphs-recursion.backtracking
+    name: backtracking (choose, recurse, undo)
+    teach: |
+      ```python
+      res = []
+
+      def bt(start, path):
+          res.append(path[:])            # record (or only when complete)
+
+          for i in range(start, n):
+              path.append(x[i])          # choose
+              bt(i + 1, path)            # recurse (i to allow reuse)
+              path.pop()                 # undo
+
+      bt(0, [])
+      ```
+      Use when: "all subsets", "all combinations", "all permutations", "generate every valid ...".
+      Cost: O(2^n * n) for subsets
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums: list[int]`, distinct values, length 0 to 6.
+          - **Write** `subsets(nums)` with backtracking.
+          - **Returns**: `list[list[int]]`, every subset exactly once (`2 ** len(nums)` lists, including `[]` and all of `nums`).
+            The order of the subsets and the order inside each subset don't matter.
+          - **Checked on**: `[]`, one element, negative values, and 300 random lists.
+        starter: |
+          def subsets(nums):
+              pass
+        solution: |
+          def subsets(nums):
+              res = []
+
+              def bt(start, path):
+                  res.append(path[:])
+                  for i in range(start, len(nums)):
+                      path.append(nums[i])
+                      bt(i + 1, path)
+                      path.pop()
+
+              bt(0, [])
+              return res
+        check: |
+          def norm(r):
+              return sorted(sorted(s) for s in r) if r is not None else r
+          res = norm(subsets([1, 2, 3]))
+          assert res == norm([[], [1], [2], [3], [1, 2], [1, 3], [2, 3], [1, 2, 3]]), f"subsets([1, 2, 3]) = {res!r}"
+          res = norm(subsets([]))
+          assert res == [[]], f"subsets([]) = {res!r}, expected [[]]"
+          res = norm(subsets([5]))
+          assert res == [[], [5]], f"subsets([5]) = {res!r}"
+          res = subsets([1, 2, 3, 4])
+          assert res is not None and len(res) == 16, f"len(subsets([1, 2, 3, 4])) = {None if res is None else len(res)!r}, expected 16"
+
+          from cardtest import against, rand_cases
+
+          def _ref(nums):
+              # different method: one subset per bitmask
+              return [[nums[i] for i in range(len(nums)) if m >> i & 1] for m in range(1 << len(nums))]
+
+          def _same(got, exp):
+              # order of subsets and order inside a subset don't matter; duplicates do
+              try:
+                  return norm(got) == norm(exp)
+              except Exception:
+                  return False
+
+          def _gen(r):
+              return (r.sample(range(-9, 10), r.randint(0, 6)),)
+
+          _edge = [([],), ([0],), ([-1, 1],), ([3, 1, 2],), ([4, -2, 7, 0, 5],)]
+          against(subsets, _ref, _edge + rand_cases(_gen, 300), same=_same)
+      - id: b
+        prompt: |
+          - **Given**: `candidates: list[int]`, distinct positive values in any order (not sorted); `target: int`, ≥ 1.
+          - **Write** `combination_sum(candidates, target)` with backtracking. Each candidate may be used any number of times.
+          - **Returns**: `list[list[int]]`, every combination of candidates that sums to `target`, each exactly once
+            (`[2, 2, 3]` and `[3, 2, 2]` are the same combination); `[]` if there is none.
+            The order of the combinations and the order inside each one don't matter.
+          - **Checked on**: unsorted candidates, no solution, a single candidate reused, and 300 random cases.
+        starter: |
+          def combination_sum(candidates, target):
+              pass
+        solution: |
+          def combination_sum(candidates, target):
+              res = []
+
+              def bt(start, path, remaining):
+                  if remaining == 0:
+                      res.append(path[:])
+                      return
+                  for i in range(start, len(candidates)):
+                      if candidates[i] <= remaining:
+                          path.append(candidates[i])
+                          bt(i, path, remaining - candidates[i])
+                          path.pop()
+
+              bt(0, [], target)
+              return res
+        check: |
+          def norm(r):
+              return sorted(sorted(s) for s in r) if r is not None else r
+          res = norm(combination_sum([2, 3, 6, 7], 7))
+          assert res == [[2, 2, 3], [7]], f"combination_sum([2, 3, 6, 7], 7) = {res!r}"
+          res = norm(combination_sum([2, 3, 5], 8))
+          assert res == [[2, 2, 2, 2], [2, 3, 3], [3, 5]], f"combination_sum([2, 3, 5], 8) = {res!r}"
+          res = norm(combination_sum([2], 1))
+          assert res == [], f"combination_sum([2], 1) = {res!r}, expected []"
+          res = norm(combination_sum([1], 2))
+          assert res == [[1, 1]], f"combination_sum([1], 2) = {res!r}, expected [[1, 1]]"
+
+          from cardtest import against, rand_cases
+
+          def _ref(cands, target):
+              # different method: choose how many copies of each candidate to take
+              res = []
+              def go(i, rem, path):
+                  if rem == 0:
+                      res.append(path)
+                  elif i < len(cands):
+                      for k in range(rem // cands[i] + 1):
+                          go(i + 1, rem - k * cands[i], path + [cands[i]] * k)
+              go(0, target, [])
+              return res
+
+          def _same(got, exp):
+              # order of combinations and order inside one don't matter; duplicates do
+              try:
+                  return norm(got) == norm(exp)
+              except Exception:
+                  return False
+
+          def _gen(r):
+              return (r.sample(range(1, 13), r.randint(1, 4)), r.randint(1, 20))
+
+          _edge = [([7, 3, 2], 7), ([5], 5), ([3, 4], 2), ([2, 3], 12), ([1, 2], 5), ([8, 4, 2], 8)]
+          against(combination_sum, _ref, _edge + rand_cases(_gen, 300), same=_same)
+
+  - id: graphs-recursion.topo-sort
+    name: topological sort (Kahn)
+    teach: |
+      ```python
+      from collections import deque
+
+      graph = [[] for _ in range(n)]
+      indeg = [0] * n
+      for a, b in edges:                 # a must come before b
+          graph[a].append(b)
+          indeg[b] += 1
+
+      q = deque(i for i in range(n) if indeg[i] == 0)
+      order = []
+      while q:
+          node = q.popleft()
+          order.append(node)
+          for nxt in graph[node]:
+              indeg[nxt] -= 1
+              if indeg[nxt] == 0:
+                  q.append(nxt)
+
+      # len(order) == n  ->  no cycle
+      ```
+      Use when: "prerequisites", "dependencies", "ordering of tasks", "detect a cycle in a directed graph".
+      Cost: O(V + E)
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `n: int`, ≥ 1, courses numbered `0` to `n - 1`; `prereqs: list[list[int]]` of pairs `[course, pre]`
+            meaning `pre` must be taken before `course` (no repeated pair, no `[c, c]`).
+          - **Write** `find_order(n, prereqs)` with Kahn's algorithm.
+          - **Returns**: `list[int]`, all `n` courses in an order that respects every prerequisite (any valid order is accepted);
+            `[]` if a cycle makes it impossible.
+          - **Checked on**: chains, diamonds, courses with no prerequisites, cycles (also next to unrelated courses),
+            and 300 random graphs.
+        starter: |
+          def find_order(n, prereqs):
+              pass
+        solution: |
+          from collections import deque
+
+          def find_order(n, prereqs):
+              graph = [[] for _ in range(n)]
+              indeg = [0] * n
+              for course, pre in prereqs:
+                  graph[pre].append(course)
+                  indeg[course] += 1
+              q = deque(i for i in range(n) if indeg[i] == 0)
+              order = []
+              while q:
+                  node = q.popleft()
+                  order.append(node)
+                  for nxt in graph[node]:
+                      indeg[nxt] -= 1
+                      if indeg[nxt] == 0:
+                          q.append(nxt)
+              return order if len(order) == n else []
+        check: |
+          def valid(n, prereqs, order):
+              if order is None or sorted(order) != list(range(n)):
+                  return False
+              pos = {c: i for i, c in enumerate(order)}
+              return all(pos[pre] < pos[c] for c, pre in prereqs)
+          p = [[1, 0], [2, 0], [3, 1], [3, 2]]
+          res = find_order(4, p)
+          assert valid(4, p, res), f"find_order(4, {p}) = {res!r} is not a valid order"
+          res = find_order(2, [[1, 0], [0, 1]])
+          assert res == [], f"find_order(2, 2-cycle) = {res!r}, expected []"
+          res = find_order(1, [])
+          assert res == [0], f"find_order(1, []) = {res!r}, expected [0]"
+          p = [[0, 1], [1, 2]]
+          res = find_order(3, p)
+          assert res == [2, 1, 0], f"find_order(3, {p}) = {res!r}, expected [2, 1, 0]"
+          res = find_order(3, [])
+          assert valid(3, [], res), f"find_order(3, []) = {res!r} is not a valid order"
+
+          from cardtest import against, rand_cases
+
+          def _ref(n, prereqs):
+              # brute force: repeatedly take the smallest course whose prereqs are all taken
+              done, order = set(), []
+              while len(order) < n:
+                  ready = [c for c in range(n) if c not in done and all(p in done for cc, p in prereqs if cc == c)]
+                  if not ready:
+                      return []
+                  done.add(ready[0])
+                  order.append(ready[0])
+              return order
+
+          def _gen(r):
+              n = r.randint(1, 7)
+              pairs = [(a, b) for a in range(n) for b in range(n) if a != b]
+              if r.random() < 0.5:                     # acyclic: pre comes before course in a hidden order
+                  rank = {c: i for i, c in enumerate(r.sample(range(n), n))}
+                  pairs = [(c, p) for c, p in pairs if rank[p] < rank[c]]
+              k = r.randint(0, min(len(pairs), 2 * n))
+              return (n, [list(e) for e in r.sample(pairs, k)])
+
+          def _ok(n, prereqs):
+              # any valid order is accepted; [] only when there is a cycle
+              def same(got, exp):
+                  try:
+                      return got == [] if exp == [] else (list(got) != [] and valid(n, prereqs, list(got)))
+                  except Exception:
+                      return False
+              return same
+
+          _edge = [(1, []), (2, [[0, 1]]), (4, [[1, 0], [2, 1], [0, 2]]), (5, [[1, 0], [2, 1], [3, 2], [4, 3]]),
+                   (3, [[1, 0], [1, 2]]), (4, [[3, 0], [0, 3], [1, 2]]), (4, [[0, 1], [0, 2], [0, 3]])]
+          for _args in _edge + rand_cases(_gen, 300):
+              against(find_order, _ref, [_args], same=_ok(*_args))
+      - id: b
+        prompt: |
+          - **Given**: `n: int`, ≥ 1, courses `0` to `n - 1`; `prereqs: list[list[int]]` of pairs `[course, pre]`
+            (`pre` must be done in an earlier semester than `course`).
+          - **Write** `min_semesters(n, prereqs)` with Kahn's algorithm, one queue level per semester. Each semester you may
+            take any number of courses whose prerequisites are all done.
+          - **Returns**: `int`, the minimum number of semesters to take every course; `-1` if a cycle makes it impossible.
+          - **Checked on**: chains, diamonds, independent groups, no prerequisites (1 semester), cycles, and 300 random graphs.
+        starter: |
+          def min_semesters(n, prereqs):
+              pass
+        solution: |
+          from collections import deque
+
+          def min_semesters(n, prereqs):
+              graph = [[] for _ in range(n)]
+              indeg = [0] * n
+              for course, pre in prereqs:
+                  graph[pre].append(course)
+                  indeg[course] += 1
+              q = deque(i for i in range(n) if indeg[i] == 0)
+              taken = semesters = 0
+              while q:
+                  semesters += 1
+                  for _ in range(len(q)):
+                      node = q.popleft()
+                      taken += 1
+                      for nxt in graph[node]:
+                          indeg[nxt] -= 1
+                          if indeg[nxt] == 0:
+                              q.append(nxt)
+              return semesters if taken == n else -1
+        check: |
+          res = min_semesters(3, [[2, 0], [2, 1]])
+          assert res == 2, f"min_semesters(3, [[2,0],[2,1]]) = {res!r}, expected 2"
+          res = min_semesters(4, [[1, 0], [2, 1], [3, 2]])
+          assert res == 4, f"min_semesters(4, chain) = {res!r}, expected 4"
+          res = min_semesters(3, [[1, 0], [2, 1], [0, 2]])
+          assert res == -1, f"min_semesters(3, cycle) = {res!r}, expected -1"
+          res = min_semesters(3, [])
+          assert res == 1, f"min_semesters(3, []) = {res!r}, expected 1"
+          res = min_semesters(4, [[1, 0], [2, 0], [3, 1], [3, 2]])
+          assert res == 3, f"min_semesters(4, diamond) = {res!r}, expected 3"
+
+          from cardtest import against, rand_cases
+
+          def _ref(n, prereqs):
+              # brute force: each semester, take every course whose prereqs are all done
+              done, sem = set(), 0
+              while len(done) < n:
+                  ready = {c for c in range(n) if c not in done and all(p in done for cc, p in prereqs if cc == c)}
+                  if not ready:
+                      return -1
+                  done |= ready
+                  sem += 1
+              return sem
+
+          def _gen(r):
+              n = r.randint(1, 8)
+              pairs = [(a, b) for a in range(n) for b in range(n) if a != b]
+              if r.random() < 0.6:                     # acyclic: pre comes before course in a hidden order
+                  rank = {c: i for i, c in enumerate(r.sample(range(n), n))}
+                  pairs = [(c, p) for c, p in pairs if rank[p] < rank[c]]
+              k = r.randint(0, min(len(pairs), 2 * n))
+              return (n, [list(e) for e in r.sample(pairs, k)])
+
+          _edge = [(1, []), (2, [[1, 0]]), (5, [[1, 0], [2, 1], [4, 3]]), (4, [[1, 0], [0, 1], [3, 2]]),
+                   (4, [[3, 0], [3, 1], [3, 2], [2, 1]]), (5, [[4, 0], [1, 0], [2, 1], [3, 2], [4, 3]])]
+          against(min_semesters, _ref, _edge + rand_cases(_gen, 300))
+
+  - id: graphs-recursion.union-find
+    name: union-find (disjoint set)
+    teach: |
+      ```python
+      parent = list(range(n))
+
+      def find(x):
+          while parent[x] != x:
+              parent[x] = parent[parent[x]]   # skip to grandparent: shortens paths
+              x = parent[x]
+          return x
+
+      def union(a, b):
+          ra, rb = find(a), find(b)
+          if ra == rb:
+              return False                    # already connected
+          parent[ra] = rb
+          return True
+      ```
+      Use when: "connected components", "are a and b connected", "redundant edge", edges arrive one by one.
+      Cost: ~O(1) amortized per operation
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `n: int`, ≥ 1, nodes `0` to `n - 1`; `edges: list[list[int]]` of undirected pairs `[a, b]` with `a != b`.
+            The same edge may appear more than once, in either direction.
+          - **Write** `count_components(n, edges)` with union-find.
+          - **Returns**: `int`, the number of connected components (a node with no edge is a component on its own).
+          - **Checked on**: no edges, repeated edges, cycles, and 300 random graphs.
+        starter: |
+          def count_components(n, edges):
+              pass
+        solution: |
+          def count_components(n, edges):
+              parent = list(range(n))
+
+              def find(x):
+                  while parent[x] != x:
+                      parent[x] = parent[parent[x]]
+                      x = parent[x]
+                  return x
+
+              components = n
+              for a, b in edges:
+                  ra, rb = find(a), find(b)
+                  if ra != rb:
+                      parent[ra] = rb
+                      components -= 1
+              return components
+        check: |
+          res = count_components(5, [[0, 1], [1, 2], [3, 4]])
+          assert res == 2, f"count_components(5, two groups) = {res!r}, expected 2"
+          res = count_components(5, [[0, 1], [1, 2], [2, 3], [3, 4]])
+          assert res == 1, f"count_components(5, chain) = {res!r}, expected 1"
+          res = count_components(3, [])
+          assert res == 3, f"count_components(3, []) = {res!r}, expected 3"
+          res = count_components(4, [[0, 1], [1, 0], [0, 1]])
+          assert res == 3, f"count_components(4, duplicate edges) = {res!r}, expected 3"
+          res = count_components(4, [[0, 1], [1, 2], [2, 0]])
+          assert res == 2, f"count_components(4, triangle + lone) = {res!r}, expected 2"
+
+          from cardtest import against, rand_cases
+
+          def _ref(n, edges):
+              # different method: flood fill over an adjacency list
+              adj = [[] for _ in range(n)]
+              for a, b in edges:
+                  adj[a].append(b)
+                  adj[b].append(a)
+              seen, count = set(), 0
+              for s in range(n):
+                  if s not in seen:
+                      count += 1
+                      seen.add(s)
+                      todo = [s]
+                      while todo:
+                          for y in adj[todo.pop()]:
+                              if y not in seen:
+                                  seen.add(y)
+                                  todo.append(y)
+              return count
+
+          def _gen(r):
+              n = r.randint(1, 10)
+              m = r.randint(0, 2 * n) if n > 1 else 0
+              return (n, [r.sample(range(n), 2) for _ in range(m)])   # may repeat edges, both directions
+
+          _edge = [(1, []), (2, [[1, 0]]), (6, [[0, 1], [2, 3], [4, 5], [1, 3], [5, 2]]),
+                   (5, [[0, 1], [2, 3], [1, 2], [3, 0]]), (6, [[5, 4], [3, 2], [4, 3], [1, 0], [0, 5]])]
+          against(count_components, _ref, _edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          - **Given**: `edges: list[list[int]]`, undirected pairs `[a, b]` on nodes `1` to `n`, where `n = len(edges)`:
+            a tree plus one extra edge, so the graph has exactly one cycle.
+          - **Write** `find_redundant(edges)` with union-find.
+          - **Returns**: `list[int]`, an edge whose removal leaves a tree, written exactly as in the input (`[a, b]`, same order).
+            Every edge of the cycle qualifies: return the one that appears **last** in `edges`.
+          - **Checked on**: triangles, a square with a tail, a cycle closed by an edge joining two separate groups,
+            and 300 random graphs.
+        starter: |
+          def find_redundant(edges):
+              pass
+        solution: |
+          def find_redundant(edges):
+              parent = list(range(len(edges) + 1))
+
+              def find(x):
+                  while parent[x] != x:
+                      parent[x] = parent[parent[x]]
+                      x = parent[x]
+                  return x
+
+              for a, b in edges:
+                  ra, rb = find(a), find(b)
+                  if ra == rb:
+                      return [a, b]
+                  parent[ra] = rb
+        check: |
+          res = find_redundant([[1, 2], [1, 3], [2, 3]])
+          assert res == [2, 3], f"find_redundant(triangle) = {res!r}, expected [2, 3]"
+          res = find_redundant([[1, 2], [2, 3], [3, 4], [1, 4], [1, 5]])
+          assert res == [1, 4], f"find_redundant(square + tail) = {res!r}, expected [1, 4]"
+          res = find_redundant([[1, 2], [2, 1]])
+          assert res == [2, 1], f"find_redundant([[1, 2], [2, 1]]) = {res!r}, expected [2, 1]"
+          res = find_redundant([[3, 4], [1, 2], [2, 4], [3, 5], [2, 5]])
+          assert res == [2, 5], f"find_redundant(5 nodes) = {res!r}, expected [2, 5]"
+
+          from cardtest import against, rand_cases
+
+          def _ref(edges):
+              # brute force: the last edge whose removal leaves a connected graph (a tree)
+              n = len(edges)
+              for k in range(n - 1, -1, -1):
+                  adj = {v: [] for v in range(1, n + 1)}
+                  for a, b in edges[:k] + edges[k + 1:]:
+                      adj[a].append(b)
+                      adj[b].append(a)
+                  seen, todo = {1}, [1]
+                  while todo:
+                      for y in adj[todo.pop()]:
+                          if y not in seen:
+                              seen.add(y)
+                              todo.append(y)
+                  if len(seen) == n:
+                      return list(edges[k])
+
+          def _gen(r):
+              n = r.randint(3, 9)
+              lab = r.sample(range(1, n + 1), n)
+              edges = [[lab[i], lab[r.randrange(i)]] for i in range(1, n)]          # a random tree
+              have = {frozenset(e) for e in edges}
+              edges.append(r.choice([[a, b] for a in range(1, n + 1) for b in range(a + 1, n + 1)
+                                     if frozenset((a, b)) not in have]))       # plus one extra edge
+              r.shuffle(edges)
+              return ([e[::-1] if r.random() < 0.5 else e for e in edges],)
+
+          _same = lambda got, exp: isinstance(got, (list, tuple)) and list(got) == exp
+          _edge = [([[1, 2], [3, 4], [2, 3], [1, 4]],), ([[1, 2], [3, 4], [1, 3], [2, 4]],),
+                   ([[1, 4], [3, 4], [1, 3], [1, 2], [4, 5]],), ([[2, 3], [5, 2], [1, 5], [4, 1], [3, 4], [4, 6]],)]
+          against(find_redundant, _ref, _edge + rand_cases(_gen, 300), same=_same)
+
+  - id: graphs-recursion.memo-dp
+    name: memoized recursion (top-down DP)
+    teach: |
+      ```python
+      from functools import cache
+
+      @cache
+      def f(state):
+          if is_base(state):
+              return base_value
+
+          return combine(f(smaller) for smaller in choices(state))
+
+      answer = f(start)
+      ```
+      Use when: "number of ways", "minimum cost / fewest steps", choices at each step with overlapping subproblems.
+      Cost: O(states * choices per state)
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `n: int`, 1 ≤ n ≤ 45.
+          - **Write** `climb_stairs(n)` with a memoized recursion (`@cache`). Each move climbs 1 or 2 steps.
+          - **Returns**: `int`, the number of distinct sequences of moves that go from step 0 to exactly step `n`.
+          - **Checked on**: every `n` from 1 to 45 (without memoization, `n = 40` is far too slow).
+        starter: |
+          def climb_stairs(n):
+              pass
+        solution: |
+          from functools import cache
+
+          def climb_stairs(n):
+              @cache
+              def f(i):
+                  if i <= 1:
+                      return 1
+                  return f(i - 1) + f(i - 2)
+
+              return f(n)
+        check: |
+          res = climb_stairs(1)
+          assert res == 1, f"climb_stairs(1) = {res!r}, expected 1"
+          res = climb_stairs(2)
+          assert res == 2, f"climb_stairs(2) = {res!r}, expected 2"
+          res = climb_stairs(3)
+          assert res == 3, f"climb_stairs(3) = {res!r}, expected 3"
+          res = climb_stairs(5)
+          assert res == 8, f"climb_stairs(5) = {res!r}, expected 8"
+          res = climb_stairs(40)
+          assert res == 165580141, f"climb_stairs(40) = {res!r}, expected 165580141 (memoize!)"
+
+          from cardtest import against
+
+          def _ref(n):
+              # iterative: ways(i) = ways(i - 1) + ways(i - 2)
+              a, b = 1, 1                      # ways(0), ways(1)
+              for _ in range(n - 1):
+                  a, b = b, a + b
+              return b
+
+          against(climb_stairs, _ref, [(n,) for n in range(1, 46)])   # every n in LeetCode's range 1..45
+      - id: b
+        prompt: |
+          - **Given**: `coins: list[int]`, distinct positive values in any order, with an unlimited supply of each;
+            `amount: int`, ≥ 0.
+          - **Write** `coin_change(coins, amount)` with a memoized recursion (`@cache`).
+          - **Returns**: `int`, the fewest coins whose values add up to `amount` (`0` when `amount` is 0);
+            `-1` if no combination works.
+          - **Checked on**: amount 0, impossible amounts, cases where always taking the largest coin is wrong,
+            and 300 random cases (amounts up to 60).
+        starter: |
+          def coin_change(coins, amount):
+              pass
+        solution: |
+          from functools import cache
+
+          def coin_change(coins, amount):
+              @cache
+              def f(rem):
+                  if rem == 0:
+                      return 0
+                  best = float("inf")
+                  for c in coins:
+                      if c <= rem:
+                          best = min(best, 1 + f(rem - c))
+                  return best
+
+              res = f(amount)
+              return res if res != float("inf") else -1
+        check: |
+          res = coin_change([1, 2, 5], 11)
+          assert res == 3, f"coin_change([1, 2, 5], 11) = {res!r}, expected 3"
+          res = coin_change([2], 3)
+          assert res == -1, f"coin_change([2], 3) = {res!r}, expected -1"
+          res = coin_change([1], 0)
+          assert res == 0, f"coin_change([1], 0) = {res!r}, expected 0"
+          res = coin_change([1, 3, 4], 6)
+          assert res == 2, f"coin_change([1, 3, 4], 6) = {res!r}, expected 2 (greedy gives 3)"
+          res = coin_change([2, 5], 7)
+          assert res == 2, f"coin_change([2, 5], 7) = {res!r}, expected 2"
+
+          from cardtest import against, rand_cases
+
+          def _ref(coins, amount):
+              # different method: bottom-up table, best[a] = fewest coins for amount a
+              INF = float("inf")
+              best = [0] + [INF] * amount
+              for a in range(1, amount + 1):
+                  for c in coins:
+                      if c <= a and best[a - c] + 1 < best[a]:
+                          best[a] = best[a - c] + 1
+              return -1 if best[amount] == INF else best[amount]
+
+          def _gen(r):
+              return (r.sample(range(1, 13), r.randint(1, 4)), r.randint(0, 60))
+
+          _edge = [([5], 0), ([3], 1), ([5, 1], 5), ([3, 7], 5), ([3, 7], 11), ([9, 6, 5, 1], 11), ([4, 5], 12), ([2, 4], 7)]
+          against(coin_change, _ref, _edge + rand_cases(_gen, 300))

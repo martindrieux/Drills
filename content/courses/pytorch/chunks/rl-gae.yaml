@@ -1,0 +1,487 @@
+id: rl-gae
+title: Actor–critic with GAE
+intro: |
+  No lesson: write the whole thing from memory, then run it. The checks are strict.
+problems: [GAE advantages, Truncation vs termination, Actor–critic loss, A2C update step]
+atoms: []
+skills:
+  - id: rl-gae.gae
+    name: Generalized Advantage Estimation
+    teach: |
+      Time-major rollout of B parallel envs, tensors (T, B). TD residual `δ_t = r_t + γ(1 − d_t)V(s_{t+1}) − V(s_t)`;
+      advantage `A_t = δ_t + γλ(1 − d_t)A_{t+1}` (backward in time, `A_T = 0`); value target `R_t = A_t + V(s_t)`.
+      `d_t = 1` means the episode ended after step t (s_{t+1} is a reset). λ = 0: one-step TD; λ = 1: Monte Carlo.
+      Truncation (time limit) still bootstraps from V of the real next observation but cuts the recursion.
+    cards:
+      - id: a
+        prompt: |
+          Implement Generalized Advantage Estimation on a time-major rollout of B parallel environments.
+          - `rewards`, `values`, `dones` (T, B) float: `r_t`, `V(s_t)`, and `d_t = 1.0` if the episode ended after step t
+            (then `s_{t+1}` is a reset: no bootstrap); `last_value` (B,): `V(s_T)`; `gamma`, `lam` (float)
+          - returns `gae(rewards, values, dones, last_value, gamma, lam)` = `(adv, returns)`, both (T, B), dtype of `rewards`:
+            `δ_t = r_t + γ(1 − d_t)V_{t+1} − V_t` (`V_T = last_value`), `adv_t = δ_t + γλ(1 − d_t)adv_{t+1}` (`adv_T = 0`),
+            `returns = adv + values`
+          - no Python loops over the batch (a loop over time is fine)
+        setup: |
+          import torch
+        starter: |
+          def gae(rewards, values, dones, last_value, gamma, lam):
+              raise NotImplementedError
+        solution: |
+          def gae(rewards, values, dones, last_value, gamma, lam):
+              T = rewards.shape[0]
+              adv = torch.zeros_like(rewards)                               # (T, B)
+              nxt_v, nxt_a = last_value, torch.zeros_like(last_value)       # (B,), (B,)
+              for t in reversed(range(T)):
+                  nonterm = 1.0 - dones[t]                                  # (B,)
+                  delta = rewards[t] + gamma * nonterm * nxt_v - values[t]  # (B,)
+                  nxt_a = delta + gamma * lam * nonterm * nxt_a
+                  adv[t] = nxt_a
+                  nxt_v = values[t]
+              return adv, adv + values
+          # Follow-ups:
+          # λ trades bias for variance: λ=0 uses only V (biased if V is wrong, low variance); λ=1 is the MC return − V
+          #   (unbiased, high variance). A_t = Σ_l (γλ)^l δ_{t+l}.
+          # Why multiply by (1 − d_t) twice? No bootstrap across a reset, and no advantage leaking from the next episode.
+        check: |
+          import time
+          import torch
+          from cardtest import against, rand_cases
+
+          def _ref(rewards, values, dones, last_value, gamma, lam):
+              r, v, d, lv = rewards.tolist(), values.tolist(), dones.tolist(), last_value.tolist()
+              T, B = rewards.shape
+              out = [[0.0] * B for _ in range(T)]
+              for b in range(B):
+                  a = 0.0
+                  for t in range(T - 1, -1, -1):
+                      vn = lv[b] if t == T - 1 else v[t + 1][b]
+                      if d[t][b]:
+                          a = r[t][b] - v[t][b]
+                      else:
+                          a = r[t][b] + gamma * vn - v[t][b] + gamma * lam * a
+                      out[t][b] = a
+              adv = torch.tensor(out, dtype=rewards.dtype).reshape(T, B)
+              return adv, adv + values
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 2):
+                  return False
+              tol = 1e-4 if exp[0].dtype == torch.float32 else 1e-9
+              return all(isinstance(g, torch.Tensor) and g.shape == e.shape and g.dtype == e.dtype
+                         and torch.allclose(g, e, rtol=tol, atol=tol) for g, e in zip(got, exp))
+
+          def _show(rewards, values, dones, last_value, gamma, lam):
+              return (f"(rewards={rewards.tolist()}, values={values.tolist()}, dones={dones.tolist()}, "
+                      f"last_value={last_value.tolist()}, gamma={gamma}, lam={lam})")
+
+          _t = lambda x: torch.tensor(x, dtype=torch.float64)
+          r3, v3 = _t([[1.], [0.], [2.]]), _t([[0.5], [1.], [-1.]])
+          _edge = [
+              (r3, v3, _t([[0.], [0.], [0.]]), _t([3.]), 0.9, 0.95),
+              (r3, v3, _t([[0.], [1.], [0.]]), _t([3.]), 0.9, 0.95),        # episode ends after t = 1
+              (r3, v3, _t([[0.], [0.], [1.]]), _t([3.]), 0.9, 0.95),        # last step terminal: last_value unused
+              (r3, v3, _t([[1.], [1.], [1.]]), _t([3.]), 0.9, 0.95),        # every step terminal
+              (r3, v3, _t([[0.], [1.], [0.]]), _t([3.]), 0.9, 0.0),         # λ = 0: one-step TD
+              (r3, v3, _t([[0.], [1.], [0.]]), _t([3.]), 0.9, 1.0),         # λ = 1: Monte Carlo − V
+              (r3, v3, _t([[0.], [0.], [0.]]), _t([3.]), 0.0, 0.5),         # γ = 0
+              (_t([[2.]]), _t([[1.]]), _t([[0.]]), _t([4.]), 0.5, 0.5),     # T = 1
+              (_t([[1., 1.], [1., 1.]]), _t([[0., 0.], [0., 0.]]), _t([[0., 1.], [1., 0.]]), _t([10., -10.]), 0.9, 0.8),
+              (r3.float(), v3.float(), _t([[0.], [1.], [0.]]).float(), _t([3.]).float(), 0.99, 0.95),   # float32
+          ]
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**9))
+              T, B = r.randint(1, 7), r.randint(1, 4)
+              dt = r.choice([torch.float64, torch.float64, torch.float32])
+              d = (torch.rand(T, B, generator=g) < r.choice([0.0, 0.2, 0.5])).to(dt)
+              return (torch.randn(T, B, generator=g).to(dt), torch.randn(T, B, generator=g).to(dt), d,
+                      torch.randn(B, generator=g).to(dt), r.choice([0.0, 0.5, 0.9, 0.99, 1.0]),
+                      r.choice([0.0, 0.5, 0.95, 1.0]))
+
+          against(gae, _ref, _edge + rand_cases(_gen, 300), same=_same, show=_show)
+
+          # vectorized over the batch
+          g = torch.Generator().manual_seed(0)
+          T, B = 10, 5000
+          args = (torch.randn(T, B, generator=g), torch.randn(T, B, generator=g),
+                  (torch.rand(T, B, generator=g) < 0.1).float(), torch.randn(B, generator=g), 0.99, 0.95)
+          t0 = time.perf_counter()
+          gae(*args)
+          dt = time.perf_counter() - t0
+          assert dt < 0.05, f"T=10, B=5000 took {dt:.3f} s: loop over time only, vectorize over the batch"
+      - id: b
+        prompt: |
+          Implement GAE that distinguishes termination (terminal state: no bootstrap) from truncation (time limit: bootstrap
+          from the real next observation, but the next episode's advantage must not leak back).
+          - `rewards`, `values` (T, B) float: `r_t`, `V(s_t)`; `terminated`, `truncated` (T, B) float 0/1: the episode ended
+            after step t by a terminal state / by the time limit; `next_values` (T, B): `V` of the true next observation of
+            step t, before any reset (equal to `values[t + 1]` when the episode continues); `gamma`, `lam` (float)
+          - returns `gae_trunc(rewards, values, terminated, truncated, next_values, gamma, lam)` = `(adv, returns)` (T, B):
+            `δ_t = r_t + γ(1 − term_t)·next_values[t] − V_t`, `adv_t = δ_t + γλ(1 − term_t)(1 − trunc_t)adv_{t+1}`
+            (`adv_T = 0`), `returns = adv + values`
+          - no Python loops over the batch
+        setup: |
+          import torch
+        starter: |
+          def gae_trunc(rewards, values, terminated, truncated, next_values, gamma, lam):
+              raise NotImplementedError
+        solution: |
+          def gae_trunc(rewards, values, terminated, truncated, next_values, gamma, lam):
+              T = rewards.shape[0]
+              delta = rewards + gamma * (1.0 - terminated) * next_values - values   # (T, B), all steps at once
+              cont = (1.0 - terminated) * (1.0 - truncated)                         # (T, B) 1 = same episode at t+1
+              adv = torch.zeros_like(rewards)
+              a = torch.zeros_like(rewards[0])                                      # (B,)
+              for t in reversed(range(T)):
+                  a = delta[t] + gamma * lam * cont[t] * a
+                  adv[t] = a
+              return adv, adv + values
+          # Follow-ups:
+          # Why bootstrap on truncation? The state is not terminal: the true return continues past the time limit,
+          #   so treating it as terminal biases V toward 0 near the limit (the time step is not in the observation).
+          # Why still cut the recursion? adv_{t+1} belongs to the next (reset) episode.
+          # Last step of the rollout (no done)? next_values[T-1] = V(s_T) plays the role of last_value.
+        check: |
+          import time
+          import torch
+          from cardtest import against, rand_cases
+
+          def _ref(rewards, values, terminated, truncated, next_values, gamma, lam):
+              r, v, te, tr, nv = (x.tolist() for x in (rewards, values, terminated, truncated, next_values))
+              T, B = rewards.shape
+              out = [[0.0] * B for _ in range(T)]
+              for b in range(B):
+                  a = 0.0
+                  for t in range(T - 1, -1, -1):
+                      if te[t][b]:
+                          a = r[t][b] - v[t][b]
+                      elif tr[t][b]:
+                          a = r[t][b] + gamma * nv[t][b] - v[t][b]
+                      else:
+                          a = r[t][b] + gamma * nv[t][b] - v[t][b] + gamma * lam * a
+                      out[t][b] = a
+              adv = torch.tensor(out, dtype=rewards.dtype).reshape(T, B)
+              return adv, adv + values
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 2):
+                  return False
+              tol = 1e-4 if exp[0].dtype == torch.float32 else 1e-9
+              return all(isinstance(g, torch.Tensor) and g.shape == e.shape and g.dtype == e.dtype
+                         and torch.allclose(g, e, rtol=tol, atol=tol) for g, e in zip(got, exp))
+
+          def _show(rewards, values, terminated, truncated, next_values, gamma, lam):
+              return (f"(rewards={rewards.tolist()}, values={values.tolist()}, terminated={terminated.tolist()}, "
+                      f"truncated={truncated.tolist()}, next_values={next_values.tolist()}, gamma={gamma}, lam={lam})")
+
+          def _case(r, v, te, tr, last, reset_v, gamma, lam, dt=torch.float64):
+              """next_values consistent with values: values[t+1] if the episode continues, else V(true next obs)."""
+              r, v, te, tr = (torch.tensor(x, dtype=dt) for x in (r, v, te, tr))
+              nv = torch.cat([v[1:], torch.tensor([last], dtype=dt)])
+              done = (te + tr) > 0
+              nv = torch.where(done, torch.tensor(reset_v, dtype=dt), nv)
+              return (r, v, te, tr, nv, gamma, lam)
+
+          R, V = [[1.], [0.], [2.]], [[0.5], [1.], [-1.]]
+          Z, M = [[0.], [0.], [0.]], [[0.], [1.], [0.]]
+          _edge = [
+              _case(R, V, Z, Z, [3.], [[7.], [7.], [7.]], 0.9, 0.95),            # no ends: plain GAE
+              _case(R, V, M, Z, [3.], [[7.], [7.], [7.]], 0.9, 0.95),            # terminated after t = 1
+              _case(R, V, Z, M, [3.], [[7.], [7.], [7.]], 0.9, 0.95),            # truncated after t = 1
+              _case(R, V, M, M, [3.], [[7.], [7.], [7.]], 0.9, 0.95),            # both: terminal wins
+              _case(R, V, Z, [[1.], [1.], [1.]], [3.], [[4.], [5.], [6.]], 0.9, 0.95),
+              _case(R, V, Z, M, [3.], [[7.], [7.], [7.]], 0.9, 0.0),             # λ = 0
+              _case(R, V, Z, M, [3.], [[7.], [7.], [7.]], 0.9, 1.0),             # λ = 1
+              _case([[2.]], [[1.]], [[0.]], [[0.]], [4.], [[9.]], 0.5, 0.5),      # T = 1
+              _case([[2.]], [[1.]], [[0.]], [[1.]], [4.], [[9.]], 0.5, 0.5),      # T = 1, truncated
+              _case([[1., 1.], [1., 1.]], [[0., 0.], [0., 0.]], [[0., 1.], [0., 0.]], [[1., 0.], [0., 0.]],
+                    [10., -10.], [[5., 5.], [0., 0.]], 0.9, 0.8),
+              _case(R, V, M, [[0.], [0.], [1.]], [3.], [[7.], [7.], [8.]], 0.99, 0.95, torch.float32),
+          ]
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**9))
+              T, B = r.randint(1, 7), r.randint(1, 4)
+              dt = r.choice([torch.float64, torch.float64, torch.float32])
+              te = (torch.rand(T, B, generator=g) < r.choice([0.0, 0.2, 0.4])).to(dt)
+              tr = (torch.rand(T, B, generator=g) < r.choice([0.0, 0.2, 0.4])).to(dt)
+              v = torch.randn(T, B, generator=g).to(dt)
+              nv = torch.cat([v[1:], torch.randn(1, B, generator=g).to(dt)])
+              nv = torch.where((te + tr) > 0, torch.randn(T, B, generator=g).to(dt), nv)
+              return (torch.randn(T, B, generator=g).to(dt), v, te, tr, nv,
+                      r.choice([0.0, 0.5, 0.9, 0.99, 1.0]), r.choice([0.0, 0.5, 0.95, 1.0]))
+
+          against(gae_trunc, _ref, _edge + rand_cases(_gen, 300), same=_same, show=_show)
+
+          g = torch.Generator().manual_seed(0)
+          T, B = 10, 5000
+          args = (torch.randn(T, B, generator=g), torch.randn(T, B, generator=g),
+                  (torch.rand(T, B, generator=g) < 0.1).float(), (torch.rand(T, B, generator=g) < 0.1).float(),
+                  torch.randn(T, B, generator=g), 0.99, 0.95)
+          t0 = time.perf_counter()
+          gae_trunc(*args)
+          dt = time.perf_counter() - t0
+          assert dt < 0.05, f"T=10, B=5000 took {dt:.3f} s: loop over time only, vectorize over the batch"
+
+  - id: rl-gae.losses
+    name: Actor–critic loss and update
+    teach: |
+      Categorical policy `π = softmax(logits)`, critic `V(s)`. Policy loss `−mean(log π(a|s)·A)`, value loss
+      `mean((V(s) − R)²)`, entropy `H = mean(−Σ_a π log π)`; total `= policy + c_v·value − c_e·H`.
+      `A` and `R` are targets: detach them (no gradient through the advantage or the bootstrapped return).
+      One update: V on the rollout → GAE on detached values → loss → zero_grad, backward, step.
+    cards:
+      - id: a
+        prompt: |
+          Implement the actor–critic loss for a categorical policy.
+          - `logits` (N, A) float: policy logits; `values` (N,): critic outputs `V(s_i)`; `actions` (N,) int64;
+            `adv`, `returns` (N,): advantages and value targets (they may require grad); `vf_coef`, `ent_coef` (float)
+          - returns `actor_critic_loss(logits, values, actions, adv, returns, vf_coef, ent_coef)` =
+            `(total, policy_loss, value_loss, entropy)`, 0-d tensors: `policy_loss = −mean_i(log π(a_i|s_i)·adv_i)`,
+            `value_loss = mean_i((values_i − returns_i)²)`, `entropy = mean_i(−Σ_a π(a|s_i) log π(a|s_i))`,
+            `total = policy_loss + vf_coef·value_loss − ent_coef·entropy`
+          - no gradient may flow into `adv` or `returns`; don't normalize `adv`; finite for logits up to ±1000
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def actor_critic_loss(logits, values, actions, adv, returns, vf_coef, ent_coef):
+              raise NotImplementedError
+        solution: |
+          def actor_critic_loss(logits, values, actions, adv, returns, vf_coef, ent_coef):
+              logp = F.log_softmax(logits, dim=-1)                               # (N, A), stable
+              logp_a = logp.gather(1, actions[:, None]).squeeze(1)               # (N,)
+              policy_loss = -(logp_a * adv.detach()).mean()
+              value_loss = ((values - returns.detach()) ** 2).mean()
+              entropy = -(logp.exp() * logp).sum(-1).mean()
+              total = policy_loss + vf_coef * value_loss - ent_coef * entropy
+              return total, policy_loss, value_loss, entropy
+          # Follow-ups:
+          # Why detach adv? It is a weight for ∇log π (policy gradient theorem), not something to optimize; without it
+          #   the actor loss would also push the critic to change A. Why detach returns? It is a regression target
+          #   (semi-gradient TD); a gradient through the bootstrap V(s') chases a moving target.
+          # Why the entropy bonus? Keeps π from collapsing early (exploration); log_softmax avoids log(0) = −inf.
+        check: |
+          import torch
+          from torch.distributions import Categorical
+          from cardtest import against, rand_cases
+
+          def _run(fn, logits, values, actions, adv, returns, vf, ent):
+              L, V, Ad, R = (x.clone().requires_grad_() for x in (logits, values, adv, returns))
+              out = fn(L, V, actions, Ad, R, vf, ent)
+              assert isinstance(out, tuple) and len(out) == 4, f"return a 4-tuple, got {type(out).__name__}"
+              for name, o in zip(["total", "policy_loss", "value_loss", "entropy"], out):
+                  assert isinstance(o, torch.Tensor) and o.dim() == 0, f"{name} must be a 0-d tensor, got {o!r}"
+              out[0].backward()
+              return {"total": out[0].item(), "policy_loss": out[1].item(), "value_loss": out[2].item(),
+                      "entropy": out[3].item(), "grad logits": L.grad, "grad values": V.grad,
+                      "grad adv": Ad.grad, "grad returns": R.grad}
+
+          def _ref_fn(L, V, actions, Ad, R, vf, ent):
+              dist = Categorical(logits=L)
+              pl = sum(-dist.log_prob(actions)[i] * Ad[i].item() for i in range(len(actions))) / len(actions)
+              vl = sum((V[i] - R[i].item()) ** 2 for i in range(len(actions))) / len(actions)
+              h = dist.entropy().mean()
+              return pl + vf * vl - ent * h, pl, vl, h
+
+          def _learner(*a): return _run(actor_critic_loss, *a)
+          def _ref(*a): return _run(_ref_fn, *a)
+          _learner.__name__ = "actor_critic_loss"
+
+          def _same(got, exp):
+              for k, e in exp.items():
+                  g = got[k]
+                  if e is None or g is None:
+                      if e is not g:
+                          return False
+                  elif isinstance(e, torch.Tensor):
+                      if not torch.allclose(g, e, rtol=1e-6, atol=1e-8):
+                          return False
+                  elif abs(g - e) > 1e-6 * (1 + abs(e)):
+                      return False
+              return True
+
+          def _show(logits, values, actions, adv, returns, vf, ent):
+              return (f"(logits={logits.tolist()}, values={values.tolist()}, actions={actions.tolist()}, "
+                      f"adv={adv.tolist()}, returns={returns.tolist()}, vf_coef={vf}, ent_coef={ent})")
+
+          _t = lambda x: torch.tensor(x, dtype=torch.float64)
+          _a = lambda x: torch.tensor(x, dtype=torch.int64)
+          _edge = [
+              (_t([[0., 0., 0.]]), _t([1.]), _a([2]), _t([2.]), _t([3.]), 0.5, 0.01),        # uniform: H = log 3
+              (_t([[1., 2.], [0., -1.]]), _t([0.5, -0.5]), _a([1, 0]), _t([1., -2.]), _t([1., 1.]), 0.5, 0.0),
+              (_t([[1., 2.], [0., -1.]]), _t([0.5, -0.5]), _a([1, 0]), _t([1., -2.]), _t([1., 1.]), 0.0, 0.1),
+              (_t([[3.]]), _t([0.]), _a([0]), _t([5.]), _t([2.]), 1.0, 1.0),                  # A = 1: log π = 0, H = 0
+              (_t([[1000., 0., -1000.], [0., 1000., 0.]]), _t([1., 2.]), _a([0, 1]), _t([1., 1.]), _t([0., 0.]), 0.5, 0.01),
+              (_t([[1., 2., 3.]] * 3), _t([0., 0., 0.]), _a([0, 1, 2]), _t([0.3, 0.3, 0.3]), _t([1., 2., 3.]), 2.0, 0.5),
+          ]
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**9))
+              N, A = r.randint(1, 6), r.randint(1, 5)
+              return (torch.randn(N, A, generator=g, dtype=torch.float64) * r.choice([1, 3]),
+                      torch.randn(N, generator=g, dtype=torch.float64),
+                      torch.randint(A, (N,), generator=g),
+                      torch.randn(N, generator=g, dtype=torch.float64),
+                      torch.randn(N, generator=g, dtype=torch.float64),
+                      r.choice([0.0, 0.25, 0.5, 1.0]), r.choice([0.0, 0.01, 0.1, 0.5]))
+
+          against(_learner, _ref, _edge + rand_cases(_gen, 250), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Implement one actor–critic (A2C) update on a time-major rollout: critic values, GAE, the actor–critic loss, one
+          optimizer step.
+          - `actor`: obs (..., D) -> logits (..., A); `critic`: obs (..., D) -> values (...,); `opt`: one optimizer over both;
+            `obs` (T, B, D) float; `actions` (T, B) int64; `rewards`, `dones` (T, B) float (`dones[t] = 1.0`: episode ended
+            after step t); `last_obs` (B, D): `s_T`; `gamma`, `lam`, `vf_coef`, `ent_coef` (float)
+          - advantages: GAE on the critic's values, detached: `δ_t = r_t + γ(1 − d_t)V_{t+1} − V_t` (`V_T = critic(last_obs)`),
+            `A_t = δ_t + γλ(1 − d_t)A_{t+1}`, `A_T = 0`; targets `R = A + V` (no gradient through `A` or `R`)
+          - loss, mean over all T·B steps: `policy_loss = −mean(log π(a|s)·A)`, `value_loss = mean((V(s) − R)²)`,
+            `entropy = mean(H(π(·|s)))`, `total = policy_loss + vf_coef·value_loss − ent_coef·entropy`; no advantage normalization
+          - clear stale gradients, backward, one `opt.step()`; returns `actor_critic_update(...)` =
+            `(policy_loss, value_loss, entropy)` as Python floats; no Python loops over the batch
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+
+          class Actor(nn.Module):                      # obs (..., D) -> logits (..., A)
+              def __init__(self, D, A):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(D, 16), nn.Tanh(), nn.Linear(16, A))
+              def forward(self, x):
+                  return self.net(x)
+
+          class Critic(nn.Module):                     # obs (..., D) -> values (...,)
+              def __init__(self, D):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(D, 16), nn.Tanh(), nn.Linear(16, 1))
+              def forward(self, x):
+                  return self.net(x).squeeze(-1)
+        starter: |
+          def actor_critic_update(actor, critic, opt, obs, actions, rewards, dones, last_obs,
+                                  gamma, lam, vf_coef, ent_coef):
+              raise NotImplementedError
+        solution: |
+          def actor_critic_update(actor, critic, opt, obs, actions, rewards, dones, last_obs,
+                                  gamma, lam, vf_coef, ent_coef):
+              values = critic(obs)                                         # (T, B), with grad
+              with torch.no_grad():
+                  v = values.detach()
+                  nxt_v, a = critic(last_obs), torch.zeros_like(v[0])      # (B,), (B,)
+                  adv = torch.zeros_like(v)                                # (T, B)
+                  for t in reversed(range(v.shape[0])):
+                      nt = 1.0 - dones[t]
+                      a = rewards[t] + gamma * nt * nxt_v - v[t] + gamma * lam * nt * a
+                      adv[t], nxt_v = a, v[t]
+                  returns = adv + v                                        # (T, B)
+              logp = F.log_softmax(actor(obs), dim=-1)                     # (T, B, A)
+              logp_a = logp.gather(-1, actions[..., None]).squeeze(-1)     # (T, B)
+              policy_loss = -(logp_a * adv).mean()
+              value_loss = ((values - returns) ** 2).mean()
+              entropy = -(logp.exp() * logp).sum(-1).mean()
+              total = policy_loss + vf_coef * value_loss - ent_coef * entropy
+              opt.zero_grad()
+              total.backward()
+              opt.step()
+              return policy_loss.item(), value_loss.item(), entropy.item()
+          # Follow-ups:
+          # Why GAE on detached values? Advantages and targets are constants for this step; otherwise the actor loss
+          #   would backprop into the critic through A, and the critic would chase its own bootstrap.
+          # Shared trunk? Then vf_coef balances the two gradients on shared weights; here it only scales the critic.
+          # Why does V_T need no_grad? It enters only through R, a target.
+        check: |
+          import copy
+          import time
+          import torch
+          from torch.distributions import Categorical
+          from cardtest import against, rand_cases
+
+          def _ref_update(actor, critic, opt, obs, actions, rewards, dones, last_obs, gamma, lam, vf, ent):
+              T, B = rewards.shape
+              V = critic(obs)
+              v, d, r = V.tolist(), dones.tolist(), rewards.tolist()
+              lv = critic(last_obs).tolist()
+              A = [[0.0] * B for _ in range(T)]
+              for b in range(B):
+                  a, vn = 0.0, lv[b]
+                  for t in range(T - 1, -1, -1):
+                      if d[t][b]:
+                          a = r[t][b] - v[t][b]
+                      else:
+                          a = r[t][b] + gamma * vn - v[t][b] + gamma * lam * a
+                      A[t][b], vn = a, v[t][b]
+              A = torch.tensor(A, dtype=V.dtype)
+              Rt = A + torch.tensor(v, dtype=V.dtype)
+              dist = Categorical(logits=actor(obs))
+              pl = -(dist.log_prob(actions) * A).mean()
+              vl = ((V - Rt) ** 2).mean()
+              h = dist.entropy().mean()
+              opt.zero_grad()
+              (pl + vf * vl - ent * h).backward()
+              opt.step()
+              return pl.item(), vl.item(), h.item()
+
+          def _make(seed, T, B, D, A, okind, stale):
+              torch.manual_seed(seed)
+              actor, critic = Actor(D, A).double(), Critic(D).double()
+              params = list(actor.parameters()) + list(critic.parameters())
+              opt = (torch.optim.SGD(params, lr=0.5, momentum=0.9) if okind == "sgd"
+                     else torch.optim.Adam(params, lr=0.05))
+              if stale:
+                  for p in params:
+                      p.grad = torch.randn_like(p)
+              g = torch.Generator().manual_seed(seed + 1)
+              obs = torch.randn(T, B, D, generator=g, dtype=torch.float64)
+              data = (obs, torch.randint(A, (T, B), generator=g),
+                      torch.randn(T, B, generator=g, dtype=torch.float64),
+                      (torch.rand(T, B, generator=g) < 0.25).double(),
+                      torch.randn(B, D, generator=g, dtype=torch.float64))
+              return actor, critic, opt, params, data
+
+          def _run(fn, seed, T, B, D, A, gamma, lam, vf, ent, okind, stale):
+              actor, critic, opt, params, data = _make(seed, T, B, D, A, okind, stale)
+              before = [x.clone() for x in data]
+              out = fn(actor, critic, opt, *data, gamma, lam, vf, ent)
+              assert isinstance(out, tuple) and len(out) == 3 and all(isinstance(o, float) for o in out), \
+                  f"return (policy_loss, value_loss, entropy) as Python floats, got {out!r}"
+              assert all(torch.equal(x, y) for x, y in zip(data, before)), "don't modify the rollout tensors"
+              return {"losses": out, "params after step": [p.detach().clone() for p in params]}
+
+          def _learner(*a): return _run(actor_critic_update, *a)
+          def _ref(*a): return _run(_ref_update, *a)
+          _learner.__name__ = "actor_critic_update"
+
+          def _same(got, exp):
+              return (all(abs(g - e) < 1e-7 * (1 + abs(e)) for g, e in zip(got["losses"], exp["losses"]))
+                      and all(torch.allclose(g, e, rtol=1e-6, atol=1e-9)
+                              for g, e in zip(got["params after step"], exp["params after step"])))
+
+          def _show(seed, T, B, D, A, gamma, lam, vf, ent, okind, stale):
+              return (f"(seed={seed}, T={T}, B={B}, D={D}, A={A}, gamma={gamma}, lam={lam}, vf_coef={vf}, "
+                      f"ent_coef={ent}, opt={okind}, stale grads={stale})")
+
+          _edge = [
+              (0, 3, 1, 2, 2, 0.9, 0.95, 0.5, 0.01, "sgd", False),
+              (1, 4, 3, 3, 3, 0.99, 0.0, 0.5, 0.0, "sgd", False),          # λ = 0
+              (2, 4, 3, 3, 3, 0.99, 1.0, 1.0, 0.1, "sgd", False),          # λ = 1
+              (3, 1, 2, 2, 2, 0.9, 0.95, 0.5, 0.01, "sgd", False),         # T = 1
+              (4, 3, 2, 2, 3, 0.9, 0.95, 0.5, 0.01, "sgd", True),          # stale grads in .grad
+              (5, 5, 2, 3, 4, 0.9, 0.95, 0.0, 0.0, "sgd", False),          # actor only
+              (6, 5, 2, 3, 4, 0.9, 0.95, 0.5, 0.01, "adam", False),
+          ]
+
+          def _gen(r):
+              return (r.randint(0, 10**6), r.randint(1, 5), r.randint(1, 3), r.randint(1, 3), r.randint(1, 4),
+                      r.choice([0.5, 0.9, 0.99]), r.choice([0.0, 0.5, 0.95, 1.0]), r.choice([0.25, 0.5, 1.0]),
+                      r.choice([0.0, 0.01, 0.1]), r.choice(["sgd", "sgd", "sgd", "adam"]), r.random() < 0.3)
+
+          against(_learner, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+          # vectorized over the batch
+          actor, critic, opt, params, data = _make(0, 10, 5000, 3, 4, "sgd", False)
+          t0 = time.perf_counter()
+          actor_critic_update(actor, critic, opt, *data, 0.99, 0.95, 0.5, 0.01)
+          dt = time.perf_counter() - t0
+          assert dt < 0.3, f"T=10, B=5000 took {dt:.2f} s: loop over time only, vectorize over the batch"

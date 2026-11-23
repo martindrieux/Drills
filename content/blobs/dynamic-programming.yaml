@@ -1,0 +1,10 @@
+id: dynamic-programming
+title: Dynamic programming
+domain: leetcode
+summary: How to recognise a DP problem, frame its state, and the canonical problem families.
+requires: [python-toolkit]
+sections:
+  - title: Thinking in DP
+    atoms: [dp-framing, py-cache]
+  - title: Canonical families
+    atoms: [dp-1d, dp-grid, dp-two-strings, dp-knapsack-01, dp-unbounded, dp-lis]

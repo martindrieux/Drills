@@ -1,0 +1,358 @@
+id: conv-im2col
+title: "Vectorized conv: im2col and col2im"
+intro: |
+  im2col copies every receptive field into a column so a whole convolution becomes one matrix multiply;
+  col2im scatter-adds columns back, which gives the backward pass as two more matmuls.
+problems:
+  - Implement Conv2D forward without loops over output positions
+  - Implement Conv2D backward (dx, dW, db) with matrix multiplies
+  - Explain the memory / speed trade-off of im2col (how cuDNN-style GEMM convs work)
+atoms: []
+skills:
+  - id: conv-im2col.im2col
+    name: im2col (= torch unfold) and conv forward as one GEMM
+    teach: |
+      Conventions: NumPy, NCHW, `x` (B, Cin, H, W), `w` (Cout, Cin, Kh, Kw), `b` (Cout,), zero `pad` on each side, `stride`,
+      no kernel flip. `H_out = (H + 2*pad - Kh) // stride + 1` (same for W), `L = H_out * W_out`.
+
+      `cols[b, (ci, i, j), (y, x)] = x_pad[b, ci, y*stride + i, x*stride + j]`: shape (B, Cin*Kh*Kw, L),
+      rows ordered (ci, i, j), columns (y, x), both row-major (exactly `torch.nn.functional.unfold`).
+
+      Forward: `out = w.reshape(Cout, -1) @ cols + b[:, None]`: (Cout, Cin*Kh*Kw) @ (B, Cin*Kh*Kw, L) -> (B, Cout, L),
+      then reshape to (B, Cout, H_out, W_out).
+
+      Example: `x = arange(9).reshape(1, 1, 3, 3)`, Kh = Kw = 2, stride 1, pad 0 -> `cols[0]` (4, 4) =
+      `[[0, 1, 3, 4], [1, 2, 4, 5], [3, 4, 6, 7], [4, 5, 7, 8]]` (row (i, j), column (y, x)).
+
+      Cost: each input pixel is copied up to Kh*Kw times: `cols` holds B·Cin·Kh·Kw·H_out·W_out floats
+      (9x the input for a 3x3 conv, stride 1). The win: a single large GEMM, which BLAS / GPUs run near peak speed.
+    cards:
+      - id: a
+        prompt: |
+          Implement im2col: copy every receptive field of the padded input into a column.
+          - `x` (B, Cin, H, W); `Kh`, `Kw`: kernel size; `stride`; `pad`: zeros added on each side, giving `xp`
+          - returns `im2col(x, Kh, Kw, stride, pad)` (B, Cin·Kh·Kw, H_out·W_out):
+            `cols[n, (ci, i, j), (r, c)] = xp[n, ci, r·stride + i, c·stride + j]`,
+            rows ordered (ci, i, j) and columns (r, c), both row-major (the layout of `F.unfold`)
+        setup: |
+          import numpy as np
+        starter: |
+          def im2col(x, Kh, Kw, stride, pad):
+              raise NotImplementedError
+        solution: |
+          def im2col(x, Kh, Kw, stride, pad):
+              B, C, H, W = x.shape
+              Ho = (H + 2 * pad - Kh) // stride + 1
+              Wo = (W + 2 * pad - Kw) // stride + 1
+              xp = np.pad(x, ((0, 0), (0, 0), (pad, pad), (pad, pad)))            # (B, C, H+2p, W+2p)
+              cols = np.empty((B, C, Kh, Kw, Ho, Wo), dtype=x.dtype)
+              for i in range(Kh):
+                  for j in range(Kw):
+                      cols[:, :, i, j] = xp[:, :, i:i + stride * Ho:stride, j:j + stride * Wo:stride]  # (B, C, Ho, Wo)
+              return cols.reshape(B, C * Kh * Kw, Ho * Wo)
+          # Key idea: loop over the Kh*Kw kernel offsets (small), slice all output positions at once with a stride.
+          # The (B, C, Kh, Kw, Ho, Wo) layout reshapes straight into unfold's (ci, i, j) x (y, x) order.
+          # Loop-free variant: np.lib.stride_tricks.sliding_window_view(xp, (Kh, Kw), axis=(2, 3))[:, :, ::stride, ::stride].
+          # Follow-up: how big is cols for a 224x224x64 input with a 3x3 kernel? (9x the input, ~29 MB per image in float64).
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(x, Kh, Kw, stride, pad):
+              return F.unfold(torch.from_numpy(x), (Kh, Kw), padding=pad, stride=stride).numpy()
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp)
+
+          def _show(x, Kh, Kw, stride, pad):
+              return f"(x of shape {x.shape}, Kh={Kh}, Kw={Kw}, stride={stride}, pad={pad})"
+
+          def _x(r, B, C, H, W):
+              return np.array([r.uniform(-3, 3) for _ in range(B * C * H * W)]).reshape(B, C, H, W)
+
+          def _gen(r):
+              B, C, H, W = r.randint(1, 2), r.randint(1, 3), r.randint(1, 7), r.randint(1, 7)
+              pad, stride = r.randint(0, 2), r.randint(1, 3)
+              return (_x(r, B, C, H, W), r.randint(1, H + 2 * pad), r.randint(1, W + 2 * pad), stride, pad)
+
+          import random as _random
+          _r = _random.Random(1)
+          _cases = [
+              (np.arange(9.0).reshape(1, 1, 3, 3), 2, 2, 1, 0),
+              (_x(_r, 1, 1, 4, 4), 1, 1, 1, 0),        # K = 1
+              (_x(_r, 2, 3, 4, 5), 4, 5, 1, 0),        # K = H, W
+              (_x(_r, 1, 2, 5, 7), 2, 3, 2, 0),        # stride not dividing, non-square
+              (_x(_r, 2, 2, 3, 4), 3, 3, 1, 1),        # pad
+              (_x(_r, 1, 3, 6, 5), 3, 2, 3, 2),        # big stride + pad
+              (_x(_r, 1, 1, 2, 2), 4, 3, 1, 1),        # kernel covers padding only on edges
+          ]
+          against(im2col, _ref, _cases + rand_cases(_gen, 250), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Implement the Conv2D forward pass as a single matrix multiplication, using `im2col` (given in the setup).
+          - `x` (B, Cin, H, W), `w` (Cout, Cin, Kh, Kw), `b` (Cout,), `stride`, `pad` (zeros on each side)
+          - returns `conv2d_im2col(x, w, b, stride, pad)` (B, Cout, H_out, W_out): the same output as the loop version
+          - no Python loops or comprehensions
+        setup: |
+          import numpy as np
+
+          def im2col(x, Kh, Kw, stride, pad):                 # -> (B, Cin*Kh*Kw, H_out*W_out), F.unfold order
+              B, C, H, W = x.shape
+              Ho, Wo = (H + 2 * pad - Kh) // stride + 1, (W + 2 * pad - Kw) // stride + 1
+              xp = np.pad(x, ((0, 0), (0, 0), (pad, pad), (pad, pad)))
+              cols = np.empty((B, C, Kh, Kw, Ho, Wo), dtype=x.dtype)
+              for i in range(Kh):
+                  for j in range(Kw):
+                      cols[:, :, i, j] = xp[:, :, i:i + stride * Ho:stride, j:j + stride * Wo:stride]
+              return cols.reshape(B, C * Kh * Kw, Ho * Wo)
+        starter: |
+          def conv2d_im2col(x, w, b, stride, pad):
+              raise NotImplementedError
+        solution: |
+          def conv2d_im2col(x, w, b, stride, pad):
+              B, Cin, H, W = x.shape
+              Cout, _, Kh, Kw = w.shape
+              Ho = (H + 2 * pad - Kh) // stride + 1
+              Wo = (W + 2 * pad - Kw) // stride + 1
+              cols = im2col(x, Kh, Kw, stride, pad)                 # (B, Cin*Kh*Kw, Ho*Wo)
+              out = w.reshape(Cout, -1) @ cols + b[:, None]         # (Cout, CKK) @ (B, CKK, L) -> (B, Cout, L)
+              return out.reshape(B, Cout, Ho, Wo)
+          # Key idea: w.reshape(Cout, -1) flattens each filter in (ci, i, j) order, matching the rows of cols.
+          # Cost: one GEMM of (Cout x Cin*Kh*Kw) by (Cin*Kh*Kw x B*L): 2*B*Cout*Cin*Kh*Kw*L flops.
+          # Follow-up: a 1x1 conv needs no im2col at all: it is w[:, :, 0, 0] @ x.reshape(B, Cin, H*W).
+        check: |
+          import dis
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _codes(c):
+              yield c
+              for k in c.co_consts:
+                  if hasattr(k, "co_code"):
+                      yield from _codes(k)
+          _ops, _names = set(), set()
+          for _c in _codes(conv2d_im2col.__code__):
+              _ops.update(i.opname for i in dis.get_instructions(_c))
+              _names.update(_c.co_names)
+          assert not _ops & {"FOR_ITER", "JUMP_BACKWARD", "JUMP_ABSOLUTE", "JUMP_BACKWARD_NO_INTERRUPT"}, "no Python loops or comprehensions"
+          assert not _names & {"torch", "F", "conv2d"}, "NumPy only (no torch)"
+
+          def _ref(x, w, b, stride, pad):
+              return F.conv2d(torch.from_numpy(x), torch.from_numpy(w), torch.from_numpy(b), stride=stride, padding=pad).numpy()
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp)
+
+          def _show(x, w, b, stride, pad):
+              return f"(x {x.shape}, w {w.shape}, b {b.shape}, stride={stride}, pad={pad})"
+
+          def _a(r, *shape):
+              return np.array([r.uniform(-2, 2) for _ in range(int(np.prod(shape)))]).reshape(shape)
+
+          def _gen(r):
+              B, Cin, Cout, H, W = r.randint(1, 2), r.randint(1, 3), r.randint(1, 4), r.randint(1, 7), r.randint(1, 7)
+              pad, stride = r.randint(0, 2), r.randint(1, 3)
+              Kh, Kw = r.randint(1, H + 2 * pad), r.randint(1, W + 2 * pad)
+              return (_a(r, B, Cin, H, W), _a(r, Cout, Cin, Kh, Kw), _a(r, Cout), stride, pad)
+
+          import random as _random
+          _r = _random.Random(2)
+          _cases = [
+              (_a(_r, 1, 1, 3, 3), _a(_r, 1, 1, 2, 2), _a(_r, 1), 1, 0),
+              (_a(_r, 2, 3, 4, 4), _a(_r, 5, 3, 1, 1), _a(_r, 5), 1, 0),      # K = 1, Cout > Cin
+              (_a(_r, 1, 2, 4, 5), _a(_r, 3, 2, 4, 5), _a(_r, 3), 1, 0),      # K = H, W: one output
+              (_a(_r, 2, 1, 5, 7), _a(_r, 2, 1, 2, 3), _a(_r, 2), 2, 0),      # stride not dividing, non-square
+              (_a(_r, 1, 2, 3, 4), _a(_r, 4, 2, 3, 3), _a(_r, 4), 1, 1),      # pad
+              (_a(_r, 2, 3, 6, 5), _a(_r, 3, 3, 3, 2), _a(_r, 3), 3, 2),      # big stride + pad
+          ]
+          against(conv2d_im2col, _ref, _cases + rand_cases(_gen, 250), same=_same, show=_show)
+
+  - id: conv-im2col.col2im
+    name: col2im (= torch fold) and conv backward as matmuls
+    teach: |
+      col2im is the adjoint of im2col: send every entry `cols[b, (ci, i, j), (y, x)]` back to
+      `x_pad[b, ci, y*stride + i, x*stride + j]` and ADD (overlapping windows sum), then crop the padding.
+      Same as `torch.nn.functional.fold`.
+
+      Example: `x` (1, 1, 1, 3), Kh = 1, Kw = 2, stride 1, pad 0, `cols = ones((1, 2, 2))` -> `[[[[1, 2, 1]]]]`:
+      `col2im(im2col(x))` multiplies each pixel by the number of windows covering it (pixels never covered -> 0).
+
+      Backward, from `out_mat = w_mat @ cols + b[:, None]` (`w_mat` = w.reshape(Cout, -1), `dout_mat` (B, Cout, L)):
+      - `dw = Σ_b dout_mat[b] @ cols[b].T` -> (Cout, Cin*Kh*Kw), reshaped to w.shape
+      - `db = dout` summed over (B, H_out, W_out) -> (Cout,)
+      - `dcols = w_mat.T @ dout_mat` -> (B, Cin*Kh*Kw, L), then `dx = col2im(dcols)` -> (B, Cin, H, W)
+
+      Pitfall: assigning (`=`) instead of adding (`+=`) keeps only the last window's contribution.
+    cards:
+      - id: a
+        prompt: |
+          Implement col2im: send every column entry back to the input pixel it was copied from, adding up overlaps.
+          - `cols` (B, Cin·Kh·Kw, H_out·W_out) in the `im2col` layout; `x_shape` = (B, Cin, H, W); `Kh`, `Kw`, `stride`, `pad`
+          - returns `col2im(cols, x_shape, Kh, Kw, stride, pad)` (B, Cin, H, W): pixel `(n, ci, h, w)` = sum of every entry
+            of `cols` that `im2col` would copy from it; entries that fall in the padding are dropped (as `F.fold`)
+        setup: |
+          import numpy as np
+        starter: |
+          def col2im(cols, x_shape, Kh, Kw, stride, pad):
+              raise NotImplementedError
+        solution: |
+          def col2im(cols, x_shape, Kh, Kw, stride, pad):
+              B, C, H, W = x_shape
+              Ho = (H + 2 * pad - Kh) // stride + 1
+              Wo = (W + 2 * pad - Kw) // stride + 1
+              c = cols.reshape(B, C, Kh, Kw, Ho, Wo)
+              xp = np.zeros((B, C, H + 2 * pad, W + 2 * pad), dtype=cols.dtype)
+              for i in range(Kh):
+                  for j in range(Kw):
+                      xp[:, :, i:i + stride * Ho:stride, j:j + stride * Wo:stride] += c[:, :, i, j]  # (B, C, Ho, Wo)
+              return xp[:, :, pad:pad + H, pad:pad + W]
+          # Key idea: mirror of im2col; within one (i, j) the strided slice hits distinct pixels, so += is safe.
+          # Different (i, j) overlap -> they must accumulate. Crop with pad:pad+H (not pad:-pad, which breaks for pad=0).
+          # Follow-up: col2im(ones) gives the overlap count per pixel; dividing by it turns col2im into an average.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(cols, x_shape, Kh, Kw, stride, pad):
+              H, W = x_shape[2:]
+              return F.fold(torch.from_numpy(cols), (H, W), (Kh, Kw), padding=pad, stride=stride).numpy()
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp)
+
+          def _show(cols, x_shape, Kh, Kw, stride, pad):
+              return f"(cols of shape {cols.shape}, x_shape={x_shape}, Kh={Kh}, Kw={Kw}, stride={stride}, pad={pad})"
+
+          def _L(H, W, Kh, Kw, stride, pad):
+              return ((H + 2 * pad - Kh) // stride + 1) * ((W + 2 * pad - Kw) // stride + 1)
+
+          def _mk(r, x_shape, Kh, Kw, stride, pad, ones=False):
+              B, C, H, W = x_shape
+              n = B * C * Kh * Kw * _L(H, W, Kh, Kw, stride, pad)
+              v = [1.0] * n if ones else [r.uniform(-3, 3) for _ in range(n)]
+              return (np.array(v).reshape(B, C * Kh * Kw, -1), x_shape, Kh, Kw, stride, pad)
+
+          def _gen(r):
+              B, C, H, W = r.randint(1, 2), r.randint(1, 3), r.randint(1, 7), r.randint(1, 7)
+              pad, stride = r.randint(0, 2), r.randint(1, 3)
+              return _mk(r, (B, C, H, W), r.randint(1, H + 2 * pad), r.randint(1, W + 2 * pad), stride, pad)
+
+          import random as _random
+          _r = _random.Random(3)
+          _cases = [
+              _mk(_r, (1, 1, 1, 3), 1, 2, 1, 0, ones=True),   # overlap count [1, 2, 1]
+              _mk(_r, (1, 1, 4, 4), 3, 3, 1, 0, ones=True),   # overlap counts up to 4
+              _mk(_r, (1, 1, 4, 4), 2, 2, 1, 1, ones=True),   # counts with padding cropped
+              _mk(_r, (2, 2, 5, 5), 2, 2, 2, 0, ones=True),   # stride 2 not dividing: last row/col never covered -> 0
+              _mk(_r, (1, 1, 3, 3), 1, 1, 1, 0),              # K = 1
+              _mk(_r, (2, 3, 4, 5), 4, 5, 1, 0),              # K = H, W
+              _mk(_r, (1, 2, 5, 7), 2, 3, 2, 1),              # non-square, stride, pad
+              _mk(_r, (1, 3, 6, 5), 3, 2, 3, 2),              # big stride + pad
+          ]
+          against(col2im, _ref, _cases + rand_cases(_gen, 250), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Implement the Conv2D backward pass with matrix multiplications, using `im2col` and `col2im` (given in the setup).
+          - `dout` (B, Cout, H_out, W_out): gradient of the loss with respect to the output
+          - `x` (B, Cin, H, W), `w` (Cout, Cin, Kh, Kw), `stride`, `pad`: the forward inputs
+          - returns `conv2d_backward_im2col(dout, x, w, stride, pad)` = `(dx, dw, db)`: gradients with respect to
+            `x` (B, Cin, H, W), `w` (Cout, Cin, Kh, Kw) and `b` (Cout,)
+          - no Python loops or comprehensions
+        setup: |
+          import numpy as np
+
+          def im2col(x, Kh, Kw, stride, pad):                 # -> (B, Cin*Kh*Kw, H_out*W_out), F.unfold order
+              B, C, H, W = x.shape
+              Ho, Wo = (H + 2 * pad - Kh) // stride + 1, (W + 2 * pad - Kw) // stride + 1
+              xp = np.pad(x, ((0, 0), (0, 0), (pad, pad), (pad, pad)))
+              cols = np.empty((B, C, Kh, Kw, Ho, Wo), dtype=x.dtype)
+              for i in range(Kh):
+                  for j in range(Kw):
+                      cols[:, :, i, j] = xp[:, :, i:i + stride * Ho:stride, j:j + stride * Wo:stride]
+              return cols.reshape(B, C * Kh * Kw, Ho * Wo)
+
+          def col2im(cols, x_shape, Kh, Kw, stride, pad):     # -> x_shape, F.fold (scatter-add, then crop pad)
+              B, C, H, W = x_shape
+              Ho, Wo = (H + 2 * pad - Kh) // stride + 1, (W + 2 * pad - Kw) // stride + 1
+              c = cols.reshape(B, C, Kh, Kw, Ho, Wo)
+              xp = np.zeros((B, C, H + 2 * pad, W + 2 * pad), dtype=cols.dtype)
+              for i in range(Kh):
+                  for j in range(Kw):
+                      xp[:, :, i:i + stride * Ho:stride, j:j + stride * Wo:stride] += c[:, :, i, j]
+              return xp[:, :, pad:pad + H, pad:pad + W]
+        starter: |
+          def conv2d_backward_im2col(dout, x, w, stride, pad):
+              raise NotImplementedError
+        solution: |
+          def conv2d_backward_im2col(dout, x, w, stride, pad):
+              B, Cout = dout.shape[:2]
+              Kh, Kw = w.shape[2:]
+              cols = im2col(x, Kh, Kw, stride, pad)                    # (B, CKK, L)
+              d = dout.reshape(B, Cout, -1)                            # (B, Cout, L)
+              dw = (d @ cols.transpose(0, 2, 1)).sum(axis=0)           # (B, Cout, CKK) -> (Cout, CKK)
+              db = dout.sum(axis=(0, 2, 3))                            # (Cout,)
+              dcols = w.reshape(Cout, -1).T @ d                        # (CKK, Cout) @ (B, Cout, L) -> (B, CKK, L)
+              dx = col2im(dcols, x.shape, Kh, Kw, stride, pad)         # (B, Cin, H, W)
+              return dx, dw.reshape(w.shape), db
+          # Key idea: forward is out = W_mat @ cols + b, so it is just the matmul backward: dW = dout @ cols^T, dcols = W^T @ dout.
+          # dw sums over the batch (shared weights); dx needs col2im because each pixel fed several columns.
+          # Cost: two GEMMs of the same size as the forward, plus cols kept in memory from the forward pass.
+          # Follow-up: dx is also a transposed convolution of dout with w (conv_transpose2d).
+        check: |
+          import dis
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _codes(c):
+              yield c
+              for k in c.co_consts:
+                  if hasattr(k, "co_code"):
+                      yield from _codes(k)
+          _ops, _names = set(), set()
+          for _c in _codes(conv2d_backward_im2col.__code__):
+              _ops.update(i.opname for i in dis.get_instructions(_c))
+              _names.update(_c.co_names)
+          assert not _ops & {"FOR_ITER", "JUMP_BACKWARD", "JUMP_ABSOLUTE", "JUMP_BACKWARD_NO_INTERRUPT"}, "no Python loops or comprehensions"
+          assert not _names & {"torch", "F", "conv2d", "backward", "grad"}, "NumPy only (no torch / autograd)"
+
+          def _ref(dout, x, w, stride, pad):
+              xt = torch.from_numpy(x).requires_grad_()
+              wt = torch.from_numpy(w).requires_grad_()
+              bt = torch.zeros(w.shape[0], dtype=torch.float64, requires_grad=True)
+              F.conv2d(xt, wt, bt, stride=stride, padding=pad).backward(torch.from_numpy(dout))
+              return xt.grad.numpy(), wt.grad.numpy(), bt.grad.numpy()
+
+          def _same(got, exp):
+              return (isinstance(got, tuple) and len(got) == 3
+                      and all(isinstance(g, np.ndarray) and g.shape == e.shape and np.allclose(g, e) for g, e in zip(got, exp)))
+
+          def _show(dout, x, w, stride, pad):
+              return f"(dout {dout.shape}, x {x.shape}, w {w.shape}, stride={stride}, pad={pad})"
+
+          def _a(r, *shape):
+              return np.array([r.uniform(-2, 2) for _ in range(int(np.prod(shape)))]).reshape(shape)
+
+          def _mk(r, B, Cin, Cout, H, W, Kh, Kw, stride, pad):
+              Ho, Wo = (H + 2 * pad - Kh) // stride + 1, (W + 2 * pad - Kw) // stride + 1
+              return (_a(r, B, Cout, Ho, Wo), _a(r, B, Cin, H, W), _a(r, Cout, Cin, Kh, Kw), stride, pad)
+
+          def _gen(r):
+              B, Cin, Cout, H, W = r.randint(1, 2), r.randint(1, 3), r.randint(1, 4), r.randint(1, 7), r.randint(1, 7)
+              pad, stride = r.randint(0, 2), r.randint(1, 3)
+              return _mk(r, B, Cin, Cout, H, W, r.randint(1, H + 2 * pad), r.randint(1, W + 2 * pad), stride, pad)
+
+          import random as _random
+          _r = _random.Random(4)
+          _cases = [
+              _mk(_r, 1, 1, 1, 3, 3, 2, 2, 1, 0),
+              _mk(_r, 2, 3, 5, 4, 4, 1, 1, 1, 0),     # K = 1, Cout > Cin
+              _mk(_r, 2, 2, 3, 4, 5, 4, 5, 1, 0),     # K = H, W
+              _mk(_r, 2, 1, 2, 5, 7, 2, 3, 2, 0),     # stride not dividing: uncovered pixels get dx = 0
+              _mk(_r, 1, 2, 4, 3, 4, 3, 3, 1, 1),     # pad
+              _mk(_r, 2, 3, 3, 6, 5, 3, 2, 3, 2),     # big stride + pad
+          ]
+          against(conv2d_backward_im2col, _ref, _cases + rand_cases(_gen, 250), same=_same, show=_show)

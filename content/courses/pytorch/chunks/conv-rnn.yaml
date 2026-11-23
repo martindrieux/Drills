@@ -1,0 +1,251 @@
+id: conv-rnn
+title: Convolutions & recurrent layers
+intro: |
+  The two classic architectures still come up: a small CNN for images and an LSTM/GRU for
+  sequences. Most interview bugs here are shape bugs, so know the `(N, C, H, W)` layout, the conv
+  output-size formula and what an RNN returns.
+problems:
+  - Write a small CNN classifier for 28x28 images
+  - Compute the output shape of this conv stack
+  - Classify sequences with an LSTM / GRU
+atoms: []
+skills:
+  - id: conv-rnn.conv2d
+    name: nn.Conv2d and its output size
+    teach: |
+      ```python
+      # nn.Conv2d(in, out, kernel_size, stride=1, padding=0) -> module on (N, C, H, W); weight is (out, in, k, k)
+      nn.Conv2d(3, 16, 3, padding=1)(torch.randn(8, 3, 32, 32)).shape             # (8, 16, 32, 32)
+      # output size: H_out = (H + 2*padding - kernel) // stride + 1
+      nn.Conv2d(3, 16, 3, stride=2, padding=1)(torch.randn(8, 3, 32, 32)).shape   # (8, 16, 16, 16)
+      # padding="same" keeps H, W (stride 1 only)
+      nn.Conv2d(3, 16, 5, padding="same")(torch.randn(8, 3, 32, 32)).shape        # (8, 16, 32, 32)
+      ```
+      Pitfall: channels-last images `(N, H, W, C)` must be permuted first with `x.permute(0, 3, 1, 2)`.
+    cards:
+      - id: a
+        prompt: |
+          For `x` `(2, 3, 16, 16)`, set: `conv` = 3 → 8 channels, 3×3 kernel, padding 1, and `y = conv(x)` ·
+          `y2` = `x` through a 3 → 8, 3×3 conv with stride 2 and padding 1 (shape `(2, 8, 8, 8)`) ·
+          `y3` = `x` through a 3 → 8, **5×5** conv that keeps the size with `padding="same"`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          x = torch.randn(2, 3, 16, 16)
+        solution: |
+          conv = nn.Conv2d(3, 8, 3, padding=1)
+          y = conv(x)
+          y2 = nn.Conv2d(3, 8, 3, stride=2, padding=1)(x)
+          y3 = nn.Conv2d(3, 8, 5, padding="same")(x)
+        check: |
+          assert conv.kernel_size == (3, 3), f"kernel_size = {conv.kernel_size}"
+          assert y.shape == (2, 8, 16, 16), f"y.shape = {tuple(y.shape)}"
+          assert y2.shape == (2, 8, 8, 8), f"y2.shape = {tuple(y2.shape)}"
+          assert y3.shape == (2, 8, 16, 16), f"y3.shape = {tuple(y3.shape)}"
+      - id: d
+        prompt: "`img` is channels-last `(N, H, W, C) = (2, 12, 12, 3)`. Apply the given `conv` (3 → 4 channels, 3×3, no padding) to it, into `y` of shape `(2, 4, 10, 10)`."
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          img = torch.randn(2, 12, 12, 3)
+          conv = nn.Conv2d(3, 4, 3)
+        solution: |
+          y = conv(img.permute(0, 3, 1, 2))
+        check: |
+          assert y.shape == (2, 4, 10, 10), f"y.shape = {tuple(y.shape)}, expected (2, 4, 10, 10)"
+          assert torch.allclose(y, conv(img.permute(0, 3, 1, 2).contiguous()), atol=1e-6), "wrong dim order in the permute"
+
+  - id: conv-rnn.pooling
+    name: MaxPool2d and global average pooling
+    teach: |
+      ```python
+      # nn.MaxPool2d(k) -> module: max over k x k windows, stride defaults to k (k=2 halves H and W)
+      nn.MaxPool2d(2)(torch.randn(1, 4, 8, 8)).shape             # (1, 4, 4, 4)
+      # nn.AdaptiveAvgPool2d(size) -> module: averages any H, W down to size; size 1 = global average pool
+      nn.AdaptiveAvgPool2d(1)(torch.randn(2, 16, 7, 5)).shape    # (2, 16, 1, 1)
+      # nn.Flatten() -> module: flattens every dim after the batch, like x.flatten(1)
+      nn.Flatten()(torch.randn(2, 16, 1, 1)).shape               # (2, 16)
+      ```
+      Pitfall: `x.squeeze()` instead of flatten also drops `N` when the batch has one element.
+    cards:
+      - id: a
+        prompt: |
+          With the pooling modules, set: `y` = 2×2 max pooling of `x` (shape `(1, 4, 4, 4)`) ·
+          `g` = global average pool of `x`, shape `(1, 4, 1, 1)` · `f` = `g` flattened to `(1, 4)` with `nn.Flatten`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          x = torch.randn(1, 4, 8, 8)
+        solution: |
+          y = nn.MaxPool2d(2)(x)
+          g = nn.AdaptiveAvgPool2d(1)(x)
+          f = nn.Flatten()(g)
+        check: |
+          assert y.shape == (1, 4, 4, 4), f"y.shape = {tuple(y.shape)}"
+          assert torch.equal(y, F.max_pool2d(x, 2)), "values are not a 2x2 max pool"
+          assert g.shape == (1, 4, 1, 1) and torch.allclose(g.flatten(), x.mean(dim=(2, 3)).flatten(), atol=1e-6), f"g.shape = {tuple(g.shape)}"
+          assert f.shape == (1, 4) and torch.allclose(f, x.mean(dim=(2, 3)), atol=1e-6), f"f.shape = {tuple(f.shape)}"
+      - id: c
+        prompt: Build `head`, an `nn.Sequential` that maps features `(N, 32, H, W)` of **any** `H, W` to logits `(N, 10)` (adaptive avg pool, flatten, linear).
+        setup: |
+          import torch
+          import torch.nn as nn
+        solution: |
+          head = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Linear(32, 10))
+        check: |
+          for hw in [(7, 7), (3, 5)]:
+              out = head(torch.randn(2, 32, *hw))
+              assert out.shape == (2, 10), f"input {hw}: out.shape = {tuple(out.shape)}"
+
+  - id: conv-rnn.cnn-block
+    name: Conv → BN → ReLU → Pool blocks and the flattened size
+    teach: |
+      ```python
+      # conv (bias=False: BN has its own bias) -> BatchNorm2d(channels) -> ReLU -> pool
+      def block(cin, cout):
+          return nn.Sequential(nn.Conv2d(cin, cout, 3, padding=1, bias=False), nn.BatchNorm2d(cout),
+                               nn.ReLU(), nn.MaxPool2d(2))
+      features = nn.Sequential(block(1, 16), block(16, 32))
+      # flattened size: run a dummy input through the features under no_grad
+      with torch.no_grad():
+          n_flat = features(torch.zeros(1, 1, 28, 28)).flatten(1).shape[1]   # 32 * 7 * 7 = 1568
+      model = nn.Sequential(features, nn.Flatten(), nn.Linear(n_flat, 10))
+      ```
+      Pitfall: BatchNorm behaves differently in train and eval mode. Call `model.eval()` before testing.
+    cards:
+      - id: a
+        prompt: |
+          Set: `block` = `nn.Sequential` of a bias-free `Conv2d(3, 8, 3, padding=1)`, `BatchNorm2d`, `ReLU`, `MaxPool2d(2)` ·
+          `n_flat` = features per image after `block` and flattening, from a dummy `(1, 3, 16, 16)` input without grad (an `int`) ·
+          `model` = `block`, `nn.Flatten()`, `nn.Linear(n_flat, 10)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+        solution: |
+          block = nn.Sequential(nn.Conv2d(3, 8, 3, padding=1, bias=False), nn.BatchNorm2d(8), nn.ReLU(), nn.MaxPool2d(2))
+          with torch.no_grad():
+              n_flat = block(torch.zeros(1, 3, 16, 16)).flatten(1).shape[1]
+          model = nn.Sequential(block, nn.Flatten(), nn.Linear(n_flat, 10))
+        check: |
+          types = [type(m).__name__ for m in block]
+          assert types == ["Conv2d", "BatchNorm2d", "ReLU", "MaxPool2d"], f"layers = {types}"
+          assert block[0].bias is None, "the conv should have bias=False"
+          out = block(torch.randn(2, 3, 16, 16))
+          assert out.shape == (2, 8, 8, 8), f"out.shape = {tuple(out.shape)}"
+          assert isinstance(n_flat, int) and n_flat == 512, f"n_flat = {n_flat!r}, expected 8*8*8 = 512"
+          assert model(torch.randn(2, 3, 16, 16)).shape == (2, 10), f"model = {model}"
+      - id: c
+        prompt: |
+          Full CNN for 28×28 grayscale digits. Write `block(cin, cout)` (bias-free 3×3 conv with padding 1, BN, ReLU, `MaxPool2d(2)`),
+          then `model` = two blocks (1 → 16 → 32), `nn.Flatten()`, and an `nn.Linear` to 10 classes whose input size comes from a dummy forward.
+        setup: |
+          import torch
+          import torch.nn as nn
+        solution: |
+          def block(cin, cout):
+              return nn.Sequential(nn.Conv2d(cin, cout, 3, padding=1, bias=False), nn.BatchNorm2d(cout),
+                                   nn.ReLU(), nn.MaxPool2d(2))
+          features = nn.Sequential(block(1, 16), block(16, 32))
+          with torch.no_grad():
+              n_flat = features(torch.zeros(1, 1, 28, 28)).flatten(1).shape[1]
+          model = nn.Sequential(features, nn.Flatten(), nn.Linear(n_flat, 10))
+        check: |
+          b = block(3, 5)
+          assert [type(m).__name__ for m in b] == ["Conv2d", "BatchNorm2d", "ReLU", "MaxPool2d"], f"block(3, 5) = {b}"
+          assert b[0].bias is None and b(torch.randn(2, 3, 8, 8)).shape == (2, 5, 4, 4), "block: bias-free conv, padding 1, then 2x2 pool"
+          n_bn = sum(isinstance(m, nn.BatchNorm2d) for m in model.modules())
+          assert n_bn == 2, f"model has {n_bn} BatchNorm2d layers, expected 2"
+          last = [m for m in model.modules() if isinstance(m, nn.Linear)][-1]
+          assert last.in_features == 1568 and last.out_features == 10, f"last Linear = {last}, expected 32*7*7 -> 10"
+          assert model(torch.randn(2, 1, 28, 28)).shape == (2, 10), "model output should be (2, 10)"
+
+  - id: conv-rnn.lstm
+    name: nn.LSTM inputs and outputs
+    teach: |
+      ```python
+      # nn.LSTM(input_size, hidden_size, num_layers=1, batch_first=False) -> module; lstm(x) returns out, (h, c)
+      lstm = nn.LSTM(8, 16, num_layers=2, batch_first=True)
+      out, (h, c) = lstm(torch.randn(4, 10, 8))     # x (N, T, input) because batch_first=True
+      out.shape     # (4, 10, 16): top layer, every time step
+      h.shape       # (2, 4, 16): (num_layers, N, hidden), last step of every layer; c is the same
+      ```
+      Pitfall: the default `batch_first=False` expects `(T, N, input)`, and `h`, `c` are **always** `(layers, N, hidden)`.
+    cards:
+      - id: a
+        prompt: Create a **2-layer** `lstm` (input 5, hidden 7, batch-first) and run it on `x` to get `out, (h, c)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          x = torch.randn(3, 4, 5)
+        solution: |
+          lstm = nn.LSTM(5, 7, num_layers=2, batch_first=True)
+          out, (h, c) = lstm(x)
+        check: |
+          assert lstm.num_layers == 2 and lstm.batch_first, f"lstm = {lstm}"
+          assert out.shape == (3, 4, 7), f"out.shape = {tuple(out.shape)}"
+          assert h.shape == (2, 3, 7) and c.shape == (2, 3, 7), f"h {tuple(h.shape)}, c {tuple(c.shape)}"
+      - id: c
+        prompt: Here `x` is time-major `(T=6, N=2, F=3)`. Create `lstm` (hidden 5) with the **default** layout and set `out` from `lstm(x)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          x = torch.randn(6, 2, 3)
+        solution: |
+          lstm = nn.LSTM(3, 5)
+          out, _ = lstm(x)
+        check: |
+          assert lstm.batch_first is False, "use the default (time-major) layout"
+          assert out.shape == (6, 2, 5), f"out.shape = {tuple(out.shape)}"
+
+  - id: conv-rnn.gru-last
+    name: GRU, last time step and bidirectional
+    teach: |
+      ```python
+      # nn.GRU(input, hidden, ...) -> like nn.LSTM but no cell state: out, h = gru(x)
+      out, h = nn.GRU(8, 16, batch_first=True)(x)     # x (N, T, 8): out (N, T, 16), h (1, N, 16); out[:, -1] == h[-1]
+      # bidirectional=True: out features doubled (N, T, 32), h (2, N, 16) = [forward, backward]
+      out, h = nn.GRU(8, 16, batch_first=True, bidirectional=True)(x)
+      feat = torch.cat([h[-2], h[-1]], dim=-1)        # final forward + final backward, (N, 32)
+      ```
+      Pitfall: for a bidirectional RNN, `out[:, -1]` holds the backward direction after only **one** step. Use `h`.
+    cards:
+      - id: a
+        prompt: |
+          Set: `last` = output of the given `gru` on `x` at the last time step, shape `(N, 6)` ·
+          `feat` = final forward and final backward hidden states of the bidirectional `bi` on `x`, concatenated, shape `(N, 8)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          gru = nn.GRU(4, 6, batch_first=True)
+          bi = nn.GRU(4, 4, batch_first=True, bidirectional=True)
+          x = torch.randn(2, 5, 4)
+        solution: |
+          out, h = gru(x)
+          last = out[:, -1]
+          _, hb = bi(x)
+          feat = torch.cat([hb[-2], hb[-1]], dim=-1)
+        check: |
+          assert last.shape == (2, 6), f"last.shape = {tuple(last.shape)}"
+          assert torch.allclose(last, gru(x)[1][-1]), "last is not the final time step"
+          ob, _ = bi(x)
+          assert feat.shape == (2, 8), f"feat.shape = {tuple(feat.shape)}"
+          assert torch.allclose(feat[:, :4], ob[:, -1, :4]) and torch.allclose(feat[:, 4:], ob[:, 0, 4:]), "feat should be [h[-2], h[-1]] of bi"
+      - id: b
+        prompt: Sequence classifier. Run the 2-layer `gru` on `x` and set `logits = fc(...)` applied to the **top layer's final hidden state**.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          gru = nn.GRU(3, 5, num_layers=2, batch_first=True)
+          fc = nn.Linear(5, 2)
+          x = torch.randn(4, 7, 3)
+        solution: |
+          _, h = gru(x)
+          logits = fc(h[-1])
+        check: |
+          assert logits.shape == (4, 2), f"logits.shape = {tuple(logits.shape)}"
+          assert torch.allclose(logits, fc(gru(x)[0][:, -1])), "use h[-1], the top layer"

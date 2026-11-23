@@ -1,0 +1,10 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "knowledge-map",
+      "url": "http://localhost:8766",
+      "port": 8766
+    }
+  ]
+}

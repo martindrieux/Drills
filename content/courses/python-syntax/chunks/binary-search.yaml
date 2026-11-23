@@ -1,0 +1,685 @@
+id: binary-search
+title: Binary search & bisect
+intro: |
+  Binary search halves a sorted range each step: O(log n). Write the loop yourself for the classic and
+  "search the answer" problems, and use `bisect` when you just need an insertion point in a sorted list.
+problems:
+  - Binary Search
+  - Search in Rotated Sorted Array
+  - Find Minimum in Rotated Sorted Array
+  - Koko Eating Bananas
+  - Time Based Key-Value Store
+  - Search a 2D Matrix
+atoms: [py-bisect]
+skills:
+  - id: binary-search.classic
+    name: classic loop on [lo, hi)
+    teach: |
+      ```python
+      # half-open range [lo, hi): hi is one PAST the last candidate, loop while lo < hi
+      lo, hi = 0, len(a)
+      while lo < hi:
+          mid = (lo + hi) // 2
+          if a[mid] == t: return mid
+          if a[mid] < t: lo = mid + 1   # mid is excluded on the left
+          else: hi = mid                # hi = mid already excludes mid
+      return -1
+      ```
+      Pitfall: `lo = mid` (without `+ 1`) can loop forever.
+    cards:
+      - id: a
+        prompt: |
+          **Write** `search(a, t)`: a binary search on the half-open range `[lo, hi)` (`while lo < hi`).
+
+          - **Given**: `a` a list of distinct ints sorted ascending (may be empty); `t` an int.
+          - **Returns**: int, the index of `t` in `a`, or `-1` if `t` is not in `a`.
+          - **Checked on**: empty list, one item, `t` at the first / last index, `t` absent (below all, above all, between two items), plus random lists.
+        starter: |
+          def search(a, t):
+              pass
+        solution: |
+          def search(a, t):
+              lo, hi = 0, len(a)
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if a[mid] == t:
+                      return mid
+                  if a[mid] < t:
+                      lo = mid + 1
+                  else:
+                      hi = mid
+              return -1
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(a, t):
+              return a.index(t) if t in a else -1
+
+          def _gen(r):
+              a = sorted(r.sample(range(-15, 16), r.randint(0, 12)), reverse=False)
+              return (a, r.randint(-17, 17))
+
+          _edge = [(sorted(a, reverse=False), t) for a, t in [([1, 3, 5, 7, 9, 11], 9), ([], 1), ([2], 2), ([2], 1), ([2], 3)]]
+          _edge += [(sorted(range(0, 2 * n, 2), reverse=False), t) for n in range(1, 8) for t in range(-1, 2 * n)]
+          against(search, _ref, _edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          **Given** (see setup): `a` a list of distinct ints sorted ascending; `t` an int that is in `a`.
+
+          - **Set** `res`: int, the index of `t` in `a`, found with a binary search loop (`while lo < hi`).
+        setup: |
+          a = [-1, 0, 3, 5, 9, 12]
+          t = 9
+          res = -1
+        solution: |
+          lo, hi = 0, len(a)
+          while lo < hi:
+              mid = (lo + hi) // 2
+              if a[mid] == t:
+                  res = mid
+                  break
+              if a[mid] < t:
+                  lo = mid + 1
+              else:
+                  hi = mid
+        check: |
+          assert res == 4, f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Write** `search_desc(a, t)` with a binary search.
+
+          - **Given**: `a` a list of distinct ints sorted in **decreasing** order (may be empty); `t` an int.
+          - **Returns**: int, the index of `t` in `a`, or `-1` if `t` is not in `a` (also for an empty list).
+          - **Checked on**: empty list, one item, `t` at the first / last index, `t` absent (above all, below all, between two items), plus random lists.
+        starter: |
+          def search_desc(a, t):
+              pass
+        solution: |
+          def search_desc(a, t):
+              lo, hi = 0, len(a)
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if a[mid] == t:
+                      return mid
+                  if a[mid] > t:
+                      lo = mid + 1
+                  else:
+                      hi = mid
+              return -1
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(a, t):
+              return a.index(t) if t in a else -1
+
+          def _gen(r):
+              a = sorted(r.sample(range(-15, 16), r.randint(0, 12)), reverse=True)
+              return (a, r.randint(-17, 17))
+
+          _edge = [(sorted(a, reverse=True), t) for a, t in [([1, 3, 5, 7, 9, 11], 9), ([], 1), ([2], 2), ([2], 1), ([2], 3)]]
+          _edge += [(sorted(range(0, 2 * n, 2), reverse=True), t) for n in range(1, 8) for t in range(-1, 2 * n)]
+          against(search_desc, _ref, _edge + rand_cases(_gen, 300))
+
+  - id: binary-search.lower-bound
+    name: first index >= t (lo < hi)
+    teach: |
+      ```python
+      # half-open [lo, hi): first index with a[i] >= t, or len(a) if none
+      lo, hi = 0, len(a)          # hi = len(a), not len(a) - 1
+      while lo < hi:              # stops when lo == hi
+          mid = (lo + hi) // 2
+          if a[mid] < t: lo = mid + 1
+          else: hi = mid          # mid may be the answer: keep it
+      return lo
+      ```
+      Test `a[mid] <= t` instead to get the first index with `a[i] > t`.
+    cards:
+      - id: a
+        prompt: |
+          **Given**: `a` a list of ints sorted ascending (duplicates allowed, may be empty); `t` an int.
+
+          - **Write** `lower_bound(a, t)` → int: the first index `i` with `a[i] >= t`, or `len(a)` if there is none.
+          - **Write** `upper_bound(a, t)` → int: the first index `i` with `a[i] > t` (strictly greater), or `len(a)` if there is none.
+          - Use binary search loops on `[lo, hi)`.
+          - **Checked on**: empty list, runs of duplicates equal to `t`, `t` smaller than all / larger than all / absent between items, plus random lists.
+        starter: |
+          def lower_bound(a, t):
+              pass
+
+          def upper_bound(a, t):
+              pass
+        solution: |
+          def lower_bound(a, t):
+              lo, hi = 0, len(a)
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if a[mid] < t:
+                      lo = mid + 1
+                  else:
+                      hi = mid
+              return lo
+
+          def upper_bound(a, t):
+              lo, hi = 0, len(a)
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if a[mid] <= t:
+                      lo = mid + 1
+                  else:
+                      hi = mid
+              return lo
+        check: |
+          from cardtest import against, rand_cases
+
+          def _lower(a, t):
+              return next((i for i, x in enumerate(a) if x >= t), len(a))
+
+          def _upper(a, t):
+              return next((i for i, x in enumerate(a) if x > t), len(a))
+
+          def _gen(r):
+              a = sorted(r.randint(-5, 5) for _ in range(r.randint(0, 10)))
+              return (a, r.randint(-7, 7))
+
+          _edge = [([1, 3, 3, 5], 3), ([1, 2, 4], 9), ([1, 2, 4], 0), ([1, 2, 4], 4), ([1, 2, 4], 3), ([], 5),
+                   ([2, 2, 2], 2), ([2, 2, 2], 1), ([2, 2, 2], 3), ([2], 1), ([2], 2), ([2], 3)]
+          _cases = _edge + rand_cases(_gen, 300)
+
+          against(lower_bound, _lower, _cases)
+          against(upper_bound, _upper, _cases)
+      - id: b
+        prompt: |
+          **Finish** `lower_bound(a, t)` with a binary search loop.
+
+          - **Given**: `a` a list of ints sorted ascending (duplicates allowed, may be empty); `t` an int.
+          - **Returns**: int, the first index `i` with `a[i] >= t`, or `len(a)` when every item is smaller than `t`.
+          - **Checked on**: empty list, every item smaller than `t`, every item larger, duplicates equal to `t`, plus random lists.
+        starter: |
+          def lower_bound(a, t):
+              lo, hi = 0, len(a) - 1
+        solution: |
+          def lower_bound(a, t):
+              lo, hi = 0, len(a)
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if a[mid] < t:
+                      lo = mid + 1
+                  else:
+                      hi = mid
+              return lo
+        check: |
+          from cardtest import against, rand_cases
+
+          def _lower(a, t):
+              return next((i for i, x in enumerate(a) if x >= t), len(a))
+
+          def _upper(a, t):
+              return next((i for i, x in enumerate(a) if x > t), len(a))
+
+          def _gen(r):
+              a = sorted(r.randint(-5, 5) for _ in range(r.randint(0, 10)))
+              return (a, r.randint(-7, 7))
+
+          _edge = [([1, 3, 3, 5], 3), ([1, 2, 4], 9), ([1, 2, 4], 0), ([1, 2, 4], 4), ([1, 2, 4], 3), ([], 5),
+                   ([2, 2, 2], 2), ([2, 2, 2], 1), ([2, 2, 2], 3), ([2], 1), ([2], 2), ([2], 3)]
+          _cases = _edge + rand_cases(_gen, 300)
+
+          against(lower_bound, _lower, _cases)
+      - id: c
+        prompt: |
+          **Given** (see setup): `a` a list of ints sorted ascending, with duplicates; `t` an int.
+
+          - **Set** `res`: int, the first index `i` with `a[i] > t` (strictly greater), or `len(a)` if none. Use a binary search loop.
+        setup: |
+          a = [1, 3, 3, 5]
+          t = 3
+        solution: |
+          lo, hi = 0, len(a)
+          while lo < hi:
+              mid = (lo + hi) // 2
+              if a[mid] <= t:
+                  lo = mid + 1
+              else:
+                  hi = mid
+          res = lo
+        check: |
+          assert res == 3, f"res = {res!r}"
+
+  - id: binary-search.bisect
+    name: bisect_left / bisect_right
+    teach: |
+      ```python
+      from bisect import bisect_left, bisect_right
+      a = [1, 3, 3, 5]
+      # bisect_left(a, x) -> first index with a[i] >= x; bisect_right(a, x) -> first index with a[i] > x
+      bisect_left(a, 3), bisect_right(a, 3)   # (1, 3): their difference = how many 3s
+      ```
+      Pitfall: the result is an insertion point, not "found": test `i < len(a) and a[i] == x`.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `a` a list of ints sorted ascending; `bisect_left` and `bisect_right` are imported. Use them for each item.
+
+          - **Set** `res`: int, the index of the first `4` in `a`.
+          - **Set** `after`: int, the first index `i` with `a[i] > 4`.
+          - **Set** `n`: int, how many `4`s are in `a`.
+          - **Set** `has9`: bool, whether `9` is in `a`.
+        setup: |
+          from bisect import bisect_left, bisect_right
+          a = [1, 4, 4, 7]
+        solution: |
+          res = bisect_left(a, 4)
+          after = bisect_right(a, 4)
+          n = bisect_right(a, 4) - bisect_left(a, 4)
+          i = bisect_left(a, 9)
+          has9 = i < len(a) and a[i] == 9
+        check: |
+          assert res == 1, f"res = {res!r}"
+          assert after == 3, f"after = {after!r}"
+          assert n == 2, f"n = {n!r}"
+          assert has9 is False, f"has9 = {has9!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `a` a list of ints sorted ascending; an int `x`; `bisect_left` and `bisect_right` imported.
+
+          - **Set** `res`: int, how many times `x` appears in `a`, using bisect.
+        setup: |
+          from bisect import bisect_left, bisect_right
+          a = [2, 5, 5, 5, 8]
+          x = 5
+        solution: |
+          res = bisect_right(a, x) - bisect_left(a, x)
+        check: |
+          assert res == 3, f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `a` a list of ints sorted ascending; `bisect_left` and `bisect_right` imported.
+
+          - **Set** `has5`: bool, whether `5` is in `a`, using bisect.
+          - **Set** `has9`: bool, whether `9` is in `a`, using bisect.
+        setup: |
+          from bisect import bisect_left, bisect_right
+          a = [1, 3, 5, 7]
+        solution: |
+          i = bisect_left(a, 5)
+          has5 = i < len(a) and a[i] == 5
+          j = bisect_left(a, 9)
+          has9 = j < len(a) and a[j] == 9
+        check: |
+          assert has5 is True, f"has5 = {has5!r}"
+          assert has9 is False, f"has9 = {has9!r}"
+
+  - id: binary-search.insort
+    name: insort (keep a list sorted)
+    teach: |
+      ```python
+      from bisect import insort, bisect_left
+      # insort(a, x): insert x IN PLACE keeping a sorted (O(n)), returns None
+      a = [1, 4, 9]
+      insort(a, 5)                # a = [1, 4, 5, 9]
+      # remove a value from a sorted list: pop at its bisect_left index
+      a.pop(bisect_left(a, 4))    # 4, a = [1, 5, 9]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `a` a list of ints sorted ascending that contains `2`; `insort` and `bisect_left` imported.
+
+          - **Modify** `a` in place: insert `6` keeping it sorted (`insort`), then remove the value `2` with `a.pop(...)` at its `bisect_left` index.
+        setup: |
+          from bisect import insort, bisect_left
+          a = [2, 5, 8]
+        solution: |
+          insort(a, 6)
+          a.pop(bisect_left(a, 2))
+        check: |
+          assert a == [5, 6, 8], f"a = {a!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `nums` a list of ints; `window` an empty list; `insort` imported.
+
+          - **Modify** `window` in place: insert every value of `nums` with `insort`, so `window` is sorted ascending after each step.
+        setup: |
+          from bisect import insort, bisect_left
+          nums = [5, 1, 4]
+          window = []
+        solution: |
+          for x in nums:
+              insort(window, x)
+        check: |
+          assert window == [1, 4, 5], f"window = {window!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `a` a list of ints sorted ascending; ints `x` and `y` (`y` is in `a`); `insort` and `bisect_left` imported.
+
+          - **Modify** `a` in place: insert `x` keeping it sorted, then remove the value `y` with `a.pop(...)` at its `bisect_left` index.
+        setup: |
+          from bisect import insort, bisect_left
+          a = [1, 3, 5, 7]
+          x, y = 4, 5
+        solution: |
+          insort(a, x)
+          a.pop(bisect_left(a, y))
+        check: |
+          assert a == [1, 3, 4, 7], f"a = {a!r}"
+
+  - id: binary-search.on-answer
+    name: binary search on the answer
+    teach: |
+      ```python
+      # ok(v) goes False...False True...True over the values: binary-search the smallest v with ok(v)
+      def ok(k):                   # can Koko finish at speed k?
+          # (p + k - 1) // k -> ceil(p / k) without floats
+          return sum((p + k - 1) // k for p in piles) <= h
+      lo, hi = 1, max(piles) + 1   # [lo, hi): hi is one past the largest candidate
+      while lo < hi:
+          mid = (lo + hi) // 2
+          if ok(mid): hi = mid     # works: maybe smaller works too
+          else: lo = mid + 1
+      # lo = smallest k with ok(k)
+      ```
+      For the **largest** valid value, search the first invalid one and take `lo - 1`.
+    cards:
+      - id: a
+        prompt: |
+          **Given**: `piles` a non-empty list of positive ints; an int `h >= len(piles)`; an int `x >= 0`.
+
+          - **Write** `min_speed(piles, h)` → int: the smallest speed `k >= 1` such that the hours `sum(ceil(p / k) for p in piles)` are `<= h`. Compute the ceiling without floats; binary-search `k`.
+          - **Write** `my_sqrt(x)` → int: the **largest** `v` with `v * v <= x`. Binary search, no `math`.
+          - **Checked on**: one pile, `h == len(piles)` (answer `max(piles)`), `h` very large (answer `1`), `x` from 0 to 129, perfect squares and their neighbours, `2**31 - 1`, `10**12`, plus random inputs.
+        starter: |
+          def min_speed(piles, h):
+              pass
+
+          def my_sqrt(x):
+              pass
+        solution: |
+          def min_speed(piles, h):
+              lo, hi = 1, max(piles) + 1
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if sum((p + mid - 1) // mid for p in piles) <= h:
+                      hi = mid
+                  else:
+                      lo = mid + 1
+              return lo
+
+          def my_sqrt(x):
+              lo, hi = 0, x + 1
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if mid * mid > x:
+                      hi = mid
+                  else:
+                      lo = mid + 1
+              return lo - 1
+        check: |
+          from cardtest import against, rand_cases
+
+          def _speed(piles, h):
+              k = 1
+              while sum((p + k - 1) // k for p in piles) > h:
+                  k += 1
+              return k
+
+          def _gen_speed(r):
+              piles = [r.randint(1, 30) for _ in range(r.randint(1, 6))]
+              return (piles, r.randint(len(piles), sum(piles) + 3))
+
+          _edge = [([3, 6, 7, 11], 8), ([30, 11, 23, 4, 20], 5), ([30, 11, 23, 4, 20], 6), ([1], 1), ([5], 1), ([5], 2),
+                   ([5], 3), ([5], 100), ([7, 7], 2), ([7, 7], 3), ([100, 1], 2), ([1, 1, 1], 3)]
+          against(min_speed, _speed, _edge + rand_cases(_gen_speed, 300))
+
+          def _sqrt(x):
+              v = 0
+              while (v + 1) * (v + 1) <= x:
+                  v += 1
+              return v
+
+          _xs = [(x,) for x in range(0, 130)] + [(9999,), (10000,), (10001,)]
+          against(my_sqrt, _sqrt, _xs + rand_cases(lambda r: r.randint(0, 10**5), 200))
+          for _x, _want in [(2**31 - 1, 46340), (10**12, 10**6), (10**12 - 1, 10**6 - 1)]:
+              assert my_sqrt(_x) == _want, f"my_sqrt({_x}) = {my_sqrt(_x)!r}, expected {_want}"
+      - id: b
+        prompt: |
+          **Write** `first_true(lo, hi, ok)`: binary search on `[lo, hi)`.
+
+          - **Given**: ints `lo <= hi`; `ok` a function of one int that is False...False then True...True on `[lo, hi)`. Only call `ok(v)` with `lo <= v < hi`.
+          - **Returns**: int, the smallest `v` in `[lo, hi)` with `ok(v)` true, or `hi` if there is none.
+          - **Checked on**: empty range (`lo == hi`), always True, always False, the switch at every position, negative bounds, plus random ranges.
+        starter: |
+          def first_true(lo, hi, ok):
+              pass
+        solution: |
+          def first_true(lo, hi, ok):
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if ok(mid):
+                      hi = mid
+                  else:
+                      lo = mid + 1
+              return lo
+        check: |
+          from cardtest import against, rand_cases
+
+          got = first_true(0, 100, lambda v: v * v >= 50)
+          assert got == 8, f"first_true(0, 100, v*v >= 50) = {got!r}"
+          got = first_true(0, 10, lambda v: False)
+          assert got == 10, f"first_true(0, 10, always False) = {got!r}"
+          got = first_true(3, 10, lambda v: True)
+          assert got == 3, f"first_true(3, 10, always True) = {got!r}"
+
+          class _AtLeast:  # ok(v) = v >= th, only defined on [lo, hi)
+              def __init__(self, th, lo, hi):
+                  self.th, self.lo, self.hi = th, lo, hi
+              def __call__(self, v):
+                  assert self.lo <= v < self.hi, f"ok({v}) called outside [{self.lo}, {self.hi})"
+                  return v >= self.th
+              def __repr__(self):
+                  return f"lambda v: v >= {self.th}"
+
+          def _ref(lo, hi, ok):
+              return next((v for v in range(lo, hi) if ok(v)), hi)
+
+          def _gen(r):
+              lo = r.randint(-10, 10)
+              hi = lo + r.randint(0, 20)
+              return (lo, hi, _AtLeast(r.randint(lo - 2, hi + 2), lo, hi))
+
+          _edge = [(lo, hi, _AtLeast(th, lo, hi)) for lo, hi in [(0, 0), (5, 5), (0, 1), (3, 4), (0, 2), (-3, 3), (0, 7)]
+                   for th in range(lo - 1, hi + 2)]
+          against(first_true, _ref, _edge + rand_cases(_gen, 300))
+      - id: c
+        prompt: |
+          **Write** `my_sqrt(x)` (integer square root) with a binary search, no `math`.
+
+          - **Given**: an int `x >= 0`.
+          - **Returns**: int, the **largest** `v` with `v * v <= x`.
+          - **Checked on**: `x` from 0 to 129, perfect squares and their neighbours, `2**31 - 1`, `10**12`, plus random values.
+        starter: |
+          def my_sqrt(x):
+              pass
+        solution: |
+          def my_sqrt(x):
+              lo, hi = 0, x + 1
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if mid * mid > x:
+                      hi = mid
+                  else:
+                      lo = mid + 1
+              return lo - 1
+        check: |
+          from cardtest import against, rand_cases
+
+          def _sqrt(x):
+              v = 0
+              while (v + 1) * (v + 1) <= x:
+                  v += 1
+              return v
+
+          _xs = [(x,) for x in range(0, 130)] + [(9999,), (10000,), (10001,)]
+          against(my_sqrt, _sqrt, _xs + rand_cases(lambda r: r.randint(0, 10**5), 200))
+          for _x, _want in [(2**31 - 1, 46340), (10**12, 10**6), (10**12 - 1, 10**6 - 1)]:
+              assert my_sqrt(_x) == _want, f"my_sqrt({_x}) = {my_sqrt(_x)!r}, expected {_want}"
+
+  - id: binary-search.rotated
+    name: rotated sorted array
+    teach: |
+      ```python
+      def search(a, t):          # a: sorted, then rotated; distinct values
+          lo, hi = 0, len(a)
+          while lo < hi:
+              mid = (lo + hi) // 2
+              if a[mid] == t: return mid
+              if a[lo] <= a[mid]:                       # a[lo..mid] is sorted
+                  if a[lo] <= t < a[mid]: hi = mid
+                  else: lo = mid + 1
+              else:                                     # a[mid..hi-1] is sorted
+                  if a[mid] < t <= a[hi - 1]: lo = mid + 1
+                  else: hi = mid
+          return -1
+      ```
+      Minimum = first index with `a[i] <= a[-1]`: `lo = mid + 1` if `a[mid] > a[-1]`, else `hi = mid`.
+    cards:
+      - id: a
+        prompt: |
+          **Given**: `a` a non-empty list of distinct ints, sorted ascending then rotated (e.g. `[4, 5, 6, 7, 0, 1, 2]`, or not rotated at all); `t` an int.
+
+          - **Write** `search(a, t)` → int: the index of `t` in `a`, or `-1`. Binary search.
+          - **Write** `find_min(a)` → int: the smallest value of `a`. Binary search, not `min`.
+          - **Checked on**: every rotation of lists of length 1 to 7, `t` equal to each item and absent (below, above, between items), plus random lists.
+        starter: |
+          def search(a, t):
+              pass
+
+          def find_min(a):
+              pass
+        solution: |
+          def search(a, t):
+              lo, hi = 0, len(a)
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if a[mid] == t:
+                      return mid
+                  if a[lo] <= a[mid]:
+                      if a[lo] <= t < a[mid]:
+                          hi = mid
+                      else:
+                          lo = mid + 1
+                  else:
+                      if a[mid] < t <= a[hi - 1]:
+                          lo = mid + 1
+                      else:
+                          hi = mid
+              return -1
+
+          def find_min(a):
+              lo, hi = 0, len(a)
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if a[mid] > a[-1]:
+                      lo = mid + 1
+                  else:
+                      hi = mid
+              return a[lo]
+        check: |
+          from cardtest import against, rand_cases
+
+          def _rot(r):
+              b = sorted(r.sample(range(-20, 21), r.randint(1, 10)))
+              k = r.randint(0, len(b) - 1)
+              return b[k:] + b[:k]
+
+          # every rotation (incl. none) of [0, 2, ..., 2n-2] for n = 1..7
+          _all = [b[k:] + b[:k] for n in range(1, 8) for b in [list(range(0, 2 * n, 2))] for k in range(n)]
+
+          def _search(a, t):
+              return a.index(t) if t in a else -1
+
+          against(search, _search, [(a, t) for a in _all for t in range(-1, 2 * len(a))]
+                  + rand_cases(lambda r: (_rot(r), r.randint(-22, 22)), 300))
+
+          def _min(a):
+              return min(a)
+
+          against(find_min, _min, [(a,) for a in _all] + rand_cases(lambda r: (_rot(r),), 300))
+      - id: b
+        prompt: |
+          **Write** `search(a, t)` with a binary search.
+
+          - **Given**: `a` a non-empty list of distinct ints, sorted ascending then rotated (possibly not rotated); `t` an int.
+          - **Returns**: int, the index of `t` in `a`, or `-1`.
+          - **Checked on**: every rotation of lists of length 1 to 7, `t` equal to each item and absent (below, above, between items), plus random lists.
+        starter: |
+          def search(a, t):
+              pass
+        solution: |
+          def search(a, t):
+              lo, hi = 0, len(a)
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if a[mid] == t:
+                      return mid
+                  if a[lo] <= a[mid]:
+                      if a[lo] <= t < a[mid]:
+                          hi = mid
+                      else:
+                          lo = mid + 1
+                  else:
+                      if a[mid] < t <= a[hi - 1]:
+                          lo = mid + 1
+                      else:
+                          hi = mid
+              return -1
+        check: |
+          from cardtest import against, rand_cases
+
+          def _rot(r):
+              b = sorted(r.sample(range(-20, 21), r.randint(1, 10)))
+              k = r.randint(0, len(b) - 1)
+              return b[k:] + b[:k]
+
+          # every rotation (incl. none) of [0, 2, ..., 2n-2] for n = 1..7
+          _all = [b[k:] + b[:k] for n in range(1, 8) for b in [list(range(0, 2 * n, 2))] for k in range(n)]
+
+          def _search(a, t):
+              return a.index(t) if t in a else -1
+
+          against(search, _search, [(a, t) for a in _all for t in range(-1, 2 * len(a))]
+                  + rand_cases(lambda r: (_rot(r), r.randint(-22, 22)), 300))
+      - id: c
+        prompt: |
+          **Write** `rotations(a)` with a binary search.
+
+          - **Given**: `a` a non-empty sorted list of distinct ints, rotated right `k` times (`0 <= k < len(a)`).
+          - **Returns**: int, `k` = the index of the minimum.
+          - **Checked on**: every rotation (including `k = 0`) of lists of length 1 to 7, plus random lists.
+        starter: |
+          def rotations(a):
+              pass
+        solution: |
+          def rotations(a):
+              lo, hi = 0, len(a)
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if a[mid] > a[-1]:
+                      lo = mid + 1
+                  else:
+                      hi = mid
+              return lo
+        check: |
+          from cardtest import against, rand_cases
+
+          def _rot(r):
+              b = sorted(r.sample(range(-20, 21), r.randint(1, 10)))
+              k = r.randint(0, len(b) - 1)
+              return b[k:] + b[:k]
+
+          # every rotation (incl. none) of [0, 2, ..., 2n-2] for n = 1..7
+          _all = [b[k:] + b[:k] for n in range(1, 8) for b in [list(range(0, 2 * n, 2))] for k in range(n)]
+
+          def _ref(a):
+              return a.index(min(a))
+
+          against(rotations, _ref, [(a,) for a in _all] + rand_cases(lambda r: (_rot(r),), 300))

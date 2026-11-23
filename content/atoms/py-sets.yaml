@@ -1,0 +1,207 @@
+id: py-sets
+title: Sets — O(1) membership
+summary: Unordered collections of unique hashable items. Fast membership tests, dedupe, and set algebra.
+links:
+  - to: py-lists
+    kind: contrast
+    note: "`x in list` scans in O(n); `x in set` hashes in O(1). Convert once when you test membership in a loop."
+lesson: |
+  A `set` stores **unique, hashable** items with **average O(1)** `add`, `remove` and `in`.
+  It has no order and no indexing.
+
+  **Creating**
+
+  ```python
+  s = set()            # empty set. {} is an empty DICT!
+  s = {1, 2, 3}        # literal
+  set(nums)            # dedupe a list
+  set("hello")         # {'h', 'e', 'l', 'o'}  (chars), while {"hello"} has one string
+  {x % 3 for x in nums}   # set comprehension
+  ```
+
+  **Adding and removing**
+
+  | Call | Does |
+  |---|---|
+  | `s.add(x)` | insert (no-op if present) |
+  | `s.remove(x)` | delete, **KeyError** if absent |
+  | `s.discard(x)` | delete if present, never raises |
+  | `s.pop()` | remove and return an **arbitrary** item |
+  | `x in s`, `len(s)` | O(1) |
+
+  **Set algebra**
+
+  | Operator | Method | Result |
+  |---|---|---|
+  | `a \| b` | `a.union(b)` | in either |
+  | `a & b` | `a.intersection(b)` | in both |
+  | `a - b` | `a.difference(b)` | in a, not in b |
+  | `a ^ b` | `a.symmetric_difference(b)` | in exactly one |
+  | `a <= b`, `a < b` | `a.issubset(b)` | subset, proper subset |
+  | | `a.isdisjoint(b)` | no common item |
+
+  The operators need both sides to be sets; the methods accept any iterable (`a.union([4, 5])`).
+  In-place forms: `a |= b`, `a &= b`, `a -= b`.
+
+  **Hashable elements only**
+
+  ```python
+  visited = set()
+  visited.add((r, c))                 # tuples are fine
+  edge = frozenset((u, v))            # unordered pair: frozenset({1, 2}) == frozenset({2, 1})
+  # visited.add([r, c])               # TypeError: unhashable type: 'list'
+  ```
+
+  `frozenset` is an immutable set, so it can go inside a set or be a dict key.
+
+  **Dedupe patterns**
+
+  ```python
+  list(set(xs))              # dedupe, order lost
+  list(dict.fromkeys(xs))    # dedupe, first-occurrence order kept
+
+  seen = set()               # seen-set: the general form
+  for x in xs:
+      if x in seen:
+          ...                # duplicate found
+      seen.add(x)
+  ```
+
+  **Complexity:** building from n items O(n); `a & b` O(min(len(a), len(b))); `a | b` O(len(a) + len(b)).
+
+  **Pitfalls**
+  - `{}` is a dict. Use `set()` for an empty set.
+  - Iteration order is arbitrary: `sorted(s)` before returning or comparing to a list.
+  - `s.remove(x)` raises if `x` is missing; `discard` doesn't.
+  - Membership in a loop against a **list** turns O(n) into O(n²). Convert to a set first.
+drills:
+  - id: empty-add-discard
+    prompt: Create an empty set `s`, add 3 and 5, then remove 7 (which isn't there) without raising.
+    solution: |
+      s = set()
+      s.add(3)
+      s.add(5)
+      s.discard(7)
+    check: |
+      assert type(s) is set, f"type(s) = {type(s)!r}"
+      assert s == {3, 5}, f"s = {s!r}"
+  - id: algebra
+    prompt: Using operators, set `both` (in a and b), `either` (in a or b), `only_a` (in a, not b) and `one_side` (in exactly one).
+    setup: |
+      a = {1, 2, 3, 4}
+      b = {3, 4, 5}
+    solution: |
+      both = a & b
+      either = a | b
+      only_a = a - b
+      one_side = a ^ b
+    check: |
+      assert both == {3, 4}, f"both = {both!r}"
+      assert either == {1, 2, 3, 4, 5}, f"either = {either!r}"
+      assert only_a == {1, 2}, f"only_a = {only_a!r}"
+      assert one_side == {1, 2, 5}, f"one_side = {one_side!r}"
+  - id: seen-dedupe
+    prompt: Set `uniq` to `nums` without duplicates, keeping first-occurrence order, using a seen-set loop.
+    setup: |
+      nums = [3, 1, 3, 2, 1, 4]
+    solution: |
+      seen = set()
+      uniq = []
+      for x in nums:
+          if x not in seen:
+              seen.add(x)
+              uniq.append(x)
+    check: |
+      assert uniq == [3, 1, 2, 4], f"uniq = {uniq!r}"
+  - id: comprehension
+    prompt: With a set comprehension, set `vowels_in` to the set of vowels (`aeiou`) that appear in `s`.
+    setup: |
+      s = "programming"
+    solution: |
+      vowels_in = {c for c in s if c in "aeiou"}
+    check: |
+      assert vowels_in == {"o", "a", "i"}, f"vowels_in = {vowels_in!r}"
+  - id: frozenset-edges
+    prompt: Set `uniq_edges` to a set of `frozenset`s so that `(1, 2)` and `(2, 1)` count as the same undirected edge.
+    setup: |
+      edges = [(1, 2), (2, 1), (3, 4)]
+    solution: |
+      uniq_edges = {frozenset(e) for e in edges}
+    check: |
+      assert len(uniq_edges) == 2, f"uniq_edges = {uniq_edges!r}"
+      assert frozenset({1, 2}) in uniq_edges, f"uniq_edges = {uniq_edges!r}"
+  - id: subset
+    prompt: Set `ok` to whether every letter of `word` is in the set `allowed`, using a subset operator.
+    setup: |
+      allowed = set("abcd")
+      word = "badcab"
+    solution: |
+      ok = set(word) <= allowed
+    check: |
+      assert ok is True, f"ok = {ok!r}"
+classics:
+  - id: contains-duplicate
+    title: Contains Duplicate
+    url: https://leetcode.com/problems/contains-duplicate/
+    difficulty: Easy
+    prompt: |
+      Return `True` if any value appears at least twice in `nums`, otherwise `False`.
+    starter: |
+      def containsDuplicate(nums):
+          pass
+    hints:
+      - Compare `len(set(nums))` with `len(nums)`.
+      - Or walk with a seen-set and return as soon as you meet a repeat (early exit).
+    solution: |
+      def containsDuplicate(nums):
+          seen = set()
+          for x in nums:
+              if x in seen:
+                  return True
+              seen.add(x)
+          return False
+    check: |
+      r = containsDuplicate([1, 2, 3, 1])
+      assert r is True, f"r = {r!r}"
+      r = containsDuplicate([1, 2, 3, 4])
+      assert r is False, f"r = {r!r}"
+      r = containsDuplicate([])
+      assert r is False, f"empty: r = {r!r}"
+      r = containsDuplicate([1, 1, 1, 3, 3, 4, 3, 2, 4, 2])
+      assert r is True, f"r = {r!r}"
+    takeaway: '"Have I seen this before?" → a set, checked before adding.'
+  - id: longest-consecutive
+    title: Longest Consecutive Sequence
+    url: https://leetcode.com/problems/longest-consecutive-sequence/
+    difficulty: Medium
+    prompt: |
+      Return the length of the longest run of consecutive integers that can be formed from the
+      values of the unsorted `nums`. Must run in O(n), so no sorting.
+    starter: |
+      def longestConsecutive(nums):
+          pass
+    hints:
+      - Put everything in a set for O(1) lookups.
+      - Only start counting from `x` if `x - 1` is **not** in the set. That makes `x` the start of a run.
+      - Each number is then visited at most twice overall, so it's O(n).
+    solution: |
+      def longestConsecutive(nums):
+          s = set(nums)
+          best = 0
+          for x in s:
+              if x - 1 not in s:
+                  y = x
+                  while y + 1 in s:
+                      y += 1
+                  best = max(best, y - x + 1)
+          return best
+    check: |
+      r = longestConsecutive([100, 4, 200, 1, 3, 2])
+      assert r == 4, f"r = {r!r}"
+      r = longestConsecutive([0, 3, 7, 2, 5, 8, 4, 6, 0, 1])
+      assert r == 9, f"r = {r!r}"
+      r = longestConsecutive([])
+      assert r == 0, f"empty: r = {r!r}"
+      r = longestConsecutive([1, 2, 0, 1])
+      assert r == 3, f"duplicates: r = {r!r}"
+    takeaway: Set for O(1) lookups, and only expand from run starts (`x - 1 not in s`).

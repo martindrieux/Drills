@@ -1,0 +1,198 @@
+id: finetuning
+title: Fine-tuning a pretrained model
+intro: |
+  Fine-tuning a pretrained model means freezing parts of it, swapping the head and building an
+  optimizer with parameter groups (no weight decay on biases and norms).
+problems:
+  - Fine-tune a pretrained ResNet on 5 classes
+  - Train only the classification head
+  - Set up AdamW the way GPT/BERT recipes do
+atoms: []
+skills:
+  - id: finetuning.freeze
+    name: Freezing a backbone
+    teach: |
+      ```python
+      # module.requires_grad_(False) -> sets p.requires_grad = False on all its params (frozen params get no .grad)
+      model.backbone.requires_grad_(False)
+      # give the optimizer only the trainable params
+      opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-3)
+      # backbone in eval mode inside a training model: BatchNorm stats and dropout frozen too
+      model.train(); model.backbone.eval()
+      ```
+      Pitfall: `requires_grad=False` alone does **not** stop BatchNorm from updating its running stats.
+    cards:
+      - id: a
+        prompt: |
+          Freeze `model.backbone` with `requires_grad_`, build `opt` (SGD, lr 0.1) over the **trainable** parameters only,
+          and put `model` in train mode with its backbone in eval mode (BatchNorm stats frozen).
+        setup: |
+          import torch
+          import torch.nn as nn
+          from collections import OrderedDict
+          model = nn.Sequential(OrderedDict(
+              backbone=nn.Sequential(nn.Linear(4, 8), nn.BatchNorm1d(8), nn.ReLU()),
+              head=nn.Linear(8, 2),
+          ))
+        solution: |
+          model.backbone.requires_grad_(False)
+          opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr=0.1)
+          model.train()
+          model.backbone.eval()
+        check: |
+          assert not any(p.requires_grad for p in model.backbone.parameters()), "backbone still trainable"
+          assert all(p.requires_grad for p in model.head.parameters()), "head must stay trainable"
+          ps = opt.param_groups[0]["params"]
+          assert len(ps) == 2 and all(any(p is q for q in model.head.parameters()) for p in ps), f"optimizer holds {len(ps)} tensors, expected the 2 head tensors"
+          before = model.backbone[1].running_mean.clone()
+          model(torch.randn(16, 4) + 3)
+          assert torch.equal(model.backbone[1].running_mean, before), "BatchNorm running_mean changed: backbone not in eval mode"
+          assert model.training and model.head.training, "model and head should be in train mode"
+      - id: b
+        prompt: |
+          Train only the head: freeze the **whole** `model`, then unfreeze `model.head`. Set `n_trainable` = the number of
+          trainable scalars (sum of `numel()`), and `opt` (SGD, lr 0.1) over the trainable parameters only.
+        setup: |
+          import torch
+          import torch.nn as nn
+          from collections import OrderedDict
+          model = nn.Sequential(OrderedDict(
+              backbone=nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 8)),
+              head=nn.Linear(8, 2),
+          ))
+        solution: |
+          model.requires_grad_(False)
+          model.head.requires_grad_(True)
+          n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+          opt = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr=0.1)
+        check: |
+          assert not any(p.requires_grad for p in model.backbone.parameters()), "backbone still trainable"
+          assert all(p.requires_grad for p in model.head.parameters()), "head must be trainable"
+          assert n_trainable == 18, f"n_trainable = {n_trainable}, expected 8*2 + 2 = 18"
+          ps = opt.param_groups[0]["params"]
+          assert len(ps) == 2 and all(any(p is q for q in model.head.parameters()) for p in ps), f"optimizer holds {len(ps)} tensors, expected the 2 head tensors"
+
+  - id: finetuning.replace-head
+    name: Replacing the classification head
+    teach: |
+      ```python
+      # swap the last layer for your number of classes, reusing its in_features
+      model.fc = nn.Linear(model.fc.in_features, 5)                            # ResNet: logits (N, 1000) -> (N, 5)
+      model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, 5)    # VGG / EfficientNet
+      # nn.Identity() as the head turns the model into a feature extractor
+      model.fc = nn.Identity()
+      ```
+      Pitfall: replace the head **before** `.to(device)` and building the optimizer; an earlier optimizer still points at the old head.
+    cards:
+      - id: a
+        prompt: |
+          Reusing the old layers' `in_features`: replace `model.fc` so `model` outputs **5** classes ·
+          replace only the last layer of `vgg.classifier` so `vgg` outputs 4 classes ·
+          turn `ext` into a feature extractor by replacing its `fc` with an identity, and set `feats = ext(x)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          from collections import OrderedDict
+          class TinyNet(nn.Module):
+              def __init__(self):
+                  super().__init__()
+                  self.body = nn.Sequential(nn.Linear(6, 12), nn.ReLU())
+                  self.fc = nn.Linear(12, 1000)
+              def forward(self, x):
+                  return self.fc(self.body(x))
+          model, ext = TinyNet(), TinyNet()
+          vgg = nn.Sequential(OrderedDict(
+              features=nn.Sequential(nn.Linear(6, 12), nn.ReLU()),
+              classifier=nn.Sequential(nn.Dropout(0.2), nn.Linear(12, 1000)),
+          ))
+          x = torch.randn(2, 6)
+        solution: |
+          model.fc = nn.Linear(model.fc.in_features, 5)
+          vgg.classifier[-1] = nn.Linear(vgg.classifier[-1].in_features, 4)
+          ext.fc = nn.Identity()
+          feats = ext(x)
+        check: |
+          out = model(torch.randn(2, 6))
+          assert out.shape == (2, 5), f"model output shape = {tuple(out.shape)}"
+          assert isinstance(vgg.classifier[0], nn.Dropout), "vgg: keep the Dropout layer"
+          assert vgg(x).shape == (2, 4), f"vgg output shape = {tuple(vgg(x).shape)}"
+          assert feats.shape == (2, 12) and torch.allclose(feats, ext.body(x)), f"feats.shape = {tuple(feats.shape)}"
+      - id: d
+        prompt: Replace `model.fc` for **3** classes, **then** build `opt` (SGD, lr 0.1) over all of `model`'s parameters, so the new head is trained.
+        setup: |
+          import torch
+          import torch.nn as nn
+          class TinyNet(nn.Module):
+              def __init__(self):
+                  super().__init__()
+                  self.body = nn.Sequential(nn.Linear(6, 12), nn.ReLU())
+                  self.fc = nn.Linear(12, 1000)
+              def forward(self, x):
+                  return self.fc(self.body(x))
+          model = TinyNet()
+        solution: |
+          model.fc = nn.Linear(model.fc.in_features, 3)
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+        check: |
+          assert model.fc.out_features == 3, f"fc = {model.fc}"
+          ids = {id(p) for g in opt.param_groups for p in g["params"]}
+          assert id(model.fc.weight) in ids, "opt does not hold the NEW head: build it after replacing fc"
+          assert len(ids) == 4, f"opt holds {len(ids)} tensors, expected 4"
+
+  - id: finetuning.decay-groups
+    name: AdamW groups without decay on biases and norms
+    teach: |
+      ```python
+      # biases and norm gains are 1-D; decaying them toward 0 hurts, so they go in a weight_decay=0 group
+      decay = [p for p in model.parameters() if p.ndim >= 2]
+      no_decay = [p for p in model.parameters() if p.ndim < 2]
+      # a group's own keys override the optimizer defaults (here lr=3e-4 is shared)
+      opt = torch.optim.AdamW([{"params": decay, "weight_decay": 0.1},
+                               {"params": no_decay, "weight_decay": 0.0}], lr=3e-4)
+      # by name instead: model.named_parameters() yields (name, p) pairs
+      [n for n, p in nn.Sequential(nn.Linear(2, 2)).named_parameters()]     # ['0.weight', '0.bias']
+      ```
+      Pitfall: embeddings are 2-D, so the `ndim` rule decays them. Some recipes exclude them by **name**.
+    cards:
+      - id: a
+        prompt: |
+          Set: `decay` / `no_decay` = lists of `model`'s parameters with `ndim >= 2` / `< 2` ·
+          `opt` = AdamW, lr `1e-3`, weight decay `0.01` for `decay` and `0.0` for `no_decay` ·
+          `names_1d` = list of the **names** of the 1-D parameters, in order.
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Sequential(nn.Linear(4, 8), nn.LayerNorm(8), nn.Linear(8, 2))
+        solution: |
+          decay = [p for p in model.parameters() if p.ndim >= 2]
+          no_decay = [p for p in model.parameters() if p.ndim < 2]
+          opt = torch.optim.AdamW([{"params": decay, "weight_decay": 0.01},
+                                   {"params": no_decay, "weight_decay": 0.0}], lr=1e-3)
+          names_1d = [n for n, p in model.named_parameters() if p.ndim < 2]
+        check: |
+          assert len(decay) == 2 and len(no_decay) == 4, f"len(decay) = {len(decay)}, len(no_decay) = {len(no_decay)}"
+          assert decay[0] is model[0].weight and decay[1] is model[2].weight, "decay should hold the two Linear weights"
+          info = sorted((g["weight_decay"], len(g["params"]), g["lr"]) for g in opt.param_groups)
+          assert info == [(0.0, 4, 1e-3), (0.01, 2, 1e-3)], f"(wd, n_params, lr) per group = {info}"
+          assert names_1d == ["0.bias", "1.weight", "1.bias", "2.bias"], f"names_1d = {names_1d}"
+      - id: c
+        prompt: Use **names**. Set `no_decay_names` to the names of every parameter that ends in `"bias"` or contains `"norm"`, then build AdamW `opt` (wd `0.05` for the rest, `0.0` for these).
+        setup: |
+          import torch
+          import torch.nn as nn
+          from collections import OrderedDict
+          model = nn.Sequential(OrderedDict(
+              emb=nn.Embedding(10, 8), fc=nn.Linear(8, 8), norm=nn.LayerNorm(8), out=nn.Linear(8, 2),
+          ))
+        solution: |
+          no_decay_names = {n for n, p in model.named_parameters() if n.endswith("bias") or "norm" in n}
+          params = dict(model.named_parameters())
+          opt = torch.optim.AdamW([
+              {"params": [p for n, p in params.items() if n not in no_decay_names], "weight_decay": 0.05},
+              {"params": [p for n, p in params.items() if n in no_decay_names], "weight_decay": 0.0},
+          ])
+        check: |
+          assert set(no_decay_names) == {"fc.bias", "norm.weight", "norm.bias", "out.bias"}, f"no_decay_names = {sorted(no_decay_names)}"
+          wd = {id(p): g["weight_decay"] for g in opt.param_groups for p in g["params"]}
+          assert len(wd) == 7, f"opt holds {len(wd)} tensors, expected all 7"
+          assert wd.get(id(model.emb.weight)) == 0.05 and wd.get(id(model.norm.weight)) == 0.0, "wrong weight_decay per group"

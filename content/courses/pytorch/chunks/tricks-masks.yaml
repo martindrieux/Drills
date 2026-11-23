@@ -1,0 +1,421 @@
+id: tricks-masks
+title: "Tricks: broadcasting, masks & reductions"
+intro: |
+  Interview problems where the whole answer is one broadcast comparison or one masked reduction: every pair
+  compared at once, attention masks built from index tensors, and reductions that must ignore padding even
+  when values are negative or a row has nothing left. (Outer product / difference, padding masks from right-padded
+  lengths, masked mean pooling and the causal + padding attention mask are drilled in tensor-ops, attention and interview-tricks.)
+problems:
+  - Positive-pair mask for a supervised contrastive / triplet loss
+  - Compute ROC AUC without sklearn and without sorting
+  - Sliding-window (local) causal attention mask
+  - Attention mask for a left-padded generation batch
+  - Masked max pooling over padded tokens
+  - Masked softmax that never returns nan
+atoms: []
+skills:
+  - id: tricks-masks.pairwise-compare
+    name: Pairwise comparison masks (Easy)
+    teach: |
+      Compare **every** element of one vector with **every** element of another, no Python loop.
+
+      - Positive pairs: `labels` (N,) int64 -> (N, N) bool, `pos[i, j] = labels[i] == labels[j] and i != j`.
+        `[3, 1, 3]` -> `[[F, F, T], [F, F, F], [T, F, F]]`.
+      - Follow-up, ROC AUC: scores `pos` (P,), `neg` (M,) -> fraction of (positive, negative) pairs where the positive
+        scores higher, a tie = 0.5. `pos = [0.9, 0.4]`, `neg = [0.4, 0.1]` -> (1 + 1 + 0.5 + 1) / 4 = 0.875.
+      - No loops, no sorting, no sklearn.
+    cards:
+      - id: a
+        prompt: |
+          Write `positive_pairs(labels)`: the mask of positive pairs for a contrastive loss (same label, different sample).
+          - `labels` (N,) int64: class of each sample (`N` may be 0)
+          - returns `pos` (N, N) bool: `pos[i, j] = labels[i] == labels[j] and i != j`
+          - No Python loops.
+
+          <details><summary>Hint 1</summary>All N × N answers form a grid: labels along the rows and along the columns.</details>
+          <details><summary>Hint 2</summary><code>(N, 1) == (1, N)</code> broadcasts to (N, N) bool; the diagonal is the identity.</details>
+          <details><summary>Hint 3</summary><code>(labels[:, None] == labels[None, :]) &amp; ~torch.eye(N, dtype=torch.bool)</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def positive_pairs(labels):
+              raise NotImplementedError
+        solution: |
+          def positive_pairs(labels):
+              N = labels.shape[0]
+              same = labels[:, None] == labels[None, :]                          # (N, 1) vs (1, N) -> (N, N) bool
+              return same & ~torch.eye(N, dtype=torch.bool, device=labels.device)  # drop i == j
+
+          # Trick: size-1 dims make the comparison broadcast to every (i, j) pair: (N, 1) == (1, N) -> (N, N).
+          # Cost: O(N²) time and memory, one vectorized kernel instead of N² Python steps.
+          # NumPy: identical, (labels[:, None] == labels[None, :]) & ~np.eye(N, dtype=bool).
+          # Mistakes: keeping the diagonal (an anchor is not its own positive); a float eye (~ raises).
+          # Follow-up: negatives mask = ~same; anchors with no positive -> ~pos.any(1).
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _used(fn):
+              ops, names, todo = set(), set(), [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  ops.update(i.opname for i in dis.get_instructions(c))
+                  names.update(c.co_names)
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return ops, names
+
+          assert not _used(positive_pairs)[0] & {"FOR_ITER", "JUMP_BACKWARD"}, "no Python loops or comprehensions"
+
+          def _ref(labels):
+              v = labels.tolist()
+              n = len(v)
+              return torch.tensor([[v[i] == v[j] and i != j for j in range(n)] for i in range(n)], dtype=torch.bool).reshape(n, n)
+
+          def _gen(r):
+              n = r.randint(0, 12)
+              return (torch.tensor([r.randint(-2, 3) for _ in range(n)], dtype=torch.int64),)
+
+          _same = lambda got, exp: torch.is_tensor(got) and got.shape == exp.shape and got.dtype == torch.bool and torch.equal(got, exp)
+          _show = lambda labels: f"(labels={labels.tolist()})"
+          against(positive_pairs, _ref,
+                  [(torch.tensor([3, 1, 3]),), (torch.zeros(0, dtype=torch.int64),), (torch.tensor([7]),),
+                   (torch.tensor([2, 2, 2, 2]),), (torch.tensor([0, 1, 2, 3]),), (torch.tensor([-1, 5, -1, 5, 0]),)]
+                  + rand_cases(_gen, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Write `pairwise_auc(pos, neg)`: the ROC AUC, i.e. the fraction of (positive, negative) pairs where the positive scores higher, a tie counting 0.5.
+          - `pos` (P,) float: scores of the positives; `neg` (M,) float: scores of the negatives (`P != M` possible)
+          - returns `auc` 0-dim float tensor: (#pairs `(i, j)` with `pos[i] > neg[j]` + 0.5 × #pairs with `pos[i] == neg[j]`) / (P × M)
+          - No Python loops, no sorting, no sklearn.
+
+          <details><summary>Hint 1</summary>The AUC is an average over all P × M pairs: build the grid of outcomes.</details>
+          <details><summary>Hint 2</summary><code>(P, 1) &gt; (1, M)</code> broadcasts to (P, M) bool; <code>.float()</code> makes 0. / 1.; ties come from <code>==</code>.</details>
+          <details><summary>Hint 3</summary><code>d = pos[:, None] - neg[None, :]</code>; mean of <code>(d &gt; 0).float() + 0.5 * (d == 0).float()</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def pairwise_auc(pos, neg):
+              raise NotImplementedError
+        solution: |
+          def pairwise_auc(pos, neg):
+              gt = (pos[:, None] > neg[None, :]).float()     # (P, 1) vs (1, M) -> (P, M): positive wins
+              eq = (pos[:, None] == neg[None, :]).float()    # (P, M): tie
+              return (gt + 0.5 * eq).mean()                  # 0-dim: average over the P * M pairs
+
+          # Trick: AUC = P(random positive scores above random negative) = mean of a broadcast (P, M) comparison grid.
+          # Cost: O(P * M) time and memory; the rank-based way is O((P + M) log(P + M)) but needs tie-averaged ranks.
+          # NumPy: identical, with .astype(float).mean().
+          # Mistakes: >= (ties count 1); pos > neg without unsqueezing (only i == j pairs); dividing by P.
+          # Follow-up: 1e6 × 1e6 does not fit in memory -> sort all scores and use ranks.
+        check: |
+          import dis
+          import math
+          from cardtest import against, rand_cases
+
+          def _used(fn):
+              ops, names, todo = set(), set(), [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  ops.update(i.opname for i in dis.get_instructions(c))
+                  names.update(c.co_names)
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return ops, names
+
+          ops, names = _used(pairwise_auc)
+          assert not ops & {"FOR_ITER", "JUMP_BACKWARD"}, "no Python loops or comprehensions"
+          assert not names & {"sort", "argsort", "sklearn", "roc_auc_score"}, "no sorting / sklearn: compare the pairs directly"
+
+          def _ref(pos, neg):
+              p, n = pos.tolist(), neg.tolist()
+              return sum((a > b) + 0.5 * (a == b) for a in p for b in n) / (len(p) * len(n))
+
+          def _gen(r):
+              vals = [r.randint(-3, 3) * 0.5 for _ in range(8)] if r.random() < 0.6 else [r.gauss(0, 2) for _ in range(8)]
+              P, M = r.randint(1, 9), r.randint(1, 9)
+              return (torch.tensor([r.choice(vals) for _ in range(P)]), torch.tensor([r.choice(vals) for _ in range(M)]))
+
+          _same = lambda got, exp: (torch.is_tensor(got) and got.dim() == 0 and got.is_floating_point()
+                                    and math.isclose(got.item(), exp, rel_tol=1e-6, abs_tol=1e-6))
+          _show = lambda pos, neg: f"(pos={pos.tolist()}, neg={neg.tolist()})"
+          against(pairwise_auc, _ref,
+                  [(torch.tensor([0.9, 0.4]), torch.tensor([0.4, 0.1])), (torch.tensor([1.0]), torch.tensor([1.0])),
+                   (torch.tensor([2.0]), torch.tensor([1.0])), (torch.tensor([5.0, 6.0, 7.0]), torch.tensor([1.0, 2.0])),
+                   (torch.tensor([1.0, 2.0]), torch.tensor([5.0, 6.0, 7.0])), (torch.full((4,), 0.3), torch.full((3,), 0.3)),
+                   (torch.tensor([0.1, 0.9, 0.5]), torch.tensor([0.5]))]
+                  + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: tricks-masks.local-causal
+    name: Sliding-window causal & left-padding masks (Medium)
+    teach: |
+      Attention masks, **True = attend** (as in `F.scaled_dot_product_attention`), built from index tensors.
+
+      - Sliding-window causal, window `W >= 1`: query `i` sees key `j` iff `j <= i` and `i - j < W`.
+        `T = 4, W = 2` -> `[[T, F, F, F], [T, T, F, F], [F, T, T, F], [F, F, T, T]]`.
+      - Follow-up, left-padded batch: sequence `b` is the **last** `lengths[b]` positions; earlier keys are padding.
+        `lengths = [2]`, `T = 3` -> keys 1 and 2 are real.
+      - No loops, no `torch.tril` / `torch.triu`.
+    cards:
+      - id: a
+        prompt: |
+          Write `local_causal_mask(T, W)`: a sliding-window causal attention mask, where each query sees itself and the previous `W - 1` keys.
+          - `T` (int ≥ 1): sequence length; `W` (int ≥ 1): window size
+          - returns `keep` (T, T) bool, True = attend: `keep[i, j] = (j <= i) and (i - j < W)` (query `i`, key `j`)
+          - No Python loops, no `tril` / `triu`.
+
+          <details><summary>Hint 1</summary>Each entry depends only on its row index <code>i</code> and column index <code>j</code>.</details>
+          <details><summary>Hint 2</summary><code>torch.arange(T)</code> as a column (T, 1) and a row (1, T): comparisons broadcast to (T, T).</details>
+          <details><summary>Hint 3</summary><code>i = torch.arange(T)[:, None]</code>, <code>j = torch.arange(T)[None, :]</code>; <code>(j &lt;= i) &amp; (i - j &lt; W)</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def local_causal_mask(T, W):
+              raise NotImplementedError
+        solution: |
+          def local_causal_mask(T, W):
+              i = torch.arange(T)[:, None]       # (T, 1): query index
+              j = torch.arange(T)[None, :]       # (1, T): key index
+              return (j <= i) & (i - j < W)      # (T, T) bool: past or present, at most W - 1 steps back
+
+          # Trick: any band mask is a condition on (i, j); a (T, 1) column vs a (1, T) row evaluates it for all T² pairs.
+          # Cost: O(T²) time and memory, same as the mask. With the banned helpers: ones(T, T).tril() & ...triu(-(W - 1)).
+          # NumPy: same with np.arange(T)[:, None] and np.arange(T)[None, :].
+          # Mistakes: j < i (drops itself), i - j <= W (one too wide), |i - j| < W (lets the future in).
+          # Follow-up: with a KV cache only the last query remains: keep[j] = T - 1 - j < W.
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _used(fn):
+              ops, names, todo = set(), set(), [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  ops.update(i.opname for i in dis.get_instructions(c))
+                  names.update(c.co_names)
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return ops, names
+
+          ops, names = _used(local_causal_mask)
+          assert not ops & {"FOR_ITER", "JUMP_BACKWARD"}, "no Python loops or comprehensions"
+          assert not names & {"tril", "triu", "tril_indices", "triu_indices"}, "don't use tril / triu: build the mask from torch.arange"
+
+          def _ref(T, W):
+              return torch.tensor([[j <= i and i - j < W for j in range(T)] for i in range(T)], dtype=torch.bool)
+
+          def _gen(r):
+              T = r.randint(1, 12)
+              return (T, r.randint(1, T + 3))
+
+          _same = lambda got, exp: torch.is_tensor(got) and got.shape == exp.shape and got.dtype == torch.bool and torch.equal(got, exp)
+          against(local_causal_mask, _ref, [(4, 2), (1, 1), (1, 5), (3, 1), (5, 5), (5, 9), (6, 3)] + rand_cases(_gen, 200), same=_same)
+      - id: b
+        prompt: |
+          Write `left_pad_keep_mask(lengths, T, H)`: the causal attention mask of a left-padded batch, where sequence `b` occupies the last `lengths[b]` of the `T` positions and earlier keys are padding.
+          - `lengths` (B,) int64 in `[0, T]`: real length of each sequence; `T` (int): padded length; `H` (int): number of heads
+          - returns `keep` (B, H, T, T) bool, True = attend: `keep[b, h, i, j] = (j <= i) and (j >= T - lengths[b])`, same for every head
+          - No Python loops, no `tril` / `triu`.
+
+          <details><summary>Hint 1</summary>Two conditions: one on (query, key) only, one on (sequence, key) only. Build each, then combine.</details>
+          <details><summary>Hint 2</summary>Causal (T, T) and valid keys (B, T); insert size-1 dims so both broadcast to (B, 1, T, T).</details>
+          <details><summary>Hint 3</summary><code>causal[None, None] &amp; valid[:, None, None, :]</code>, then <code>.expand(-1, H, -1, -1)</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def left_pad_keep_mask(lengths, T, H):
+              raise NotImplementedError
+        solution: |
+          def left_pad_keep_mask(lengths, T, H):
+              pos = torch.arange(T, device=lengths.device)
+              causal = pos[None, :] <= pos[:, None]                 # (T, T): key j <= query i
+              valid = pos[None, :] >= T - lengths[:, None]          # (1, T) vs (B, 1) -> (B, T): key j is a real token
+              keep = causal[None, None] & valid[:, None, None, :]   # (1, 1, T, T) & (B, 1, 1, T) -> (B, 1, T, T)
+              return keep.expand(-1, H, -1, -1)                     # (B, H, T, T) view, no copy
+
+          # Trick: split the mask into factors on fewer indices and let broadcasting combine them; expand is a free view.
+          # Left padding ends every sequence at T - 1, so generation appends at one position for all (right: j < lengths[b]).
+          # Cost: B*H*T² bools if materialized; SDPA accepts (B, 1, T, T) directly. NumPy: np.broadcast_to for expand.
+          # Mistakes: valid[:, None, :, None] (masks queries, not keys); forgetting the causal factor.
+          # Follow-up: position ids for left padding = valid.cumsum(-1) - 1.
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _used(fn):
+              ops, names, todo = set(), set(), [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  ops.update(i.opname for i in dis.get_instructions(c))
+                  names.update(c.co_names)
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return ops, names
+
+          ops, names = _used(left_pad_keep_mask)
+          assert not ops & {"FOR_ITER", "JUMP_BACKWARD"}, "no Python loops or comprehensions"
+          assert not names & {"tril", "triu", "tril_indices", "triu_indices"}, "don't use tril / triu: build the mask from torch.arange"
+
+          def _ref(lengths, T, H):
+              L = lengths.tolist()
+              return torch.tensor([[[[j <= i and j >= T - L[b] for j in range(T)] for i in range(T)] for _ in range(H)]
+                                   for b in range(len(L))], dtype=torch.bool).reshape(len(L), H, T, T)
+
+          def _gen(r):
+              T, B, H = r.randint(1, 7), r.randint(1, 4), r.randint(1, 3)
+              return (torch.tensor([r.choice([0, T, r.randint(0, T)]) for _ in range(B)], dtype=torch.int64), T, H)
+
+          _same = lambda got, exp: torch.is_tensor(got) and got.shape == exp.shape and got.dtype == torch.bool and torch.equal(got, exp)
+          _show = lambda lengths, T, H: f"(lengths={lengths.tolist()}, T={T}, H={H})"
+          against(left_pad_keep_mask, _ref,
+                  [(torch.tensor([2]), 3, 1), (torch.tensor([3, 1]), 3, 2), (torch.tensor([0, 4]), 4, 1),
+                   (torch.tensor([1]), 1, 1), (torch.tensor([0]), 1, 3), (torch.tensor([5, 0, 2]), 5, 2)]
+                  + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: tricks-masks.masked-reduce
+    name: Masked max pooling & masked softmax (Medium)
+    teach: |
+      `mask` (B, T) bool, **True = real token**. Values can be negative.
+
+      - Masked max pooling: `x` (B, T, D) -> (B, D), max over the real `t`; a row with no real token gives zeros.
+        `x[0] = [[-1, 5], [-3, 2], [9, 9]]`, `mask[0] = [T, T, F]` -> `[-1, 5]`.
+      - Follow-up, masked softmax: `scores` (B, T) -> (B, T), softmax over the real positions, exactly 0 at padding;
+        an all-padding row is all zeros (never nan). `scores[0] = [1, 1, 50]`, `mask[0] = [T, T, F]` -> `[0.5, 0.5, 0]`.
+      - Finite for scores around ±1e4; no loops.
+    cards:
+      - id: a
+        prompt: |
+          Write `masked_max(x, mask)`: max pooling over the real tokens of a padded batch (values may be negative).
+          - `x` (B, T, D) float: token features; `mask` (B, T) bool: True = real token, False = padding
+          - returns `out` (B, D), dtype of `x`: `out[b, d]` = max of `x[b, t, d]` over real `t`; 0 if row `b` has no real token (all finite)
+          - No Python loops.
+
+          <details><summary>Hint 1</summary>Padding must never win the max: give it a value that always loses, then fix rows with nothing real.</details>
+          <details><summary>Hint 2</summary><code>masked_fill</code> with <code>-inf</code> where the mask is False (as (B, T, 1)), then <code>amax(1)</code>; empty rows give <code>-inf</code>.</details>
+          <details><summary>Hint 3</summary><code>m = x.masked_fill(~mask[..., None], float("-inf")).amax(1)</code>; <code>torch.where(mask.any(1, keepdim=True), m, 0.0)</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def masked_max(x, mask):
+              raise NotImplementedError
+        solution: |
+          def masked_max(x, mask):
+              filled = x.masked_fill(~mask[..., None], float("-inf"))   # (B, T, D): padding can never win
+              m = filled.amax(dim=1)                                    # (B, D); -inf where the row has no real token
+              return torch.where(mask.any(dim=1, keepdim=True), m, 0.0) # (B, 1) broadcast over D -> (B, D)
+
+          # Trick: fill masked entries with the reduction's identity (-inf for max, 0 for sum), reduce, then patch empty rows.
+          # Why not x * mask: with negative values the 0s in padding win the max.
+          # Cost: O(B*T*D), one extra (B, T, D) buffer. NumPy: np.where(mask[..., None], x, -np.inf).max(axis=1).
+          # Mistakes: .max(1) returns (values, indices); -1e9 without torch.where leaves -1e9 in empty rows.
+          # Follow-up: also return the argmax position (x.max(dim=1).indices).
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _used(fn):
+              ops, names, todo = set(), set(), [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  ops.update(i.opname for i in dis.get_instructions(c))
+                  names.update(c.co_names)
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return ops, names
+
+          assert not _used(masked_max)[0] & {"FOR_ITER", "JUMP_BACKWARD"}, "no Python loops or comprehensions"
+
+          def _ref(x, mask):
+              B, T, D = x.shape
+              out = [[max([x[b, t, d].item() for t in range(T) if mask[b, t]], default=0.0) for d in range(D)] for b in range(B)]
+              return torch.tensor(out, dtype=x.dtype).reshape(B, D)
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(10 ** 9))
+              B, T, D = r.randint(1, 5), r.randint(1, 6), r.randint(1, 4)
+              x = torch.randn(B, T, D, generator=g) * r.choice([1.0, 100.0]) + r.choice([0.0, -50.0])
+              mask = torch.rand(B, T, generator=g) < r.choice([0.2, 0.5, 0.9])
+              if r.random() < 0.3:
+                  x = x.transpose(0, 1).contiguous().transpose(0, 1)    # same values, non-contiguous
+              return (x, mask)
+
+          _same = lambda got, exp: (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                                    and bool(torch.isfinite(got).all()) and torch.allclose(got, exp))
+          _show = lambda x, mask: f"(x of shape {tuple(x.shape)}, mask={mask.int().tolist()})"
+          neg = -torch.arange(1.0, 13.0).view(2, 3, 2)
+          xt = torch.randn(4, 2, 3).transpose(0, 1)                       # (2, 4, 3), non-contiguous
+          against(masked_max, _ref,
+                  [(torch.tensor([[[-1.0, 5.0], [-3.0, 2.0], [9.0, 9.0]]]), torch.tensor([[True, True, False]])),
+                   (neg, torch.tensor([[True, True, True], [False, True, True]])),
+                   (neg, torch.tensor([[False, False, False], [False, False, True]])),
+                   (torch.tensor([[[-4.0]]]), torch.tensor([[True]])), (torch.tensor([[[-4.0]]]), torch.tensor([[False]])),
+                   (xt, torch.tensor([[True, False, True, False], [False, False, False, True]])),
+                   (neg.double(), torch.tensor([[False, True, False], [True, False, False]]))]
+                  + rand_cases(_gen, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Write `masked_softmax(scores, mask)`: a row-wise softmax over the real positions only.
+          - `scores` (B, T) float: logits, may be as large as ±1e4; `mask` (B, T) bool: True = real position, False = padding
+          - returns `p` (B, T), dtype of `scores`: `p[b, t] = exp(scores[b, t]) / Σ_{real t'} exp(scores[b, t'])` at real positions, exactly 0 at padding; an all-padding row is all zeros
+          - Never nan or inf; no Python loops.
+
+          <details><summary>Hint 1</summary>Padding must get exactly zero weight after the exponential; then handle rows with no real position.</details>
+          <details><summary>Hint 2</summary><code>exp(-inf) = 0</code>: fill padding with <code>-inf</code> before <code>softmax</code> (already stable); an all <code>-inf</code> row gives nan.</details>
+          <details><summary>Hint 3</summary><code>p = scores.masked_fill(~mask, float("-inf")).softmax(-1)</code>; <code>torch.where(mask.any(-1, keepdim=True), p, 0.0)</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def masked_softmax(scores, mask):
+              raise NotImplementedError
+        solution: |
+          def masked_softmax(scores, mask):
+              p = scores.masked_fill(~mask, float("-inf")).softmax(dim=-1)   # (B, T); nan on all-padding rows
+              return torch.where(mask.any(dim=-1, keepdim=True), p, 0.0)     # (B, 1) broadcast -> (B, T), nan rows -> 0
+
+          # Trick: -inf in, exactly 0 out; softmax subtracts the row max so ±1e4 stays finite; torch.where drops nan rows.
+          # Why not softmax(scores) * mask: weights no longer sum to 1. Why not exp(s) * mask / sum: overflows at 1e4.
+          # Cost: O(B*T). NumPy: np.where(mask, scores, -np.inf), subtract the row max, then exp / sum.
+          # Mistake: -1e9 instead of -inf without torch.where (an all-padding row becomes uniform, not zero).
+          # Follow-up: the gradient through torch.where's nan branch can still be nan: fill empty rows finitely to backprop.
+        check: |
+          import dis
+          import math
+          from cardtest import against, rand_cases
+
+          def _used(fn):
+              ops, names, todo = set(), set(), [fn.__code__]
+              while todo:
+                  c = todo.pop()
+                  ops.update(i.opname for i in dis.get_instructions(c))
+                  names.update(c.co_names)
+                  todo += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return ops, names
+
+          assert not _used(masked_softmax)[0] & {"FOR_ITER", "JUMP_BACKWARD"}, "no Python loops or comprehensions"
+
+          def _ref(scores, mask):
+              out = []
+              for row, keep in zip(scores.tolist(), mask.tolist()):
+                  real = [s for s, k in zip(row, keep) if k]
+                  if not real:
+                      out.append([0.0] * len(row))
+                      continue
+                  m = max(real)
+                  z = sum(math.exp(s - m) for s in real)
+                  out.append([math.exp(s - m) / z if k else 0.0 for s, k in zip(row, keep)])
+              return torch.tensor(out, dtype=scores.dtype).reshape(scores.shape)
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(10 ** 9))
+              B, T = r.randint(1, 5), r.randint(1, 7)
+              scores = torch.randn(B, T, generator=g) * r.choice([1.0, 5.0, 1e4])
+              mask = torch.rand(B, T, generator=g) < r.choice([0.2, 0.6, 0.95])
+              return (scores, mask)
+
+          _same = lambda got, exp: (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                                    and bool(torch.isfinite(got).all()) and torch.allclose(got, exp, rtol=1e-5, atol=1e-6))
+          _show = lambda scores, mask: f"(scores={scores.tolist()}, mask={mask.int().tolist()})"
+          against(masked_softmax, _ref,
+                  [(torch.tensor([[1.0, 1.0, 50.0]]), torch.tensor([[True, True, False]])),
+                   (torch.tensor([[1.0, 2.0], [3.0, 4.0]]), torch.tensor([[False, False], [True, True]])),
+                   (torch.tensor([[7.0, -2.0, 3.0]]), torch.tensor([[False, True, False]])),
+                   (torch.tensor([[5.0]]), torch.tensor([[True]])), (torch.tensor([[5.0]]), torch.tensor([[False]])),
+                   (torch.tensor([[1e4, -1e4, 9999.0]]), torch.tensor([[True, True, True]])),
+                   (torch.tensor([[-1e4, -1e4 + 1.0, 1e4]]), torch.tensor([[True, True, False]])),
+                   (torch.tensor([[0.5, 0.25, 0.0, 2.0]]).double(), torch.tensor([[True, False, True, True]]))]
+                  + rand_cases(_gen, 200), same=_same, show=_show)

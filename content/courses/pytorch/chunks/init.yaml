@@ -1,0 +1,231 @@
+id: init
+title: Weight initialization & seeds
+intro: |
+  Default inits are fine for small MLPs, but interviewers expect you to know how to set them
+  yourself. Xavier for tanh/linear layers, Kaiming for ReLU, zeros for biases, all applied to a
+  whole model with `model.apply`. And seed everything so runs are reproducible.
+problems:
+  - Implement and train an MLP from scratch
+  - Why does my deep ReLU net not train?
+  - Make this experiment reproducible
+atoms: []
+skills:
+  - id: init.seed
+    name: torch.manual_seed for reproducibility
+    teach: |
+      ```python
+      # torch.manual_seed(s) -> fixes the global RNG, so randn, dropout and default inits repeat
+      torch.manual_seed(0); a = torch.randn(3)
+      torch.manual_seed(0); b = torch.randn(3)     # b equals a
+      # torch.Generator().manual_seed(s) -> a local RNG; pass generator=g to rand / randn / randint
+      g = torch.Generator().manual_seed(0)
+      torch.rand(2, generator=g)                   # global seed untouched
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Seed the global RNG with `42`, then draw a `(2, 3)` standard-normal tensor into `x` ·
+          `g` = a local generator seeded with `7` · `r` = `torch.rand(4)` drawn from `g`.
+        setup: |
+          import torch
+        solution: |
+          torch.manual_seed(42)
+          x = torch.randn(2, 3)
+          g = torch.Generator().manual_seed(7)
+          r = torch.rand(4, generator=g)
+        check: |
+          torch.manual_seed(42)
+          assert torch.equal(x, torch.randn(2, 3)), f"x = {x}"
+          assert isinstance(g, torch.Generator), f"g is {type(g).__name__}"
+          assert torch.equal(r, torch.rand(4, generator=torch.Generator().manual_seed(7))), f"r = {r}"
+      - id: b
+        prompt: Make `a` and `b` two **identical** random `nn.Linear(4, 2)` layers by re-seeding with `0` before creating each one.
+        setup: |
+          import torch
+          import torch.nn as nn
+        solution: |
+          torch.manual_seed(0)
+          a = nn.Linear(4, 2)
+          torch.manual_seed(0)
+          b = nn.Linear(4, 2)
+        check: |
+          assert torch.equal(a.weight, b.weight) and torch.equal(a.bias, b.bias), "a and b differ"
+
+  - id: init.xavier-kaiming
+    name: nn.init.xavier_ / kaiming_
+    teach: |
+      `nn.init` functions end with `_`: they fill the given tensor **in place**.
+
+      ```python
+      # nn.init.xavier_uniform_(w) -> U(-a, a), a = sqrt(6 / (fan_in + fan_out)): tanh / linear layers
+      nn.init.xavier_uniform_(layer.weight)
+      # nn.init.kaiming_normal_(w, nonlinearity="relu") -> N(0, 2 / fan_in): ReLU nets
+      nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
+      # nn.init.normal_(w, mean, std) -> N(mean, std^2)
+      nn.init.normal_(layer.weight, mean=0.0, std=0.02)    # GPT-style
+      # nn.init.zeros_(w) -> all zeros (biases)
+      nn.init.zeros_(layer.bias)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          With `nn.init`: Xavier-uniform on `layer.weight` · zeros on `layer.bias` ·
+          Kaiming-normal for ReLU on `deep.weight` · normal with mean 0, std `0.02` on `emb.weight`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          layer = nn.Linear(64, 64)
+          deep = nn.Linear(512, 512)
+          emb = nn.Embedding(1000, 64)
+          with torch.no_grad():
+              layer.weight.fill_(1.0)
+              layer.bias.fill_(1.0)
+              deep.weight.zero_()
+        solution: |
+          nn.init.xavier_uniform_(layer.weight)
+          nn.init.zeros_(layer.bias)
+          nn.init.kaiming_normal_(deep.weight, nonlinearity="relu")
+          nn.init.normal_(emb.weight, mean=0.0, std=0.02)
+        check: |
+          import math
+          bound = math.sqrt(6 / (64 + 64))
+          assert layer.weight.abs().max() <= bound + 1e-6, f"layer.weight max = {layer.weight.abs().max().item():.3f}, Xavier bound {bound:.3f}"
+          assert torch.all(layer.bias == 0), f"bias = {layer.bias[:4]}..."
+          std = deep.weight.std().item()
+          assert abs(std - math.sqrt(2 / 512)) < 0.005, f"deep.weight std = {std:.4f}, expected ~{math.sqrt(2 / 512):.4f}"
+          es = emb.weight.std().item()
+          assert abs(es - 0.02) < 0.002, f"emb.weight std = {es:.4f}, expected 0.02"
+      - id: b
+        prompt: "`model` is a deep ReLU MLP (`nn.Sequential`). Loop over its layers and give every `nn.Linear` a Kaiming-normal (ReLU) weight and a zero bias."
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          model = nn.Sequential(nn.Linear(512, 512), nn.ReLU(), nn.Linear(512, 256), nn.ReLU(), nn.Linear(256, 10))
+          with torch.no_grad():
+              for p in model.parameters():
+                  p.fill_(1.0)
+        solution: |
+          for layer in model:
+              if isinstance(layer, nn.Linear):
+                  nn.init.kaiming_normal_(layer.weight, nonlinearity="relu")
+                  nn.init.zeros_(layer.bias)
+        check: |
+          import math
+          for i in (0, 2, 4):
+              l = model[i]
+              exp = math.sqrt(2 / l.in_features)
+              std = l.weight.std().item()
+              assert abs(std - exp) < 0.25 * exp, f"model[{i}].weight std = {std:.4f}, expected ~{exp:.4f}"
+              assert torch.all(l.bias == 0), f"model[{i}].bias not zero"
+
+  - id: init.apply
+    name: model.apply(init_fn)
+    teach: |
+      ```python
+      # model.apply(fn) -> calls fn(m) on every submodule (and model itself), so check the type
+      def init_weights(m):
+          if isinstance(m, nn.Linear):
+              nn.init.xavier_uniform_(m.weight)
+      model.apply(init_weights)
+      ```
+    cards:
+      - id: a
+        prompt: Write `init_weights(m)` that zeroes the bias of every `nn.Linear`, then apply it to `model`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+        solution: |
+          def init_weights(m):
+              if isinstance(m, nn.Linear):
+                  nn.init.zeros_(m.bias)
+
+          model.apply(init_weights)
+        check: |
+          assert all(torch.all(m.bias == 0) for m in model if isinstance(m, nn.Linear)), "some Linear bias is not zero"
+      - id: c
+        prompt: Inside a module's `__init__`, call `self.apply(self._init)` and define `_init` to set every `nn.Linear` weight to std-0.02 normal and its bias to 0.
+        starter: |
+          class MLP(nn.Module):
+              def __init__(self):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(256, 256), nn.GELU(), nn.Linear(256, 256))
+                  # call apply here
+
+              # define _init here
+
+              def forward(self, x):
+                  return self.net(x)
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+        solution: |
+          class MLP(nn.Module):
+              def __init__(self):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(256, 256), nn.GELU(), nn.Linear(256, 256))
+                  self.apply(self._init)
+
+              def _init(self, m):
+                  if isinstance(m, nn.Linear):
+                      nn.init.normal_(m.weight, std=0.02)
+                      nn.init.zeros_(m.bias)
+
+              def forward(self, x):
+                  return self.net(x)
+        check: |
+          m = MLP()
+          w = m.net[0].weight
+          assert abs(w.std().item() - 0.02) < 0.002, f"weight std = {w.std().item():.4f}"
+          assert torch.all(m.net[2].bias == 0), "bias not zeroed"
+
+  - id: init.no-grad-fill
+    name: editing weights by hand under torch.no_grad()
+    teach: |
+      Parameters require grad, so in-place edits must run under `torch.no_grad()`.
+
+      ```python
+      with torch.no_grad():
+          # t.fill_(v) -> every entry = v;  t.zero_() -> every entry = 0
+          layer.weight.fill_(0.5)
+          # t.copy_(src) -> copies src's values in (same shape); t stays an nn.Parameter
+          layer.weight.copy_(torch.ones(2, 3))
+      ```
+    cards:
+      - id: a
+        prompt: In place, set every weight of `layer` to `1.0`, its bias to zeros, and copy the given `W` into `other.weight`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          layer = nn.Linear(3, 2)
+          other = nn.Linear(2, 2)
+          W = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+        solution: |
+          with torch.no_grad():
+              layer.weight.fill_(1.0)
+              layer.bias.zero_()
+              other.weight.copy_(W)
+        check: |
+          assert torch.all(layer.weight == 1.0), f"weight = {layer.weight}"
+          assert torch.all(layer.bias == 0.0), f"bias = {layer.bias}"
+          assert layer.weight.requires_grad, "weight should still require grad"
+          assert torch.equal(other.weight.detach(), W), f"other.weight = {other.weight}"
+          assert isinstance(other.weight, nn.Parameter), "other.weight must stay an nn.Parameter (use copy_)"
+      - id: c
+        prompt: Scale every parameter of `model` by `0.5` in place, in one loop.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          model = nn.Sequential(nn.Linear(3, 3), nn.Linear(3, 1))
+          before = [p.detach().clone() for p in model.parameters()]
+        solution: |
+          with torch.no_grad():
+              for p in model.parameters():
+                  p *= 0.5
+        check: |
+          after = [p.detach() for p in model.parameters()]
+          assert all(torch.allclose(a, 0.5 * b) for a, b in zip(after, before)), "parameters were not halved"

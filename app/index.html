@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drills</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='9' cy='9' r='5' fill='%237c6cf0'/><circle cx='23' cy='12' r='4' fill='%2322a37a'/><circle cx='14' cy='24' r='4' fill='%2322a37a'/><path d='M9 9L23 12M9 9L14 24' stroke='%23888' stroke-width='1.5'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/learn">
+      <span class="brand-mark" aria-hidden="true"></span>
+      Drills
+    </a>
+    <nav class="nav">
+      <a href="#/learn" data-nav="learn" class="active">Courses</a>
+    </nav>
+    <div class="topbar-right">
+      <span id="py-status" class="py-status" title="The Python that runs your exercises (config.json)">Python: starting…</span>
+      <button id="chat-toggle" class="btn primary">✎ Edit with Claude</button>
+    </div>
+  </header>
+  <div id="content-errors" class="content-errors" hidden></div>
+  <main id="view"></main>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/python/python.js"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

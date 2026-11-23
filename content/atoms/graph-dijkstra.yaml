@@ -1,0 +1,236 @@
+id: graph-dijkstra
+title: Dijkstra — weighted shortest paths
+summary: BFS with a min-heap instead of a queue. Shortest paths when edge weights are non-negative.
+links:
+  - to: py-heapq
+    kind: uses
+    note: The frontier is a heapq of (dist, node) tuples; heappop always gives the closest unsettled node.
+  - to: graph-bfs
+    kind: variant
+    note: With every weight equal to 1, Dijkstra pops nodes in BFS order; BFS is Dijkstra with unit weights and a plain queue.
+  - to: graph-adjacency
+    kind: prereq
+    note: Dijkstra needs a weighted adjacency list of (neighbor, weight) tuples.
+lesson: |
+  Dijkstra finds the cheapest path from one source to every node when **weights are ≥ 0**.
+  Like BFS, it settles nodes in order of distance, but distances are no longer "number of edges",
+  so the queue becomes a **min-heap keyed by distance**.
+
+  **Template (lazy deletion: the version to know by heart)**
+
+  ```python
+  import heapq
+
+  def dijkstra(adj, n, src):          # adj[u] = [(v, w), ...]
+      dist = [float("inf")] * n
+      dist[src] = 0
+      h = [(0, src)]                   # (distance, node): distance FIRST so the heap sorts on it
+      while h:
+          d, u = heapq.heappop(h)
+          if d > dist[u]:              # stale entry: u was already reached more cheaply
+              continue
+          for v, w in adj[u]:
+              nd = d + w
+              if nd < dist[v]:         # relax
+                  dist[v] = nd
+                  heapq.heappush(h, (nd, v))
+      return dist
+  ```
+
+  **Why the stale-entry skip?** `heapq` has no "decrease key". When we find a cheaper way to `v`
+  we just push a new `(nd, v)`; the old, larger entry stays in the heap. When it is popped later,
+  `d > dist[u]` tells us it is outdated. Without the skip the answer is still right, but you
+  re-scan neighbors for nothing (can be much slower).
+
+  **Why non-negative weights?** When `u` is popped with the smallest `d` in the heap, every other
+  path to `u` goes through a node with distance ≥ `d`, then adds weights ≥ 0, so it can't be cheaper:
+  `u` is final. A negative edge breaks this (a settled node could improve later). Use Bellman-Ford then.
+
+  **Variants (same skeleton, change one line)**
+  - Single target: `if u == target: return d` right after the stale check (first pop is optimal).
+  - Grid: node = `(r, c)`, `dist` is a 2D list, neighbors are the 4 deltas.
+  - Minimax path ("minimize the largest step"): `nd = max(d, w)` instead of `d + w`.
+  - Max probability: negate to use the min-heap, combine with `*` instead of `+`.
+  - Nodes `1..n` (LeetCode loves this): allocate `n + 1` slots and ignore index 0.
+
+  **Contrast: Cheapest Flights Within K Stops.** The "at most k edges" constraint breaks the
+  "settled once = final" property (a cheaper path may use too many stops). Use Bellman-Ford with
+  k + 1 rounds (copy `dist` each round), or put `(cost, node, stops)` states in the heap.
+
+  **Pitfalls**
+  - Pushing `(node, dist)` instead of `(dist, node)`: the heap then sorts by node id.
+  - Forgetting `dist[src] = 0` or using `0` instead of `inf` for unknown nodes.
+  - Unreachable nodes keep `inf`; convert to `-1` if the problem asks.
+  - Using a `visited` set **and** marking on push (BFS-style) is wrong: a node's first push is not its best.
+    Mark (or skip) on **pop**.
+
+  **Complexity:** O((V + E) log V) time (each edge can push once; `log E ≤ 2 log V`), O(V + E) space.
+drills:
+  - id: init
+    prompt: |
+      Initialize Dijkstra from `src` over nodes `0..n-1`: a list `dist` (infinity everywhere except the source)
+      and the heap `h` holding the starting entry.
+    setup: |
+      n = 4
+      src = 1
+    solution: |
+      dist = [float("inf")] * n
+      dist[src] = 0
+      h = [(0, src)]
+    check: |
+      inf = float("inf")
+      assert dist == [inf, 0, inf, inf], f"dist = {dist!r}"
+      assert h == [(0, 1)], f"h = {h!r} (entries are (dist, node))"
+  - id: stale-skip
+    prompt: |
+      Pop everything from heap `h`. Skip stale entries (a popped `d` larger than `dist[u]`) and append
+      the non-stale nodes to `processed`, in pop order.
+    setup: |
+      import heapq
+      h = [(5, "a"), (2, "a"), (3, "b"), (7, "b")]
+      heapq.heapify(h)
+      dist = {"a": 2, "b": 3}
+    solution: |
+      processed = []
+      while h:
+          d, u = heapq.heappop(h)
+          if d > dist[u]:
+              continue
+          processed.append(u)
+    check: |
+      assert processed == ["a", "b"], f"processed = {processed!r}"
+  - id: relax
+    prompt: |
+      Node `u` was just popped with distance `d`. Relax its edges: for each `(v, w)` in `adj[u]`,
+      if going through `u` is cheaper, update `dist[v]` and push the new entry onto `h`.
+    setup: |
+      import heapq
+      inf = float("inf")
+      adj = {0: [(1, 4), (2, 1), (3, 7)]}
+      dist = [0, 3, inf, 9]
+      h = []
+      u, d = 0, 0
+    solution: |
+      for v, w in adj[u]:
+          if d + w < dist[v]:
+              dist[v] = d + w
+              heapq.heappush(h, (dist[v], v))
+    check: |
+      assert dist == [0, 3, 1, 7], f"dist = {dist!r}"
+      assert sorted(h) == [(1, 2), (7, 3)], f"h = {h!r} (push only improved nodes, as (dist, node))"
+  - id: answer
+    prompt: |
+      Write `delay(dist)`: return the largest distance in `dist`, or `-1` if any node is unreachable (`inf`).
+    starter: |
+      def delay(dist):
+          pass
+    solution: |
+      def delay(dist):
+          m = max(dist)
+          return -1 if m == float("inf") else m
+    check: |
+      inf = float("inf")
+      res = delay([0, 3, 1, 7])
+      assert res == 7, f"delay([0, 3, 1, 7]) = {res!r}"
+      res = delay([0, inf, 2])
+      assert res == -1, f"delay([0, inf, 2]) = {res!r}"
+classics:
+  - id: network-delay-time
+    title: Network Delay Time
+    url: https://leetcode.com/problems/network-delay-time/
+    difficulty: Medium
+    prompt: |
+      Nodes are labelled `1..n`. `times[i] = [u, v, w]` is a directed edge `u -> v` taking `w` time.
+      A signal is sent from `k`. Return the time for **all** nodes to receive it, or `-1` if some never do.
+    starter: |
+      import heapq
+
+      def networkDelayTime(times, n, k):
+          pass
+    hints:
+      - Weighted, non-negative, single source → Dijkstra from k.
+      - Nodes are 1-indexed; size your lists n + 1 and ignore index 0.
+      - The answer is the max of all distances (the last node to hear it), or -1 if any is inf.
+    solution: |
+      import heapq
+
+      def networkDelayTime(times, n, k):
+          adj = [[] for _ in range(n + 1)]
+          for u, v, w in times:
+              adj[u].append((v, w))
+          dist = [float("inf")] * (n + 1)
+          dist[k] = 0
+          h = [(0, k)]
+          while h:
+              d, u = heapq.heappop(h)
+              if d > dist[u]:
+                  continue
+              for v, w in adj[u]:
+                  if d + w < dist[v]:
+                      dist[v] = d + w
+                      heapq.heappush(h, (dist[v], v))
+          ans = max(dist[1:])
+          return -1 if ans == float("inf") else ans
+    check: |
+      res = networkDelayTime([[2, 1, 1], [2, 3, 1], [3, 4, 1]], 4, 2)
+      assert res == 2, f"res = {res!r}"
+      res = networkDelayTime([[1, 2, 1]], 2, 1)
+      assert res == 1, f"res = {res!r}"
+      res = networkDelayTime([[1, 2, 1]], 2, 2)
+      assert res == -1, f"edges are directed: res = {res!r}"
+      res = networkDelayTime([[1, 2, 10], [1, 3, 1], [3, 2, 2]], 3, 1)
+      assert res == 3, f"two-hop path beats direct edge: res = {res!r}"
+      res = networkDelayTime([[1, 2, 1], [2, 3, 2], [1, 3, 4]], 3, 1)
+      assert res == 3, f"res = {res!r}"
+    takeaway: Single-source, non-negative weights → heap of (dist, node), skip stale pops, relax with d + w.
+  - id: min-effort-path
+    title: Path With Minimum Effort
+    url: https://leetcode.com/problems/path-with-minimum-effort/
+    difficulty: Medium
+    prompt: |
+      `heights` is an R x C grid of ints. A path's **effort** is the largest absolute height difference
+      between two consecutive cells on it. Moving in 4 directions, return the minimum effort to go
+      from the top-left to the bottom-right cell.
+    starter: |
+      import heapq
+
+      def minimumEffortPath(heights):
+          pass
+    hints:
+      - Cells are nodes, edges go to 4 neighbors with weight |height difference|.
+      - The cost of a path is the **max** edge on it, not the sum. Dijkstra still works; relax with `max(d, w)`.
+      - The first time the target is popped, its effort is optimal; return it.
+    solution: |
+      import heapq
+
+      def minimumEffortPath(heights):
+          R, C = len(heights), len(heights[0])
+          dist = [[float("inf")] * C for _ in range(R)]
+          dist[0][0] = 0
+          h = [(0, 0, 0)]
+          while h:
+              d, r, c = heapq.heappop(h)
+              if d > dist[r][c]:
+                  continue
+              if (r, c) == (R - 1, C - 1):
+                  return d
+              for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                  nr, nc = r + dr, c + dc
+                  if 0 <= nr < R and 0 <= nc < C:
+                      nd = max(d, abs(heights[nr][nc] - heights[r][c]))
+                      if nd < dist[nr][nc]:
+                          dist[nr][nc] = nd
+                          heapq.heappush(h, (nd, nr, nc))
+          return 0
+    check: |
+      res = minimumEffortPath([[1, 2, 2], [3, 8, 2], [5, 3, 5]])
+      assert res == 2, f"res = {res!r}"
+      res = minimumEffortPath([[1, 2, 3], [3, 8, 4], [5, 3, 5]])
+      assert res == 1, f"res = {res!r}"
+      res = minimumEffortPath([[1, 2, 1, 1, 1], [1, 2, 1, 2, 1], [1, 2, 1, 2, 1], [1, 2, 1, 2, 1], [1, 1, 1, 2, 1]])
+      assert res == 0, f"winding flat path: res = {res!r}"
+      res = minimumEffortPath([[5]])
+      assert res == 0, f"single cell: res = {res!r}"
+      res = minimumEffortPath([[1, 10, 6, 7, 9, 10, 4, 9]])
+      assert res == 9, f"single row, forced path: res = {res!r}"
+    takeaway: "Path cost = max edge instead of sum? Still Dijkstra: only the combine step changes (nd = max(d, w))."

@@ -1,0 +1,372 @@
+id: attention
+title: Attention
+intro: |
+  Attention is one fused call today: `F.scaled_dot_product_attention` or `nn.MultiheadAttention`.
+  Know their shapes, both mask conventions (they are opposite!), how to split heads, and the
+  three-line manual version to sanity-check them.
+problems:
+  - Implement multi-head self-attention
+  - Add a causal mask to attention
+  - Handle padded sequences in a batch
+  - Verify your attention against PyTorch's
+atoms: []
+skills:
+  - id: attention.sdpa
+    name: F.scaled_dot_product_attention
+    teach: |
+      ```python
+      # F.scaled_dot_product_attention(q, k, v) -> softmax(q @ k^T / sqrt(Dh)) @ v; q (..., T, Dh), k/v (..., S, Dh)
+      F.scaled_dot_product_attention(q, k, v).shape     # q, k, v (2, 2, 5, 4) -> (2, 2, 5, 4)
+      # dropout_p=p drops attention weights with prob p
+      out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.1 if self.training else 0.0)
+      ```
+      Pitfall: `dropout_p` is applied even in eval mode, so gate it on `self.training` yourself.
+    cards:
+      - id: a
+        prompt: |
+          With the fused function on `q, k, v` (each `(2, 2, 5, 4)`), set: `out` = self-attention ·
+          `out_d` = the same with attention dropout `0.2` applied only when `training` is True (here False).
+        setup: |
+          import math
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          q, k, v = torch.randn(3, 2, 2, 5, 4).unbind(0)
+          training = False
+        solution: |
+          out = F.scaled_dot_product_attention(q, k, v)
+          out_d = F.scaled_dot_product_attention(q, k, v, dropout_p=0.2 if training else 0.0)
+        check: |
+          ref = torch.softmax(q @ k.transpose(-2, -1) / math.sqrt(4), dim=-1) @ v
+          assert out.shape == (2, 2, 5, 4), f"out.shape = {tuple(out.shape)}"
+          assert torch.allclose(out, ref, atol=1e-5), f"out[0, 0, 0] = {out[0, 0, 0]}"
+          assert torch.allclose(out_d, ref, atol=1e-5), f"out_d[0, 0, 0] = {out_d[0, 0, 0]} (dropout applied while training is False?)"
+      - id: b
+        prompt: Cross-attention. Queries `q` are `(2, 2, 3, 4)`, keys/values `k, v` are `(2, 2, 7, 4)`. Compute `out`.
+        setup: |
+          import math
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          q = torch.randn(2, 2, 3, 4)
+          k, v = torch.randn(2, 2, 2, 7, 4).unbind(0)
+        solution: |
+          out = F.scaled_dot_product_attention(q, k, v)
+        check: |
+          ref = torch.softmax(q @ k.transpose(-2, -1) / math.sqrt(4), dim=-1) @ v
+          assert out.shape == (2, 2, 3, 4), f"out.shape = {tuple(out.shape)}"
+          assert torch.allclose(out, ref, atol=1e-5), f"out[0, 0, 0] = {out[0, 0, 0]}"
+
+  - id: attention.causal
+    name: causal masking
+    teach: |
+      ```python
+      # is_causal=True: token t attends only to positions <= t
+      out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+      # torch.triu(t, diagonal=1) -> keeps entries strictly above the diagonal, zeros the rest
+      mask = torch.triu(torch.ones(3, 3, dtype=torch.bool), diagonal=1)   # [[F, T, T], [F, F, T], [F, F, F]]
+      # t.masked_fill(mask, value) -> tensor with value where mask is True (True = BLOCKED)
+      scores = scores.masked_fill(mask, float("-inf"))
+      # torch.tril(t) -> keeps the diagonal and below; sdpa's bool attn_mask means True = ATTEND
+      out = F.scaled_dot_product_attention(q, k, v, attn_mask=torch.tril(torch.ones(T, T, dtype=torch.bool)))
+      ```
+      Pitfall: SDPA's bool mask means "keep", the opposite of `masked_fill`, `nn.MultiheadAttention` and `nn.Transformer*`.
+    cards:
+      - id: a
+        prompt: |
+          `q, k, v` are `(2, 2, 5, 4)`, `scores` is `(2, 2, 5, 5)`, `T = 5`. Set:
+          `out` = causal self-attention with the fused function and its causal flag ·
+          `mask` = `(T, T)` bool, True strictly above the diagonal, with `torch.triu` ·
+          `masked` = `scores` with `-inf` where `mask` is True ·
+          `out2` = causal attention with the fused function and a bool `attn_mask` built with `torch.tril`.
+        setup: |
+          import math
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          q, k, v = torch.randn(3, 2, 2, 5, 4).unbind(0)
+          scores = torch.randn(2, 2, 5, 5)
+          T = 5
+        solution: |
+          out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+          mask = torch.triu(torch.ones(T, T, dtype=torch.bool), diagonal=1)
+          masked = scores.masked_fill(mask, float("-inf"))
+          out2 = F.scaled_dot_product_attention(q, k, v, attn_mask=torch.tril(torch.ones(T, T, dtype=torch.bool)))
+        check: |
+          blocked = torch.ones(5, 5).triu(1).bool()
+          s = (q @ k.transpose(-2, -1) / math.sqrt(4)).masked_fill(blocked, float("-inf"))
+          ref = s.softmax(-1) @ v
+          assert torch.allclose(out, ref, atol=1e-5), f"out[0, 0, 0] = {out[0, 0, 0]}\nref = {ref[0, 0, 0]}"
+          assert mask.dtype == torch.bool and torch.equal(mask, blocked), f"mask = {mask}"
+          assert torch.equal(masked, scores.masked_fill(blocked, float("-inf"))), f"masked[0, 0] = {masked[0, 0]}"
+          assert torch.allclose(out2, ref, atol=1e-5), f"out2[0, 0, 0] = {out2[0, 0, 0]}\nref = {ref[0, 0, 0]} (attn_mask True = attend)"
+      - id: b
+        prompt: |
+          Write `causal_weights(scores)`: `scores` is `(..., T, T)` for **any** `T`. Return the softmax weights over keys
+          with future keys blocked, building the bool mask from the size of `scores`.
+        starter: |
+          def causal_weights(scores):
+              pass
+        setup: |
+          import torch
+          torch.manual_seed(0)
+        solution: |
+          def causal_weights(scores):
+              T = scores.size(-1)
+              mask = torch.triu(torch.ones(T, T, dtype=torch.bool), diagonal=1)
+              return scores.masked_fill(mask, float("-inf")).softmax(dim=-1)
+        check: |
+          for shape in [(2, 2, 5, 5), (3, 3)]:
+              scores = torch.randn(*shape)
+              T = shape[-1]
+              w = causal_weights(scores)
+              blocked = torch.ones(T, T).triu(1).bool()
+              ref = scores.masked_fill(blocked, float("-inf")).softmax(-1)
+              assert w is not None and w.shape == scores.shape, f"T = {T}: w = {w if w is None else tuple(w.shape)}"
+              assert torch.allclose(w, ref, atol=1e-6), f"T = {T}: w[..., 0, :] = {w[..., 0, :]} (future keys must get 0)"
+
+  - id: attention.mha
+    name: nn.MultiheadAttention
+    teach: |
+      ```python
+      # nn.MultiheadAttention(D, H, batch_first=True) -> module owning the q/k/v and output projections; D % H == 0
+      mha = nn.MultiheadAttention(8, 2, batch_first=True)
+      # mha(query, key, value) -> tuple (out (B, T, D), w (B, T, S) averaged over heads); key/value length S may differ
+      out, w = mha(x, x, x)                                 # x (2, 5, 8): out (2, 5, 8), w (2, 5, 5)
+      # need_weights=False -> w is None (faster)
+      out, w = mha(x, x, x, need_weights=False)             # w is None
+      ```
+      Pitfall: without `batch_first=True` it expects `(T, B, D)`.
+    cards:
+      - id: a
+        prompt: |
+          Set: `mha` = a `MultiheadAttention` (`D = 8`, 2 heads, batch first) · `out, w` = its self-attention on `x` (`(2, 5, 8)`) ·
+          `out2, w2` = the same call without computing weights.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8)
+          w2 = "not set"
+        solution: |
+          mha = nn.MultiheadAttention(8, 2, batch_first=True)
+          out, w = mha(x, x, x)
+          out2, w2 = mha(x, x, x, need_weights=False)
+        check: |
+          assert isinstance(mha, nn.MultiheadAttention) and mha.batch_first and mha.num_heads == 2, f"mha = {mha}"
+          assert out.shape == (2, 5, 8), f"out.shape = {tuple(out.shape)}"
+          assert w.shape == (2, 5, 5), f"w.shape = {tuple(w.shape)}"
+          assert torch.allclose(out, mha(x, x, x)[0], atol=1e-6), "out is not mha(x, x, x)"
+          assert w2 is None, f"w2 = {w2 if isinstance(w2, str) else tuple(w2.shape)} (use need_weights=False)"
+          assert torch.allclose(out2, out, atol=1e-6), "out2 is not self-attention of x"
+      - id: d
+        prompt: "Cross-attention: the decoder states `x` (`(2, 3, 8)`) attend to the encoder output `mem` (`(2, 7, 8)`) with `mha`. Store `out, w`."
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          mha = nn.MultiheadAttention(8, 2, batch_first=True)
+          x = torch.randn(2, 3, 8)
+          mem = torch.randn(2, 7, 8)
+        solution: |
+          out, w = mha(x, mem, mem)
+        check: |
+          assert out.shape == (2, 3, 8), f"out.shape = {tuple(out.shape)} (query must be x)"
+          assert w.shape == (2, 3, 7), f"w.shape = {tuple(w.shape)}"
+          assert torch.allclose(out, mha(x, mem, mem)[0], atol=1e-6), "out is not mha(x, mem, mem)"
+
+  - id: attention.padding-mask
+    name: key_padding_mask and attn_mask
+    teach: |
+      ```python
+      # padding mask from lengths: (B, T) bool, True on padding
+      pad = torch.arange(4)[None, :] >= torch.tensor([4, 2])[:, None]   # [[F, F, F, F], [F, F, T, T]]
+      # MHA key_padding_mask=pad (B, S): keys where True get weight 0
+      out, w = mha(x, x, x, key_padding_mask=pad)
+      # MHA attn_mask (T, S) bool, True = blocked (e.g. causal); combines with key_padding_mask
+      out, w = mha(x, x, x, attn_mask=causal, key_padding_mask=pad)
+      # sdpa: True = KEEP, so invert and broadcast to (B, H, T, S)
+      out = F.scaled_dot_product_attention(q, k, v, attn_mask=~pad[:, None, None, :])
+      ```
+      Pitfall: a query row whose keys are **all** masked gives NaN.
+    cards:
+      - id: a
+        prompt: |
+          Set: `pad` = bool padding mask `(B, T) = (2, 5)` from `lengths`, True on padding ·
+          `out, w` = `mha` self-attention on `x` ignoring padded keys ·
+          `out2, w2` = the same, also blocked by the bool `causal` mask ·
+          `out3` = the fused function on `q, k, v` (`(2, 2, 5, 4)`) ignoring padded keys.
+        setup: |
+          import math
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          lengths = torch.tensor([5, 3])
+          T = 5
+          mha = nn.MultiheadAttention(8, 2, batch_first=True)
+          x = torch.randn(2, 5, 8)
+          q, k, v = torch.randn(3, 2, 2, 5, 4).unbind(0)
+          causal = torch.triu(torch.ones(5, 5, dtype=torch.bool), diagonal=1)
+        solution: |
+          pad = torch.arange(T)[None, :] >= lengths[:, None]
+          out, w = mha(x, x, x, key_padding_mask=pad)
+          out2, w2 = mha(x, x, x, attn_mask=causal, key_padding_mask=pad)
+          out3 = F.scaled_dot_product_attention(q, k, v, attn_mask=~pad[:, None, None, :])
+        check: |
+          ref = torch.tensor([[False] * 5, [False] * 3 + [True] * 2])
+          assert pad.dtype == torch.bool and torch.equal(pad, ref), f"pad = {pad}"
+          assert torch.all(w[1, :, 3:] == 0), f"w on padded keys = {w[1, :, 3:]}"
+          assert torch.allclose(out[0], mha(x[:1], x[:1], x[:1])[0][0], atol=1e-5), "out: sequence 0 should be unchanged"
+          assert torch.all(w2[:, causal] == 0) and torch.all(w2[1, :, 3:] == 0), f"w2[1] = {w2[1]} (future and padded keys must get 0)"
+          s = (q @ k.transpose(-2, -1) / math.sqrt(4)).masked_fill(ref[:, None, None, :], float("-inf"))
+          ref3 = s.softmax(-1) @ v
+          assert out3.shape == (2, 2, 5, 4) and torch.allclose(out3, ref3, atol=1e-5), f"out3[1, 0, 0] = {out3[1, 0, 0]}\nref = {ref3[1, 0, 0]} (sdpa: True = keep)"
+      - id: d
+        prompt: |
+          Causal **and** padded, with the fused function. Set: `pad` = padding mask from `lengths` (True = padding) ·
+          `keep` = one bool mask (True = attend) that is causal and ignores padded keys, broadcastable to `(B, H, T, T)` ·
+          `out` = the fused function on `q, k, v` (`(2, 2, 5, 4)`) with `keep`.
+        setup: |
+          import math
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          q, k, v = torch.randn(3, 2, 2, 5, 4).unbind(0)
+          lengths = torch.tensor([5, 3])
+          T = 5
+        solution: |
+          pad = torch.arange(T)[None, :] >= lengths[:, None]
+          keep = torch.tril(torch.ones(T, T, dtype=torch.bool)) & ~pad[:, None, None, :]
+          out = F.scaled_dot_product_attention(q, k, v, attn_mask=keep)
+        check: |
+          ref_pad = torch.tensor([[False] * 5, [False] * 3 + [True] * 2])
+          assert pad.dtype == torch.bool and torch.equal(pad, ref_pad), f"pad = {pad}"
+          blocked = torch.ones(5, 5).triu(1).bool() | ref_pad[:, None, None, :]
+          assert keep.dtype == torch.bool and torch.equal(keep.expand(2, 2, 5, 5), ~blocked.expand(2, 2, 5, 5)), f"keep[1, 0] = {keep.expand(2, 2, 5, 5)[1, 0]}"
+          s = (q @ k.transpose(-2, -1) / math.sqrt(4)).masked_fill(blocked, float("-inf"))
+          ref = s.softmax(-1) @ v
+          assert torch.allclose(out, ref, atol=1e-5), f"out[1, 0, 4] = {out[1, 0, 4]}\nref = {ref[1, 0, 4]}"
+
+  - id: attention.split-heads
+    name: split / merge heads
+    teach: |
+      ```python
+      # split: x.view(B, T, H, Dh).transpose(1, 2) -> (B, H, T, Dh), with Dh = D // H
+      q = x.view(2, 5, 2, 4).transpose(1, 2)               # (2, 5, 8) -> (2, 2, 5, 4)
+      # merge: transpose back, .contiguous() (view needs contiguous memory), view to (B, T, D)
+      y = q.transpose(1, 2).contiguous().view(2, 5, 8)     # (2, 5, 8)
+      # t.split(size, dim) -> tuple of chunks of that size, e.g. the output of a fused nn.Linear(D, 3 * D)
+      q, k, v = qkv(x).split(8, dim=-1)                    # (2, 5, 24) -> three (2, 5, 8)
+      ```
+      Pitfall: `x.view(B, H, T, Dh)` runs without error but mixes tokens across heads.
+    cards:
+      - id: a
+        prompt: |
+          `x` is `(B, T, D) = (2, 5, 8)`, `H = 2`. Set: `h` = `x` split into heads, shape `(2, 2, 5, 4)` ·
+          `y` = `h` merged back to `(2, 5, 8)` · `q, k, v` = the output of the fused `qkv` (`Linear(8, 24)`) on `x`, split into three `(2, 5, 8)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8)
+          qkv = nn.Linear(8, 24)
+          B, T, D = x.shape
+          H = 2
+        solution: |
+          h = x.view(B, T, H, D // H).transpose(1, 2)
+          y = h.transpose(1, 2).contiguous().view(B, T, D)
+          q, k, v = qkv(x).split(D, dim=-1)
+        check: |
+          assert h.shape == (2, 2, 5, 4), f"h.shape = {tuple(h.shape)}"
+          assert torch.equal(h[:, 1], x[:, :, 4:]), "h: head 1 should be features 4:8 of every token"
+          assert y.shape == (2, 5, 8) and torch.equal(y, x), f"y.shape = {tuple(y.shape)} (merging the heads should give back x)"
+          full = qkv(x)
+          for name, t, i in (("q", q, 0), ("k", k, 1), ("v", v, 2)):
+              assert t.shape == (2, 5, 8) and torch.allclose(t, full[..., 8 * i: 8 * (i + 1)]), f"{name}.shape = {tuple(t.shape)}"
+      - id: c
+        prompt: Apply the fused projection `qkv` (`Linear(8, 24)`) to `x` and split into `q, k, v`, each `(B, H, T, Dh) = (2, 2, 5, 4)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8)
+          qkv = nn.Linear(8, 24)
+          B, T, D = x.shape
+          H = 2
+        solution: |
+          q, k, v = qkv(x).split(D, dim=-1)
+          q = q.view(B, T, H, D // H).transpose(1, 2)
+          k = k.view(B, T, H, D // H).transpose(1, 2)
+          v = v.view(B, T, H, D // H).transpose(1, 2)
+        check: |
+          full = qkv(x)
+          for name, t, i in (("q", q, 0), ("k", k, 1), ("v", v, 2)):
+              ref = full[..., 8 * i: 8 * (i + 1)].view(2, 5, 2, 4).transpose(1, 2)
+              assert t.shape == (2, 2, 5, 4), f"{name}.shape = {tuple(t.shape)}"
+              assert torch.allclose(t, ref), f"{name} has the wrong values"
+
+  - id: attention.manual-check
+    name: manual attention as a sanity check
+    teach: |
+      ```python
+      scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))   # (B, H, T, S)
+      scores = scores.masked_fill(mask, float("-inf"))           # optional, True = blocked
+      out = scores.softmax(dim=-1) @ v                           # softmax over keys -> (B, H, T, Dh)
+      # torch.testing.assert_close(a, b) -> None; raises AssertionError (with the max difference) if not close
+      torch.testing.assert_close(out, F.scaled_dot_product_attention(q, k, v))
+      ```
+      Pitfall: `k.T` on a 4D tensor reverses **all** dims. Use `k.transpose(-2, -1)`.
+    cards:
+      - id: a
+        prompt: |
+          By hand on `q, k, v` (`(2, 2, 5, 4)`), set: `attn` = the attention weights · `out` = the result ·
+          `out_m` = the result with keys blocked where the bool `mask` is True ·
+          `err` = the message (`str`) of the error raised by `torch.testing.assert_close(bad, out)`.
+        setup: |
+          import math
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          q, k, v = torch.randn(3, 2, 2, 5, 4).unbind(0)
+          mask = torch.ones(5, 5).triu(1).bool()
+          bad = (q @ k.transpose(-2, -1)).softmax(dim=-1) @ v
+        solution: |
+          attn = (q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))).softmax(dim=-1)
+          out = attn @ v
+          scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+          out_m = scores.masked_fill(mask, float("-inf")).softmax(dim=-1) @ v
+          try:
+              torch.testing.assert_close(bad, out)
+          except AssertionError as e:
+              err = str(e)
+        check: |
+          assert attn.shape == (2, 2, 5, 5), f"attn.shape = {tuple(attn.shape)}"
+          assert torch.allclose(attn.sum(-1), torch.ones(2, 2, 5)), "attn rows do not sum to 1"
+          assert torch.allclose(out, F.scaled_dot_product_attention(q, k, v), atol=1e-5), f"out[0, 0, 0] = {out[0, 0, 0]}"
+          ref_m = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+          assert torch.allclose(out_m, ref_m, atol=1e-5), f"out_m[0, 0, 0] = {out_m[0, 0, 0]}\nref = {ref_m[0, 0, 0]}"
+          assert isinstance(err, str) and "close" in err.lower(), f"err = {err!r}"
+      - id: c
+        prompt: Write `attention(q, k, v, mask=None)` (mask True = blocked) returning the output, by hand.
+        starter: |
+          def attention(q, k, v, mask=None):
+              pass
+        setup: |
+          import math
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+        solution: |
+          def attention(q, k, v, mask=None):
+              scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+              if mask is not None:
+                  scores = scores.masked_fill(mask, float("-inf"))
+              return scores.softmax(dim=-1) @ v
+        check: |
+          q, k, v = torch.randn(3, 2, 2, 5, 4).unbind(0)
+          out = attention(q, k, v)
+          assert out is not None and torch.allclose(out, F.scaled_dot_product_attention(q, k, v), atol=1e-5), "no-mask output differs from sdpa"
+          m = torch.ones(5, 5).triu(1).bool()
+          out = attention(q, k, v, m)
+          assert torch.allclose(out, F.scaled_dot_product_attention(q, k, v, is_causal=True), atol=1e-5), "masked output differs from causal sdpa"

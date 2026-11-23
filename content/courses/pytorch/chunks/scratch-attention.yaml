@@ -1,0 +1,833 @@
+id: scratch-attention
+title: "From scratch: attention & transformers"
+intro: |
+  The classic interview ask: "implement it without the built-in". Write attention, multi-head
+  attention, a causal transformer block, positional encodings, RMSNorm and LoRA by hand, and know
+  every shape on the way.
+problems:
+  - Implement scaled dot-product attention from scratch
+  - Implement multi-head self-attention without nn.MultiheadAttention
+  - Write a GPT-style causal decoder block
+  - Implement sinusoidal positional encoding
+  - Implement RMSNorm
+  - Implement LoRA for a linear layer
+atoms: []
+skills:
+  - id: scratch-attention.sdpa
+    name: scaled dot-product attention by hand
+    teach: |
+      Attention: each query position outputs a weighted average of the value vectors, where the weights say how
+      well the query matches each key. Formula: `out = softmax(q @ kᵀ / sqrt(Dh)) @ v`.
+      ```python
+      # Shapes: B = batch size, H = number of heads, T = number of query positions, S = number of key positions
+      # (S = T in self-attention), Dh = size of one head's vector. Here q, k, v are (B, H, T, Dh) = (2, 2, 5, 4).
+
+      # t.transpose(i, j) -> same data with dims i and j swapped: k (B, H, S, Dh) -> (B, H, Dh, S)
+      # a @ b -> matrix product of the last two dims, repeated over the leading dims: (..., T, Dh) @ (..., Dh, S) -> (..., T, S)
+      scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))  # (B, H, T, S) = (2, 2, 5, 5); scores[b, h, t, s] = q_t · k_s / sqrt(Dh)
+
+      # torch.tril(m) -> copy of the 2-D matrix m with every entry above the diagonal set to 0 (False), same shape
+      keep = torch.tril(torch.ones(5, 5, dtype=torch.bool))     # (T, S); keep[t, s] = (s <= t), row 1 = [T, T, F, F, F]
+      # t.masked_fill(mask, value) -> copy of t with `value` wherever mask is True; mask is bool, broadcastable to t
+      scores = scores.masked_fill(~keep, float("-inf"))          # ~keep = NOT keep: future keys get -inf; (T, S) broadcasts onto (B, H, T, S)
+
+      # t.softmax(dim) -> exp(t) / sum of exp(t) along dim: same shape, values >= 0 summing to 1 along dim; exp(-inf) = 0
+      weights = scores.softmax(dim=-1)                           # (B, H, T, S); weights[b, h, t, :] sums to 1
+      out = weights @ v                                          # (B, H, T, S) @ (B, H, S, Dh) -> (B, H, T, Dh) = (2, 2, 5, 4)
+      ```
+      Pitfall: a keep-mask (True = attend, the built-in's convention) must be inverted with `~` before `masked_fill`, which fills where True.
+    cards:
+      - id: a
+        prompt: |
+          **Write** the function `attention(q, k, v, mask=None, causal=False)`:
+          - **Given**: `q` (..., T, Dh); `k`, `v` (..., S, Dh); the leading dims `...` are any batch dims, e.g. (B, H)
+          - `mask` (optional): bool, broadcastable to (..., T, S); `True` = this query may attend to this key
+          - `causal=True`: query `t` may only attend to keys `s <= t`
+          - `mask` and `causal` may be given together: then both restrictions apply
+          - **Returns**: (..., T, Dh) = `softmax(q @ kᵀ / sqrt(Dh)) @ v`, with the blocked scores set to -inf before the softmax
+          - **Don't use**: `F.scaled_dot_product_attention`
+          - **Checked on**: (2, 2, 5, 4) inputs with no mask, causal only, a (5, 5) mask only, mask + causal; compared with the built-in
+        setup: |
+          import math
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def attention(q, k, v, mask=None, causal=False):
+              ...
+        solution: |
+          def attention(q, k, v, mask=None, causal=False):
+              scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+              if causal:
+                  T, S = scores.shape[-2:]
+                  keep = torch.tril(torch.ones(T, S, dtype=torch.bool, device=q.device))
+                  scores = scores.masked_fill(~keep, float("-inf"))
+              if mask is not None:
+                  scores = scores.masked_fill(~mask, float("-inf"))
+              return scores.softmax(dim=-1) @ v
+        check: |
+          _sdpa = F.scaled_dot_product_attention
+          torch.manual_seed(1)
+          q, k, v = torch.randn(3, 2, 2, 5, 4).unbind(0)
+          mask = torch.rand(5, 5) > 0.4
+          mask[:, 0] = True
+          tril = torch.ones(5, 5, dtype=torch.bool).tril()
+          ref = _sdpa(q, k, v)
+          ref_c = _sdpa(q, k, v, is_causal=True)
+          ref_m = _sdpa(q, k, v, attn_mask=mask)
+          ref_mc = _sdpa(q, k, v, attn_mask=mask & tril)
+          def _banned(*a, **kw):
+              raise AssertionError("write it by hand: F.scaled_dot_product_attention is not allowed")
+          F.scaled_dot_product_attention = _banned
+          try:
+              out = attention(q, k, v)
+              assert out is not None and out.shape == (2, 2, 5, 4), f"attention(q, k, v) = {out if out is None else tuple(out.shape)}"
+              assert torch.allclose(out, ref, atol=1e-5), f"out[0, 0, 0] = {out[0, 0, 0]}\nexpected {ref[0, 0, 0]}"
+              out_c = attention(q, k, v, causal=True)
+              assert torch.allclose(out_c, ref_c, atol=1e-5), f"causal out[0, 0, 0] = {out_c[0, 0, 0]}\nexpected {ref_c[0, 0, 0]}"
+              out_m = attention(q, k, v, mask=mask)
+              assert torch.allclose(out_m, ref_m, atol=1e-5), f"masked out[0, 0, 1] = {out_m[0, 0, 1]}\nexpected {ref_m[0, 0, 1]} (mask True = attend)"
+              out_mc = attention(q, k, v, mask=mask, causal=True)
+              assert torch.allclose(out_mc, ref_mc, atol=1e-5), f"mask + causal out[0, 0, 2] = {out_mc[0, 0, 2]}\nexpected {ref_mc[0, 0, 2]}"
+          finally:
+              F.scaled_dot_product_attention = _sdpa
+      - id: b
+        prompt: |
+          Cross-attention over a padded batch: queries attend to another sequence whose last positions may be padding.
+          **Write** the function `padded_attention(q, k, v, pad)`:
+          - **Given**: `q` (B, H, T, Dh); `k`, `v` (B, H, S, Dh); `pad` (B, S) bool, `True` = real token, `False` = padding
+          - reshape `pad` to (B, 1, 1, S) so it broadcasts onto the scores (B, H, T, S)
+          - **Returns** the tuple `(out, weights)`:
+            - `weights`: (B, H, T, S), the softmax attention weights, exactly 0 on padded keys, each row summing to 1
+            - `out`: (B, H, T, Dh) = `weights @ v`
+          - **Don't use**: `F.scaled_dot_product_attention`
+          - **Checked on**: B = 2, H = 2, T = 3, S = 6, Dh = 4, the 2nd sequence's last 2 keys padded; compared with the built-in
+        setup: |
+          import math
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def padded_attention(q, k, v, pad):
+              ...
+        solution: |
+          def padded_attention(q, k, v, pad):
+              scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+              scores = scores.masked_fill(~pad[:, None, None, :], float("-inf"))
+              weights = scores.softmax(dim=-1)
+              return weights @ v, weights
+        check: |
+          _sdpa = F.scaled_dot_product_attention
+          torch.manual_seed(2)
+          q = torch.randn(2, 2, 3, 4)
+          k, v = torch.randn(2, 2, 2, 6, 4).unbind(0)
+          pad = torch.tensor([[True] * 6, [True] * 4 + [False] * 2])
+          ref = _sdpa(q, k, v, attn_mask=pad[:, None, None, :])
+          def _banned(*a, **kw):
+              raise AssertionError("write it by hand: F.scaled_dot_product_attention is not allowed")
+          F.scaled_dot_product_attention = _banned
+          try:
+              res = padded_attention(q, k, v, pad)
+              assert isinstance(res, tuple) and len(res) == 2, f"padded_attention returned {type(res).__name__}, expected (out, weights)"
+              out, w = res
+              assert w.shape == (2, 2, 3, 6), f"weights.shape = {tuple(w.shape)}"
+              assert torch.all(w[1, :, :, 4:] == 0), f"weights on padded keys = {w[1, 0, 0, 4:]}"
+              assert torch.allclose(w.sum(-1), torch.ones(2, 2, 3), atol=1e-5), f"weight rows sum to {w.sum(-1)[0, 0]}"
+              assert out.shape == (2, 2, 3, 4) and torch.allclose(out, ref, atol=1e-5), f"out[1, 0, 0] = {out[1, 0, 0]}\nexpected {ref[1, 0, 0]}"
+          finally:
+              F.scaled_dot_product_attention = _sdpa
+
+  - id: scratch-attention.mha
+    name: multi-head attention module
+    teach: |
+      Multi-head attention runs H small attentions in parallel, each on its own slice of Dh = d / H features,
+      then mixes the heads back together with a linear layer.
+      ```python
+      # Shapes: B = batch size, T = sequence length, d = model width (features per token), H = number of heads,
+      # Dh = d // H = head size. Here x is (B, T, d) = (2, 5, 8), H = 2, Dh = 4.
+      # nn.Linear(n_in, n_out) -> layer computing x @ W.T + b on the last dim: (..., n_in) -> (..., n_out)
+      # self.qkv = nn.Linear(d, 3 * d)   computes q, k, v in one product;   self.out = nn.Linear(d, d)
+
+      # t.chunk(n, dim) -> tuple of n tensors: splits t into n equal pieces along `dim`
+      q, k, v = self.qkv(x).chunk(3, dim=-1)       # (B, T, 3d) -> three (B, T, d): (2, 5, 24) -> 3 x (2, 5, 8)
+      # t.view(shape) -> the same data seen with a new shape (same number of elements, no copy)
+      # split heads: view the last dim d as (H, Dh), then swap T and H so each head acts as one more batch dim
+      q = q.view(B, T, H, Dh).transpose(1, 2)      # (B, T, d) -> (B, T, H, Dh) -> (B, H, T, Dh): (2, 5, 8) -> (2, 5, 2, 4) -> (2, 2, 5, 4)
+      # (same for k and v)
+      y = attention(q, k, v, causal=causal)        # previous skill: (B, H, T, Dh) -> (B, H, T, Dh)
+      # merge heads: swap H and T back, then flatten (H, Dh) into d
+      # t.reshape(shape) -> like view, but copies the data when view is impossible
+      y = y.transpose(1, 2).reshape(B, T, d)       # (B, H, T, Dh) -> (B, T, H, Dh) -> (B, T, d): (2, 2, 5, 4) -> (2, 5, 8)
+      y = self.out(y)                              # mixes the heads: (B, T, d) -> (B, T, d)
+      ```
+      Pitfall: `.view` right after `.transpose` raises (the memory is no longer contiguous): use `.reshape`.
+    cards:
+      - id: a
+        prompt: |
+          **Write** the class `MultiHeadAttention(d_model, n_heads)` (an `nn.Module`):
+          - attributes: `self.qkv = nn.Linear(d_model, 3 * d_model)`, `self.out = nn.Linear(d_model, d_model)`
+          - `forward(x, causal=False)`: `x` is (B, T, d_model) → returns (B, T, d_model)
+          - split the `qkv` output into `q`, `k`, `v` in that order; head `h` uses features `h * Dh` to `(h + 1) * Dh - 1`, with `Dh = d_model // n_heads`
+          - use the given `attention(q, k, v, causal)` (works on (B, H, T, Dh) tensors)
+          - **Don't use**: `nn.MultiheadAttention`, `F.scaled_dot_product_attention`
+          - **Checked on**: d_model = 8, n_heads = 2, x (2, 5, 8): output shape, causality (changing a later token must not change earlier outputs), equality with a reference using your weights
+        setup: |
+          import math
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+
+          def attention(q, k, v, causal=False):
+              scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+              if causal:
+                  T, S = scores.shape[-2:]
+                  scores = scores.masked_fill(~torch.ones(T, S, dtype=torch.bool).tril(), float("-inf"))
+              return scores.softmax(dim=-1) @ v
+        starter: |
+          class MultiHeadAttention(nn.Module):
+              def __init__(self, d_model, n_heads):
+                  super().__init__()
+                  ...
+
+              def forward(self, x, causal=False):
+                  ...
+        solution: |
+          class MultiHeadAttention(nn.Module):
+              def __init__(self, d_model, n_heads):
+                  super().__init__()
+                  self.h = n_heads
+                  self.qkv = nn.Linear(d_model, 3 * d_model)
+                  self.out = nn.Linear(d_model, d_model)
+
+              def forward(self, x, causal=False):
+                  B, T, d = x.shape
+                  q, k, v = self.qkv(x).chunk(3, dim=-1)
+                  q, k, v = (t.view(B, T, self.h, d // self.h).transpose(1, 2) for t in (q, k, v))
+                  y = attention(q, k, v, causal=causal)
+                  return self.out(y.transpose(1, 2).reshape(B, T, d))
+        check: |
+          _sdpa = F.scaled_dot_product_attention
+          torch.manual_seed(0)
+          m = MultiHeadAttention(8, 2)
+          x = torch.randn(2, 5, 8)
+          assert not any(isinstance(s, nn.MultiheadAttention) for s in m.modules()), "nn.MultiheadAttention is not allowed"
+
+          def _ref(x, causal):
+              q, k, v = m.qkv(x).chunk(3, dim=-1)
+              q, k, v = (t.view(2, 5, 2, 4).transpose(1, 2) for t in (q, k, v))
+              y = _sdpa(q, k, v, is_causal=causal)
+              return m.out(y.transpose(1, 2).reshape(2, 5, 8))
+
+          def _banned(*a, **kw):
+              raise AssertionError("write it by hand: F.scaled_dot_product_attention is not allowed")
+          F.scaled_dot_product_attention = _banned
+          try:
+              y = m(x)
+              assert y is not None and y.shape == (2, 5, 8), f"m(x) = {y if y is None else tuple(y.shape)}"
+              yc = m(x, causal=True)
+              x2 = x.clone()
+              x2[:, -1] += 1.0
+              yc2 = m(x2, causal=True)
+          finally:
+              F.scaled_dot_product_attention = _sdpa
+          ref = _ref(x, False)
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0] = {y[0, 0]}\nexpected {ref[0, 0]} (split heads with view + transpose(1, 2))"
+          assert torch.allclose(yc, _ref(x, True), atol=1e-5), f"causal y[0, 1] = {yc[0, 1]}\nexpected {_ref(x, True)[0, 1]}"
+          assert torch.allclose(yc[:, :-1], yc2[:, :-1], atol=1e-5), "with causal=True, changing the last token changed earlier outputs"
+          assert not torch.allclose(yc[:, -1], yc2[:, -1]), "the last output should depend on the last token"
+      - id: b
+        prompt: |
+          Cross-attention: the tokens of `x` (queries) attend to a second sequence `ctx` (keys and values), e.g. a decoder reading an encoder's output.
+          **Write** the class `CrossAttention(d_model, n_heads)` (an `nn.Module`):
+          - attributes: `self.q = nn.Linear(d_model, d_model)` (queries from `x`), `self.kv = nn.Linear(d_model, 2 * d_model)` (keys then values from `ctx`, split with `chunk`), `self.out = nn.Linear(d_model, d_model)`
+          - `forward(x, ctx)`: `x` is (B, T, d_model), `ctx` is (B, S, d_model) with S possibly ≠ T → returns (B, T, d_model)
+          - split heads as in the lesson: head `h` uses features `h * Dh` to `(h + 1) * Dh - 1`, `Dh = d_model // n_heads`
+          - use the given `attention(q, k, v)`: q (B, H, T, Dh), k and v (B, H, S, Dh) → (B, H, T, Dh)
+          - **Don't use**: `nn.MultiheadAttention`, `F.scaled_dot_product_attention`
+          - **Checked on**: d_model = 8, n_heads = 2, x (2, 5, 8), ctx (2, 7, 8): output shape, equality with a reference using your weights
+        setup: |
+          import math
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+
+          def attention(q, k, v, causal=False):
+              scores = q @ k.transpose(-2, -1) / math.sqrt(q.size(-1))
+              if causal:
+                  T, S = scores.shape[-2:]
+                  scores = scores.masked_fill(~torch.ones(T, S, dtype=torch.bool).tril(), float("-inf"))
+              return scores.softmax(dim=-1) @ v
+        starter: |
+          class CrossAttention(nn.Module):
+              def __init__(self, d_model, n_heads):
+                  super().__init__()
+                  ...
+
+              def forward(self, x, ctx):
+                  ...
+        solution: |
+          class CrossAttention(nn.Module):
+              def __init__(self, d_model, n_heads):
+                  super().__init__()
+                  self.h = n_heads
+                  self.q = nn.Linear(d_model, d_model)
+                  self.kv = nn.Linear(d_model, 2 * d_model)
+                  self.out = nn.Linear(d_model, d_model)
+
+              def forward(self, x, ctx):
+                  B, T, d = x.shape
+                  S, Dh = ctx.size(1), d // self.h
+                  q = self.q(x).view(B, T, self.h, Dh).transpose(1, 2)
+                  k, v = (t.view(B, S, self.h, Dh).transpose(1, 2) for t in self.kv(ctx).chunk(2, dim=-1))
+                  y = attention(q, k, v)
+                  return self.out(y.transpose(1, 2).reshape(B, T, d))
+        check: |
+          _sdpa = F.scaled_dot_product_attention
+          torch.manual_seed(0)
+          m = CrossAttention(8, 2)
+          x, ctx = torch.randn(2, 5, 8), torch.randn(2, 7, 8)
+          assert not any(isinstance(s, nn.MultiheadAttention) for s in m.modules()), "nn.MultiheadAttention is not allowed"
+          def _banned(*a, **kw):
+              raise AssertionError("write it by hand: F.scaled_dot_product_attention is not allowed")
+          F.scaled_dot_product_attention = _banned
+          try:
+              y = m(x, ctx)
+          finally:
+              F.scaled_dot_product_attention = _sdpa
+          assert y is not None and y.shape == (2, 5, 8), f"m(x, ctx) = {y if y is None else tuple(y.shape)}"
+          q = m.q(x).view(2, 5, 2, 4).transpose(1, 2)
+          k, v = (t.view(2, 7, 2, 4).transpose(1, 2) for t in m.kv(ctx).chunk(2, dim=-1))
+          ref = m.out(_sdpa(q, k, v).transpose(1, 2).reshape(2, 5, 8))
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0] = {y[0, 0]}\nexpected {ref[0, 0]}"
+
+  - id: scratch-attention.causal-block
+    name: pre-norm causal transformer block
+    teach: |
+      A pre-norm transformer block updates `x` in two residual steps, each `x = x + sublayer(norm(x))`: first causal
+      self-attention (tokens exchange information), then an MLP applied to each token separately.
+      ```python
+      # Shapes: B = batch size, T = sequence length, d = model width; every step keeps x at (B, T, d)
+      class Block(nn.Module):
+          def __init__(self, d, H):
+              super().__init__()
+              # nn.LayerNorm(d) -> rescales each token's d features to mean 0, variance 1, then * weight + bias
+              # (both learned, shape (d,)): (..., d) -> (..., d)
+              self.ln1, self.ln2 = nn.LayerNorm(d), nn.LayerNorm(d)
+              self.attn = MultiHeadAttention(d, H)         # previous skill: forward(x, causal), (B, T, d) -> (B, T, d)
+              # nn.Sequential(m1, m2, ...) -> module that applies m1, then m2, ... in order; self.mlp[i] = the i-th module
+              # nn.GELU() -> elementwise activation, a smooth version of ReLU = max(x, 0); keeps the shape
+              self.mlp = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))   # (B, T, d) -> (B, T, 4d) -> (B, T, d)
+
+          def forward(self, x):                            # x: (B, T, d)
+              x = x + self.attn(self.ln1(x), causal=True)  # residual 1: (B, T, d)
+              return x + self.mlp(self.ln2(x))             # residual 2: (B, T, d)
+      ```
+      Pitfall: pre-norm normalizes only the sublayer input. The residual stream `x` itself is never normalized.
+    cards:
+      - id: a
+        prompt: |
+          **Write** the class `Block(d, H)` (an `nn.Module`), a pre-norm causal transformer block:
+          - attributes: `self.ln1`, `self.ln2` = two `nn.LayerNorm(d)`; `self.attn = MultiHeadAttention(d, H)` (given in setup, `forward(x, causal)`); `self.mlp` = `Linear(d, 4d)`, GELU, `Linear(4d, d)` in an `nn.Sequential`
+          - `forward(x)`: `x` (B, T, d) → returns (B, T, d), with two residual steps:
+            1. add to `x` the causal attention of `ln1(x)`
+            2. return that result plus the MLP of its `ln2`-normalized version
+          - **Checked on**: d = 8, H = 2, x (2, 5, 8): output shape, equality with a reference using your weights, causality, and with both sublayers' last layers zeroed the block returns `x` (residuals present)
+        setup: |
+          import math
+          import torch
+          import torch.nn as nn
+
+          class MultiHeadAttention(nn.Module):
+              def __init__(self, d_model, n_heads):
+                  super().__init__()
+                  self.h = n_heads
+                  self.qkv = nn.Linear(d_model, 3 * d_model)
+                  self.out = nn.Linear(d_model, d_model)
+
+              def forward(self, x, causal=False):
+                  B, T, d = x.shape
+                  q, k, v = (t.view(B, T, self.h, d // self.h).transpose(1, 2) for t in self.qkv(x).chunk(3, dim=-1))
+                  s = q @ k.transpose(-2, -1) / math.sqrt(d // self.h)
+                  if causal:
+                      s = s.masked_fill(~torch.ones(T, T, dtype=torch.bool).tril(), float("-inf"))
+                  return self.out((s.softmax(-1) @ v).transpose(1, 2).reshape(B, T, d))
+        starter: |
+          class Block(nn.Module):
+              def __init__(self, d, H):
+                  super().__init__()
+                  ...
+
+              def forward(self, x):
+                  ...
+        solution: |
+          class Block(nn.Module):
+              def __init__(self, d, H):
+                  super().__init__()
+                  self.ln1, self.ln2 = nn.LayerNorm(d), nn.LayerNorm(d)
+                  self.attn = MultiHeadAttention(d, H)
+                  self.mlp = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
+
+              def forward(self, x):
+                  x = x + self.attn(self.ln1(x), causal=True)
+                  return x + self.mlp(self.ln2(x))
+        check: |
+          torch.manual_seed(0)
+          b = Block(8, 2)
+          x = torch.randn(2, 5, 8)
+          y = b(x)
+          assert y is not None and y.shape == (2, 5, 8), f"b(x) = {y if y is None else tuple(y.shape)}"
+          assert isinstance(b.mlp[1], nn.GELU) and b.mlp[0].out_features == 32, f"mlp = {b.mlp}"
+          h = x + b.attn(b.ln1(x), causal=True)
+          ref = h + b.mlp(b.ln2(h))
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0] = {y[0, 0]}\nexpected {ref[0, 0]} (pre-norm: x + attn(ln1(x), causal=True), then x + mlp(ln2(x)))"
+          x2 = x.clone()
+          x2[:, -1] += 1.0
+          assert torch.allclose(b(x2)[:, :-1], y[:, :-1], atol=1e-5), "changing the last token changed earlier outputs (not causal)"
+          with torch.no_grad():
+              for lin in (b.attn.out, b.mlp[2]):
+                  lin.weight.zero_()
+                  lin.bias.zero_()
+          assert torch.allclose(b(x), x, atol=1e-6), "with both sublayer outputs zeroed the block should return x (missing residual?)"
+      - id: b
+        prompt: |
+          **Write** two classes (`MultiHeadAttention(d, H)` with `forward(x, causal)` is given in setup):
+          - `Block(d, H)`: the pre-norm causal block of the lesson, same attribute names `ln1`, `attn`, `ln2`, `mlp`
+          - `Decoder(d, H, n_layers)` (an `nn.Module`):
+            - `self.blocks`: an `nn.ModuleList` of `n_layers` separate `Block(d, H)` (`nn.ModuleList(list_of_modules)` = a list whose modules' parameters are registered)
+            - `self.ln_f = nn.LayerNorm(d)`: a final norm, needed because pre-norm never normalizes the residual stream
+            - `forward(x)`: `x` (B, T, d) → runs the blocks in order, then `ln_f` → returns (B, T, d)
+          - **Checked on**: d = 8, H = 2, n_layers = 3, x (2, 5, 8): 3 distinct blocks, output equals blocks-then-`ln_f`, causality
+        setup: |
+          import math
+          import torch
+          import torch.nn as nn
+
+          class MultiHeadAttention(nn.Module):
+              def __init__(self, d_model, n_heads):
+                  super().__init__()
+                  self.h = n_heads
+                  self.qkv = nn.Linear(d_model, 3 * d_model)
+                  self.out = nn.Linear(d_model, d_model)
+
+              def forward(self, x, causal=False):
+                  B, T, d = x.shape
+                  q, k, v = (t.view(B, T, self.h, d // self.h).transpose(1, 2) for t in self.qkv(x).chunk(3, dim=-1))
+                  s = q @ k.transpose(-2, -1) / math.sqrt(d // self.h)
+                  if causal:
+                      s = s.masked_fill(~torch.ones(T, T, dtype=torch.bool).tril(), float("-inf"))
+                  return self.out((s.softmax(-1) @ v).transpose(1, 2).reshape(B, T, d))
+        starter: |
+          class Block(nn.Module):
+              ...
+
+
+          class Decoder(nn.Module):
+              def __init__(self, d, H, n_layers):
+                  super().__init__()
+                  ...
+
+              def forward(self, x):
+                  ...
+        solution: |
+          class Block(nn.Module):
+              def __init__(self, d, H):
+                  super().__init__()
+                  self.ln1, self.ln2 = nn.LayerNorm(d), nn.LayerNorm(d)
+                  self.attn = MultiHeadAttention(d, H)
+                  self.mlp = nn.Sequential(nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
+
+              def forward(self, x):
+                  x = x + self.attn(self.ln1(x), causal=True)
+                  return x + self.mlp(self.ln2(x))
+
+
+          class Decoder(nn.Module):
+              def __init__(self, d, H, n_layers):
+                  super().__init__()
+                  self.blocks = nn.ModuleList([Block(d, H) for _ in range(n_layers)])
+                  self.ln_f = nn.LayerNorm(d)
+
+              def forward(self, x):
+                  for blk in self.blocks:
+                      x = blk(x)
+                  return self.ln_f(x)
+        check: |
+          torch.manual_seed(0)
+          dec = Decoder(8, 2, 3)
+          x = torch.randn(2, 5, 8)
+          y = dec(x)
+          assert y is not None and y.shape == (2, 5, 8), f"dec(x) = {y if y is None else tuple(y.shape)}"
+          assert isinstance(dec.blocks, nn.ModuleList) and len(dec.blocks) == 3, f"blocks = {type(getattr(dec, 'blocks', None)).__name__}"
+          assert len({id(b) for b in dec.blocks}) == 3, "the 3 blocks must be distinct modules (no shared weights)"
+          h = x
+          for b in dec.blocks:
+              h = h + b.attn(b.ln1(h), causal=True)
+              h = h + b.mlp(b.ln2(h))
+          ref = dec.ln_f(h)
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0] = {y[0, 0]}\nexpected {ref[0, 0]} (blocks in order, then ln_f)"
+          x2 = x.clone()
+          x2[:, -1] += 1.0
+          assert torch.allclose(dec(x2)[:, :-1], y[:, :-1], atol=1e-5), "changing the last token changed earlier outputs (not causal)"
+
+  - id: scratch-attention.positional
+    name: sinusoidal and learned positional encodings
+    teach: |
+      Attention ignores token order, so each token embedding gets a vector that depends on its position `t` added to it.
+      Sinusoidal (fixed) table `pe` of shape (T, d), for i = 0 .. d/2 - 1:
+      `pe[t, 2i] = sin(t / 10000^(2i/d))`, `pe[t, 2i+1] = cos(t / 10000^(2i/d))`.
+      ```python
+      # Shapes: B = batch size, T = sequence length, d = model width (even). Here T = 5, d = 8.
+      # torch.arange(n) -> int64 tensor [0, 1, ..., n-1], shape (n,); torch.arange(start, end, step) -> [start, start+step, ...] (< end)
+      # t[:, None] -> inserts a new dim of size 1 there: (T,) -> (T, 1)
+      pos = torch.arange(T)[:, None]                                  # (T, 1) = (5, 1): [[0], [1], [2], [3], [4]]
+      two_i = torch.arange(0, d, 2)                                   # (d/2,) = (4,): [0, 2, 4, 6]
+      angle = pos / 10000 ** (two_i / d)                              # (T, 1) with (d/2,) broadcasts to (T, d/2) = (5, 4)
+      # t[:, 0::2] -> columns 0, 2, 4, ... (start 0, step 2); t[:, 1::2] -> columns 1, 3, 5, ...: (T, d) -> (T, d/2)
+      pe = torch.zeros(T, d)                                          # (5, 8)
+      pe[:, 0::2], pe[:, 1::2] = torch.sin(angle), torch.cos(angle)   # pe[0] = [0, 1, 0, 1, 0, 1, 0, 1]
+
+      # Learned version. nn.Embedding(n, d) -> trainable (n, d) table; emb(ids) -> its rows: ids (...) int64 -> (..., d)
+      # self.tok = nn.Embedding(vocab, d) (one vector per token id), self.pos = nn.Embedding(T_max, d) (one per position)
+      # idx: (B, T) token ids; idx.size(1) = T
+      x = self.tok(idx) + self.pos(torch.arange(idx.size(1)))         # (B, T, d) + (T, d) broadcasts to (B, T, d)
+      ```
+      Pitfall: the exponent uses the even index 2i itself (`arange(0, d, 2) / d`), not `arange(d // 2) / d`.
+    cards:
+      - id: a
+        prompt: |
+          **Write** two things:
+          - the function `sinusoidal(T, d)` → returns the fixed (T, d) float table with `pe[t, 2i] = sin(t / 10000^(2i/d))` and `pe[t, 2i+1] = cos(t / 10000^(2i/d))` (d is even)
+          - the class `Embed(vocab, d, T_max)` (an `nn.Module`):
+            - attributes: `self.tok = nn.Embedding(vocab, d)` (token table), `self.pos = nn.Embedding(T_max, d)` (learned position table)
+            - `forward(idx)`: `idx` (B, T) int64 token ids, any `T <= T_max` → returns (B, T, d) = token embeddings + embeddings of positions 0 .. T-1
+          - **Checked on**: `sinusoidal(5, 8)` against the formula; `Embed(50, 8, 16)` with T = 5 and T = 3
+        setup: |
+          import torch
+          import torch.nn as nn
+        starter: |
+          def sinusoidal(T, d):
+              ...
+
+
+          class Embed(nn.Module):
+              def __init__(self, vocab, d, T_max):
+                  super().__init__()
+                  ...
+
+              def forward(self, idx):
+                  ...
+        solution: |
+          def sinusoidal(T, d):
+              pos = torch.arange(T)[:, None]
+              angle = pos / 10000 ** (torch.arange(0, d, 2) / d)
+              pe = torch.zeros(T, d)
+              pe[:, 0::2], pe[:, 1::2] = torch.sin(angle), torch.cos(angle)
+              return pe
+
+
+          class Embed(nn.Module):
+              def __init__(self, vocab, d, T_max):
+                  super().__init__()
+                  self.tok = nn.Embedding(vocab, d)
+                  self.pos = nn.Embedding(T_max, d)
+
+              def forward(self, idx):
+                  return self.tok(idx) + self.pos(torch.arange(idx.size(1), device=idx.device))
+        check: |
+          import math
+          pe = sinusoidal(5, 8)
+          assert pe is not None and tuple(pe.shape) == (5, 8), f"sinusoidal(5, 8) = {pe if pe is None else tuple(pe.shape)}"
+          ref = torch.zeros(5, 8)
+          for t in range(5):
+              for i in range(0, 8, 2):
+                  ref[t, i] = math.sin(t / 10000 ** (i / 8))
+                  ref[t, i + 1] = math.cos(t / 10000 ** (i / 8))
+          assert torch.allclose(pe, ref, atol=1e-5), f"pe[1] = {pe[1]}\nexpected {ref[1]}"
+          torch.manual_seed(0)
+          e = Embed(50, 8, 16)
+          assert isinstance(getattr(e, "pos", None), nn.Embedding) and e.pos.num_embeddings == 16, "pos must be nn.Embedding(T_max, d)"
+          for T in (5, 3):
+              idx = torch.randint(0, 50, (2, T))
+              out = e(idx)
+              assert out is not None and out.shape == (2, T, 8), f"e(idx) for T={T}: {out if out is None else tuple(out.shape)}"
+              assert torch.allclose(out, e.tok(idx) + e.pos.weight[:T], atol=1e-6), f"T={T}: out != tok(idx) + pos(0..T-1)"
+      - id: b
+        prompt: |
+          **Write** the class `SinEmbed(vocab, d, T_max)` (an `nn.Module`), token embeddings plus the fixed sinusoidal table:
+          - `self.tok = nn.Embedding(vocab, d)`
+          - `pe` = the given `sinusoidal(T_max, d)` (T_max, d), computed once in `__init__` and stored as a buffer: `self.register_buffer("pe", tensor)` keeps a tensor in the module (saved and moved with it, read as `self.pe`) without making it trainable
+          - `forward(idx)`: `idx` (B, T) int64 token ids, any `T <= T_max` → returns (B, T, d) = token embeddings + the first T rows of `pe`
+          - **Checked on**: `SinEmbed(50, 8, 16)`: `pe` is a (16, 8) buffer and not a parameter; output for T = 5 and T = 3
+        setup: |
+          import torch
+          import torch.nn as nn
+
+          def sinusoidal(T, d):
+              angle = torch.arange(T)[:, None] / 10000 ** (torch.arange(0, d, 2) / d)
+              pe = torch.zeros(T, d)
+              pe[:, 0::2], pe[:, 1::2] = torch.sin(angle), torch.cos(angle)
+              return pe
+        starter: |
+          class SinEmbed(nn.Module):
+              def __init__(self, vocab, d, T_max):
+                  super().__init__()
+                  ...
+
+              def forward(self, idx):
+                  ...
+        solution: |
+          class SinEmbed(nn.Module):
+              def __init__(self, vocab, d, T_max):
+                  super().__init__()
+                  self.tok = nn.Embedding(vocab, d)
+                  self.register_buffer("pe", sinusoidal(T_max, d))
+
+              def forward(self, idx):
+                  return self.tok(idx) + self.pe[: idx.size(1)]
+        check: |
+          torch.manual_seed(0)
+          e = SinEmbed(50, 8, 16)
+          bufs = dict(e.named_buffers())
+          assert "pe" in bufs and bufs["pe"].shape == (16, 8), f"buffers = {list(bufs)} (use register_buffer('pe', ...))"
+          assert "pe" not in dict(e.named_parameters()), "pe must be a buffer, not a parameter"
+          for T in (5, 3):
+              idx = torch.randint(0, 50, (2, T))
+              out = e(idx)
+              assert out is not None and out.shape == (2, T, 8), f"e(idx) for T={T}: {out if out is None else tuple(out.shape)}"
+              assert torch.allclose(out, e.tok(idx) + sinusoidal(T, 8), atol=1e-6), f"T={T}: out != tok(idx) + pe[:T]"
+
+  - id: scratch-attention.rmsnorm
+    name: RMSNorm by hand
+    teach: |
+      RMSNorm rescales each token's feature vector so that its root mean square (RMS) is 1, then multiplies by a
+      learned gain. Formula over the last dim: `y = x / sqrt(mean(x²) + eps) * weight` (unlike LayerNorm: no mean
+      subtraction, no bias).
+      ```python
+      # Shapes: x is (..., d), e.g. (B, T, d) with B = batch size, T = sequence length, d = features per token
+      class RMSNorm(nn.Module):
+          def __init__(self, d, eps=1e-6):
+              super().__init__()
+              self.eps = eps
+              # nn.Parameter(t) -> wraps tensor t as a trainable parameter of the module
+              self.weight = nn.Parameter(torch.ones(d))        # (d,) learned gain, starts at 1
+          def forward(self, x):                                # x: (..., d)
+              # t.pow(2) -> elementwise square; t.mean(dim, keepdim=True) -> mean along dim, kept as size 1: (..., d) -> (..., 1)
+              ms = x.pow(2).mean(-1, keepdim=True)             # (..., 1): mean of squares of each token's features
+              # torch.rsqrt(t) -> 1 / sqrt(t) elementwise, same shape: torch.rsqrt(torch.tensor(4.)) -> tensor(0.5000)
+              return x * torch.rsqrt(ms + self.eps) * self.weight   # (..., d) * (..., 1) * (d,) -> (..., d)
+      ```
+      Pitfall: `keepdim=True` keeps the mean at (..., 1) so it broadcasts over (..., d); `eps` goes inside the sqrt.
+    cards:
+      - id: a
+        prompt: |
+          **Write** the class `RMSNorm(d, eps=1e-6)` (an `nn.Module`):
+          - attributes: `self.weight = nn.Parameter(torch.ones(d))` (learned gain), `eps`
+          - `forward(x)`: `x` (..., d) → returns (..., d) = `x / sqrt(mean of x² over the last dim + eps) * weight`
+          - **Don't use**: `nn.RMSNorm`, `F.rms_norm`
+          - **Checked on**: x (2, 5, 8) with the initial weight, with a random weight, and with eps = 1.0 (eps must be inside the sqrt); compared with `nn.RMSNorm`
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+        starter: |
+          class RMSNorm(nn.Module):
+              def __init__(self, d, eps=1e-6):
+                  super().__init__()
+                  ...
+
+              def forward(self, x):
+                  ...
+        solution: |
+          class RMSNorm(nn.Module):
+              def __init__(self, d, eps=1e-6):
+                  super().__init__()
+                  self.eps = eps
+                  self.weight = nn.Parameter(torch.ones(d))
+
+              def forward(self, x):
+                  return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
+        check: |
+          _rms = F.rms_norm
+          torch.manual_seed(0)
+          x, w = torch.randn(2, 5, 8), torch.randn(8)
+          ref1 = nn.RMSNorm(8, eps=1e-6)(x)
+          r = nn.RMSNorm(8, eps=1e-6)
+          with torch.no_grad():
+              r.weight.copy_(w)
+          ref_w = r(x)
+          ref_big = nn.RMSNorm(8, eps=1.0)(x)
+          def _banned(*a, **kw):
+              raise AssertionError("write it by hand: F.rms_norm / nn.RMSNorm are not allowed")
+          F.rms_norm = _banned
+          try:
+              norm = RMSNorm(8)
+              assert isinstance(getattr(norm, "weight", None), nn.Parameter) and torch.equal(norm.weight.detach(), torch.ones(8)), "weight must be nn.Parameter(torch.ones(d))"
+              y = norm(x)
+              assert y is not None and y.shape == (2, 5, 8), f"norm(x) = {y if y is None else tuple(y.shape)}"
+              assert torch.allclose(y, ref1, atol=1e-5), f"y[0, 0] = {y[0, 0]}\nexpected {ref1[0, 0]}"
+              with torch.no_grad():
+                  norm.weight.copy_(w)
+              yw = norm(x)
+              assert torch.allclose(yw, ref_w, atol=1e-5), f"with weight set, y[0, 0] = {yw[0, 0]}\nexpected {ref_w[0, 0]}"
+              yb = RMSNorm(8, eps=1.0)(x)
+              assert torch.allclose(yb, ref_big, atol=1e-5), f"eps=1.0: y[0, 0] = {yb[0, 0]}\nexpected {ref_big[0, 0]} (eps inside the sqrt)"
+          finally:
+              F.rms_norm = _rms
+      - id: b
+        prompt: |
+          Mixed precision: `x` is float16 with large values (|x| ~ 300), so `x ** 2` (~ 90000) exceeds float16's max 65504 and becomes inf.
+          **Write** the function `rms_norm(x, weight, eps=1e-6)`:
+          - **Given**: `x` (..., d) float16, `weight` (d,) float16
+          - compute in float32: convert the inputs with `.float()`
+          - **Returns**: (..., d) = `x / sqrt(mean of x² over the last dim + eps) * weight`, in `x`'s dtype (float16): convert back with `.to(x.dtype)`
+          - **Don't use**: `F.rms_norm`
+          - **Checked on**: x (2, 5, 8) float16 with |x| ~ 300: output dtype float16, values match a float32 reference (tolerance 1e-2)
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def rms_norm(x, weight, eps=1e-6):
+              ...
+        solution: |
+          def rms_norm(x, weight, eps=1e-6):
+              xf = x.float()
+              y = xf * torch.rsqrt(xf.pow(2).mean(-1, keepdim=True) + eps) * weight.float()
+              return y.to(x.dtype)
+        check: |
+          _rms = F.rms_norm
+          torch.manual_seed(0)
+          x = (torch.randn(2, 5, 8) * 300).half()
+          w = torch.randn(8).half()
+          ref = _rms(x.float(), (8,), w.float(), 1e-6)
+          def _banned(*a, **kw):
+              raise AssertionError("write it by hand: F.rms_norm is not allowed")
+          F.rms_norm = _banned
+          try:
+              y = rms_norm(x, w)
+          finally:
+              F.rms_norm = _rms
+          assert y is not None and y.shape == (2, 5, 8), f"rms_norm(x, w) = {y if y is None else tuple(y.shape)}"
+          assert y.dtype == torch.float16, f"y.dtype = {y.dtype}, expected x's dtype float16"
+          assert torch.allclose(y.float(), ref, atol=1e-2), f"y[0, 0] = {y[0, 0]}\nexpected {ref[0, 0]} (x ** 2 overflowed: upcast first)"
+
+  - id: scratch-attention.lora
+    name: LoRA linear layer
+    teach: |
+      LoRA (low-rank adaptation) fine-tunes a frozen linear layer `base(x) = x @ W.T + b`, W (out, in), by training only
+      two small matrices A (r, in) and B (out, r), r small: `y = base(x) + (alpha / r) * x @ A.T @ B.T`.
+      This equals using the weight `W + (alpha / r) * B @ A`, but trains only r * (in + out) numbers.
+      ```python
+      class LoRALinear(nn.Module):
+          def __init__(self, base, r, alpha):                  # base: nn.Linear(in, out); base.in_features = in, base.out_features = out
+              super().__init__()
+              self.base = base
+              # m.parameters() -> iterator over the module's parameters: here weight (out, in) and bias (out,)
+              # p.requires_grad_(False) -> freezes p in place: no gradient is computed, so the optimizer leaves it unchanged
+              for p in self.base.parameters():
+                  p.requires_grad_(False)
+              self.A = nn.Parameter(torch.randn(r, base.in_features) * 0.01)   # (r, in), small random
+              self.B = nn.Parameter(torch.zeros(base.out_features, r))        # (out, r), zeros -> output == base(x) at start
+              self.scale = alpha / r
+          def forward(self, x):                                # x: (..., in)
+              # M.T -> transpose of a 2-D matrix: A.T (in, r), B.T (r, out)
+              return self.base(x) + self.scale * (x @ self.A.T @ self.B.T)   # (..., in) -> (..., r) -> (..., out)
+      ```
+      Pitfall: zero only B. If A and B are both zero, neither gets a gradient and the adapter never trains.
+    cards:
+      - id: a
+        prompt: |
+          **Write** the class `LoRALinear(base, r, alpha)` (an `nn.Module`) wrapping an `nn.Linear` `base` (in → out):
+          - `self.base = base`, with all of `base`'s parameters frozen (`requires_grad` False)
+          - `self.A`: trainable (r, in), small random values (e.g. `torch.randn(...) * 0.01`)
+          - `self.B`: trainable (out, r), zeros
+          - `forward(x)`: `x` (..., in) → returns (..., out) = `base(x) + (alpha / r) * x @ A.T @ B.T`
+          - **Checked on**: base = `nn.Linear(8, 4)`, r = 2, alpha = 4, x (2, 5, 8): output equals `base(x)` at init, only `A` and `B` trainable, `A` non-zero, correct output after `B` is set to random values
+        setup: |
+          import torch
+          import torch.nn as nn
+        starter: |
+          class LoRALinear(nn.Module):
+              def __init__(self, base, r, alpha):
+                  super().__init__()
+                  ...
+
+              def forward(self, x):
+                  ...
+        solution: |
+          class LoRALinear(nn.Module):
+              def __init__(self, base, r, alpha):
+                  super().__init__()
+                  self.base = base
+                  for p in self.base.parameters():
+                      p.requires_grad_(False)
+                  self.A = nn.Parameter(torch.randn(r, base.in_features) * 0.01)
+                  self.B = nn.Parameter(torch.zeros(base.out_features, r))
+                  self.scale = alpha / r
+
+              def forward(self, x):
+                  return self.base(x) + self.scale * (x @ self.A.T @ self.B.T)
+        check: |
+          torch.manual_seed(0)
+          base = nn.Linear(8, 4)
+          W0, b0 = base.weight.detach().clone(), base.bias.detach().clone()
+          lora = LoRALinear(base, r=2, alpha=4)
+          x = torch.randn(2, 5, 8)
+          y = lora(x)
+          assert y is not None and y.shape == (2, 5, 4), f"lora(x) = {y if y is None else tuple(y.shape)}"
+          assert torch.allclose(y, x @ W0.T + b0, atol=1e-6), "at init the output must equal base(x) (B starts at zeros)"
+          trainable = sorted(n for n, p in lora.named_parameters() if p.requires_grad)
+          assert trainable == ["A", "B"], f"trainable params = {trainable}, expected ['A', 'B']"
+          assert lora.A.shape == (2, 8) and lora.B.shape == (4, 2), f"A {tuple(lora.A.shape)}, B {tuple(lora.B.shape)}; expected (2, 8), (4, 2)"
+          assert lora.A.abs().sum() > 0, "A must be random (if A and B are both zero, nothing trains)"
+          with torch.no_grad():
+              lora.B.copy_(torch.randn(4, 2))
+          exp = x @ W0.T + b0 + (4 / 2) * x @ lora.A.T @ lora.B.T
+          y2 = lora(x)
+          assert torch.allclose(y2, exp, atol=1e-5), f"y[0, 0] = {y2[0, 0]}\nexpected {exp[0, 0]} (scale = alpha / r = 2)"
+      - id: b
+        prompt: |
+          For deployment, fold the adapter into one plain layer, using `x @ A.T @ B.T == x @ (B @ A).T`.
+          **Write** the function `merge(lora)`:
+          - **Given**: `lora`, a trained `LoRALinear` (see setup): `lora.base` = `nn.Linear(8, 4)`, `lora.A` (2, 8), `lora.B` (4, 2), `lora.scale` = alpha / r
+          - **Returns**: a new `nn.Linear(in, out)` whose weight (out, in) = `base.weight + scale * B @ A` and whose bias = `base.bias`
+          - do not modify `lora`; to write values into the new layer's parameters use `with torch.no_grad(): layer.weight.copy_(t)` (`copy_` overwrites in place)
+          - **Checked on**: `merge(lora)(x)` equals `lora(x)` for x (2, 5, 8); `lora.base.weight` unchanged
+        setup: |
+          import torch
+          import torch.nn as nn
+
+          class LoRALinear(nn.Module):
+              def __init__(self, base, r, alpha):
+                  super().__init__()
+                  self.base = base
+                  for p in self.base.parameters():
+                      p.requires_grad_(False)
+                  self.A = nn.Parameter(torch.randn(r, base.in_features) * 0.01)
+                  self.B = nn.Parameter(torch.zeros(base.out_features, r))
+                  self.scale = alpha / r
+
+              def forward(self, x):
+                  return self.base(x) + self.scale * (x @ self.A.T @ self.B.T)
+
+          torch.manual_seed(0)
+          lora = LoRALinear(nn.Linear(8, 4), r=2, alpha=4)
+          with torch.no_grad():
+              lora.B.copy_(torch.randn(4, 2))
+        starter: |
+          def merge(lora):
+              ...
+        solution: |
+          def merge(lora):
+              base = lora.base
+              merged = nn.Linear(base.in_features, base.out_features)
+              with torch.no_grad():
+                  merged.weight.copy_(base.weight + lora.scale * lora.B @ lora.A)
+                  merged.bias.copy_(base.bias)
+              return merged
+        check: |
+          W0 = lora.base.weight.detach().clone()
+          x = torch.randn(2, 5, 8)
+          exp = lora(x)
+          m = merge(lora)
+          assert isinstance(m, nn.Linear), f"merge returned {type(m).__name__}, expected nn.Linear"
+          y = m(x)
+          assert torch.allclose(y, exp, atol=1e-5), f"merged(x)[0, 0] = {y[0, 0]}\nexpected lora(x)[0, 0] = {exp[0, 0]}"
+          assert torch.equal(lora.base.weight, W0), "lora.base.weight was modified in place"

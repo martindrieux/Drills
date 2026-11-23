@@ -1,0 +1,251 @@
+id: dp-1d
+title: 1D linear DP
+summary: "dp[i] over a prefix of an array or string, built from the last one or two states: climbing stairs, house robber, decode ways, Kadane."
+links:
+  - to: dp-framing
+    kind: prereq
+    note: The five questions (state, transition, base, order, answer) applied to the simplest shape, a single index.
+lesson: |
+  **Shape:** a sequence (array, string, staircase). `dp[i]` depends on a few earlier entries,
+  usually `dp[i-1]` and `dp[i-2]`. Fill left to right, O(n) time.
+
+  **Recognition signals**
+  - "Can't pick two adjacent elements" → house robber: take `i` (and skip `i-1`) or skip `i`.
+  - "Number of ways to reach / decode / tile" with steps of size 1 or 2 → sum of the last two states.
+  - "Best contiguous subarray" (sum, product) → *best ending exactly at i* (Kadane).
+  - "Minimum operations to reduce n to 1" → `dp[i]` over integers, transition = each allowed operation.
+
+  **Two flavours of state** (decide which one before writing anything):
+
+  | State | Size | Answer | Example |
+  |---|---|---|---|
+  | `dp[i]` = answer for the **first i items** (prefix of length i) | `n + 1` | `dp[n]` | house robber, decode ways |
+  | `dp[i]` = best answer **ending exactly at index i** | `n` | `max(dp)` | Kadane, LIS |
+
+  With the prefix flavour, item `i` of the prefix is `nums[i - 1]`: that offset is where off-by-ones live.
+  The payoff is a free base case `dp[0]` (the empty prefix).
+
+  **House robber** (no two adjacent houses):
+
+  ```python
+  # state: dp[i] = max loot from the first i houses
+  dp = [0] * (n + 1)
+  dp[1] = nums[0]
+  for i in range(2, n + 1):
+      dp[i] = max(dp[i - 1],                 # skip house i-1
+                  dp[i - 2] + nums[i - 1])   # rob it, so the previous one is skipped
+  answer = dp[n]
+  ```
+
+  **Decode ways** ("12" → "AB" or "L"): the last step consumed 1 digit or 2 digits.
+
+  ```python
+  # state: dp[i] = ways to decode s[:i]; dp[0] = 1 (empty string: one way, decode nothing)
+  dp = [0] * (n + 1)
+  dp[0] = 1
+  for i in range(1, n + 1):
+      if s[i - 1] != "0":                  # single digit 1-9
+          dp[i] += dp[i - 1]
+      if i >= 2 and "10" <= s[i - 2:i] <= "26":  # two digits 10-26
+          dp[i] += dp[i - 2]
+  ```
+
+  **Kadane** (max subarray): state = best sum of a subarray *ending at i*.
+  Either extend the previous one or start fresh at `x`.
+
+  ```python
+  cur = best = nums[0]
+  for x in nums[1:]:
+      cur = max(x, cur + x)
+      best = max(best, cur)
+  ```
+
+  **Space optimisation: two variables.** When `dp[i]` reads only `dp[i-1]` and `dp[i-2]`,
+  keep `prev2, prev1` and shift them each step:
+
+  ```python
+  prev2, prev1 = 0, 0                    # dp[i-2], dp[i-1]
+  for x in nums:
+      prev2, prev1 = prev1, max(prev1, prev2 + x)
+  answer = prev1
+  ```
+
+  **Pitfalls**
+  - Shifting with two separate lines (`prev2 = prev1; prev1 = ...prev2...`) reads the *new* `prev2`. Use one tuple assignment.
+  - Decode ways: a `"0"` can only be the second digit of `"10"` or `"20"`. `"06"` is 0 ways.
+  - Kadane with all negatives: initialise with `nums[0]`, not `0`, or you return 0 for `[-3, -1]`.
+  - "Ending at i" answers live in `max(dp)`, not `dp[-1]`.
+
+  **Complexity:** O(n) time; O(n) table or O(1) with rolling variables.
+drills:
+  - id: robber-transition
+    prompt: |
+      State: `dp[i]` = max loot from the first `i` houses (no two adjacent). Base cases are set.
+      Write the **transition line**. The skeleton puts the answer in `res`.
+    setup: |
+      nums = [2, 7, 9, 3, 1]
+      n = len(nums)
+    starter: |
+      dp = [0] * (n + 1)
+      dp[1] = nums[0]
+      for i in range(2, n + 1):
+          pass  # transition
+      res = dp[n]
+    solution: |
+      dp = [0] * (n + 1)
+      dp[1] = nums[0]
+      for i in range(2, n + 1):
+          dp[i] = max(dp[i - 1], dp[i - 2] + nums[i - 1])
+      res = dp[n]
+    check: |
+      assert res == 12, f"res = {res!r}"
+      assert dp == [0, 2, 7, 11, 11, 12], f"dp = {dp!r}"
+  - id: robber-rolling
+    prompt: |
+      Same problem with O(1) space. `prev2, prev1` hold `dp[i-2], dp[i-1]`.
+      Write the **one-line** update inside the loop. The skeleton puts the answer in `res`.
+    setup: |
+      nums = [2, 1, 1, 2]
+    starter: |
+      prev2, prev1 = 0, 0
+      for x in nums:
+          pass
+      res = prev1
+    solution: |
+      prev2, prev1 = 0, 0
+      for x in nums:
+          prev2, prev1 = prev1, max(prev1, prev2 + x)
+      res = prev1
+    check: |
+      assert res == 4, f"res = {res!r}"
+  - id: kadane
+    prompt: |
+      Max subarray sum. `cur` = best sum of a subarray **ending at the current element**, `best` = best seen so far.
+      Write the two update lines inside the loop. The skeleton puts `best` in `res`.
+    setup: |
+      nums = [-2, 1, -3, 4, -1, 2, 1, -5, 4]
+    starter: |
+      cur = best = nums[0]
+      for x in nums[1:]:
+          pass
+      res = best
+    solution: |
+      cur = best = nums[0]
+      for x in nums[1:]:
+          cur = max(x, cur + x)
+          best = max(best, cur)
+      res = best
+    check: |
+      assert res == 6, f"res = {res!r}"
+  - id: decode-transition
+    prompt: |
+      Decode ways. State: `dp[i]` = number of ways to decode `s[:i]`, with `dp[0] = 1`.
+      Inside the loop, add the "last step used 1 digit" and "last step used 2 digits" cases.
+      The skeleton puts `dp[n]` in `res`.
+    setup: |
+      s = "2206"
+      n = len(s)
+    starter: |
+      dp = [0] * (n + 1)
+      dp[0] = 1
+      for i in range(1, n + 1):
+          pass  # two ifs
+      res = dp[n]
+    solution: |
+      dp = [0] * (n + 1)
+      dp[0] = 1
+      for i in range(1, n + 1):
+          if s[i - 1] != "0":
+              dp[i] += dp[i - 1]
+          if i >= 2 and "10" <= s[i - 2:i] <= "26":
+              dp[i] += dp[i - 2]
+      res = dp[n]
+    check: |
+      assert res == 1, f"res = {res!r}  (only 2 20 6 is valid)"
+      assert dp == [1, 1, 2, 1, 1], f"dp = {dp!r}"
+  - id: min-ops-to-one
+    prompt: |
+      From integer `i` you may subtract 1, divide by 2 (if even) or divide by 3 (if divisible).
+      State: `dp[i]` = min operations to reach 1, `dp[1] = 0`. Write the transition (start from the
+      "subtract 1" option, then improve it). The skeleton puts `dp[n]` in `res`.
+    setup: |
+      n = 10
+    starter: |
+      dp = [0] * (n + 1)
+      for i in range(2, n + 1):
+          pass  # transition
+      res = dp[n]
+    solution: |
+      dp = [0] * (n + 1)
+      for i in range(2, n + 1):
+          dp[i] = dp[i - 1] + 1
+          if i % 2 == 0:
+              dp[i] = min(dp[i], dp[i // 2] + 1)
+          if i % 3 == 0:
+              dp[i] = min(dp[i], dp[i // 3] + 1)
+      res = dp[n]
+    check: |
+      assert res == 3, f"res = {res!r}  (10 -> 9 -> 3 -> 1)"
+      assert dp[6] == 2, f"dp[6] = {dp[6]!r}"
+classics:
+  - id: house-robber
+    title: House Robber
+    url: https://leetcode.com/problems/house-robber/
+    difficulty: Medium
+    prompt: |
+      `nums[i]` is the money in house `i`. You can't rob two adjacent houses.
+      Return the maximum amount you can rob. Aim for O(1) extra space.
+    starter: |
+      def rob(nums):
+          pass
+    hints:
+      - "State: best loot from the first i houses. Last choice: rob house i-1 or not."
+      - "dp[i] = max(dp[i-1], dp[i-2] + nums[i-1]). Only two previous values matter."
+    solution: |
+      def rob(nums):
+          prev2, prev1 = 0, 0
+          for x in nums:
+              prev2, prev1 = prev1, max(prev1, prev2 + x)
+          return prev1
+    check: |
+      r = rob([1, 2, 3, 1])
+      assert r == 4, f"[1,2,3,1] -> {r!r}"
+      r = rob([2, 7, 9, 3, 1])
+      assert r == 12, f"[2,7,9,3,1] -> {r!r}"
+      r = rob([5])
+      assert r == 5, f"[5] -> {r!r}"
+      r = rob([2, 1, 1, 2])
+      assert r == 4, f"[2,1,1,2] -> {r!r}  (skipping two in a row is allowed)"
+      r = rob([0, 0, 0])
+      assert r == 0, f"[0,0,0] -> {r!r}"
+    takeaway: "Take-or-skip with an adjacency ban: dp[i] = max(skip, take + dp[i-2]); roll it into two variables."
+  - id: decode-ways
+    title: Decode Ways
+    url: https://leetcode.com/problems/decode-ways/
+    difficulty: Medium
+    prompt: |
+      Letters map to numbers `A=1 ... Z=26`. Given a digit string `s`, return how many ways it can be decoded.
+      `"06"` is not a valid code for `F`.
+    starter: |
+      def numDecodings(s):
+          pass
+    hints:
+      - "State: dp[i] = ways to decode the prefix s[:i]. dp[0] = 1 (the empty prefix)."
+      - The last letter used either 1 digit (must not be "0") or 2 digits (must be between "10" and "26").
+      - Add the two cases. Only dp[i-1] and dp[i-2] are read, so two variables are enough.
+    solution: |
+      def numDecodings(s):
+          prev2, prev1 = 0, 1          # dp[i-2], dp[i-1]; start: dp[0] = 1
+          for i in range(1, len(s) + 1):
+              cur = 0
+              if s[i - 1] != "0":
+                  cur += prev1
+              if i >= 2 and "10" <= s[i - 2:i] <= "26":
+                  cur += prev2
+              prev2, prev1 = prev1, cur
+          return prev1
+    check: |
+      for s, want in [("12", 2), ("226", 3), ("06", 0), ("0", 0), ("10", 1), ("2101", 1), ("27", 1), ("11106", 2)]:
+          got = numDecodings(s)
+          assert got == want, f"numDecodings({s!r}) = {got!r}, expected {want}"
+    takeaway: "Counting ways over a string: dp[i] = sum over 'how long was the last piece', each guarded by its validity check."

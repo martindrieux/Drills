@@ -1,0 +1,274 @@
+id: autograd
+title: Autograd - backward, grads, no_grad, detach
+intro: |
+  Autograd records operations on tensors that require grad and replays them backward.
+  Interviewers probe the mechanics: gradients accumulate, updates must happen under `no_grad`,
+  and `.item()` / `.detach()` keep logging from leaking memory.
+problems:
+  - Write one gradient-descent step by hand, without an optimizer
+  - Fit linear regression with raw tensors
+  - Why does my loss memory grow every iteration?
+  - Gradient of the output with respect to the input (saliency)
+  - Gradient accumulation over micro-batches
+atoms: []
+skills:
+  - id: autograd.requires-grad
+    name: requires_grad=True, backward(), .grad
+    teach: |
+      ```python
+      # requires_grad=True -> autograd records every op on this (float) tensor
+      x = torch.tensor([1., 2.], requires_grad=True)
+      # y.backward() -> writes dy/dx into x.grad for every tracked input x; y must be a scalar
+      (x ** 2).sum().backward()
+      # x.grad -> the gradient (None before any backward)
+      x.grad                    # tensor([2., 4.])
+      # t.requires_grad_() -> turn tracking on, in place, for an existing tensor
+      w = torch.ones(3).requires_grad_()
+      ```
+      Pitfall: `backward()` on a non-scalar raises; reduce with `.sum()` / `.mean()` first.
+    cards:
+      - id: a
+        prompt: |
+          Set: `x` = tensor `3.0` that requires grad (at creation) · backpropagate `y = x**2 + 2*x` ·
+          `gx` = the gradient read from `x` · turn tracking on **in place** for the existing `w`, then backpropagate `(w ** 2).sum()`.
+        setup: |
+          import torch
+          w = torch.tensor([1.0, 2.0])
+        solution: |
+          x = torch.tensor(3.0, requires_grad=True)
+          y = x ** 2 + 2 * x
+          y.backward()
+          gx = x.grad
+          w.requires_grad_()
+          (w ** 2).sum().backward()
+        check: |
+          assert x.grad is not None and x.grad.item() == 8.0, f"x.grad = {x.grad}"
+          assert gx is not None and gx.item() == 8.0, f"gx = {gx}"
+          assert w.requires_grad, "w does not require grad: use w.requires_grad_()"
+          assert w.grad is not None and w.grad.tolist() == [2.0, 4.0], f"w.grad = {w.grad}"
+      - id: b
+        prompt: "Saliency: enable grad on the **input** `x`, backpropagate `model(x).sum()`, and set `gx` to the gradient w.r.t. `x`."
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          model = nn.Linear(3, 1)
+          x = torch.randn(2, 3)
+        solution: |
+          x.requires_grad_()
+          model(x).sum().backward()
+          gx = x.grad
+        check: |
+          exp = model.weight.detach().expand(2, 3)
+          assert gx is not None and gx.shape == (2, 3), f"gx = {gx}"
+          assert torch.allclose(gx, exp), f"gx = {gx} (expected each row = model.weight)"
+
+  - id: autograd.zero-grad
+    name: grads accumulate - grad.zero_(), zero_grad()
+    teach: |
+      Each `backward()` **adds** into `.grad`, so reset before every step.
+
+      ```python
+      # t.grad.zero_() -> reset one tensor's gradient in place
+      x.grad.zero_()
+      # opt.zero_grad() -> every parameter's .grad becomes None
+      opt.zero_grad()
+      # model.zero_grad() -> same, for all parameters of a module
+      model.zero_grad()
+      ```
+    cards:
+      - id: a
+        prompt: |
+          All three hold stale gradients. Reset `x.grad` in place, then backpropagate `(x ** 2).sum()` ·
+          clear the grads of `model` through the optimizer `opt` (they become `None`) ·
+          clear the grads of `net` with the module's own method.
+        setup: |
+          import torch
+          import torch.nn as nn
+          x = torch.tensor([1.0, 2.0], requires_grad=True)
+          (x * 3).sum().backward()
+          model = nn.Linear(3, 1)
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          model(torch.randn(4, 3)).sum().backward()
+          net = nn.Linear(2, 1)
+          net(torch.randn(4, 2)).sum().backward()
+        solution: |
+          x.grad.zero_()
+          (x ** 2).sum().backward()
+          opt.zero_grad()
+          net.zero_grad()
+        check: |
+          assert torch.equal(x.grad, torch.tensor([2.0, 4.0])), f"x.grad = {x.grad} (expected [2, 4])"
+          mg = [p.grad for p in model.parameters()]
+          assert all(g is None for g in mg), f"model grads = {mg}"
+          ng = [p.grad for p in net.parameters()]
+          assert all(g is None for g in ng), f"net grads = {ng}"
+      - id: c
+        prompt: Gradient accumulation. Backpropagate `l1 = 3 * w` and then `l2 = w ** 2` separately, without zeroing, so `w.grad` holds the sum of both gradients.
+        setup: |
+          import torch
+          w = torch.tensor(2.0, requires_grad=True)
+        solution: |
+          l1 = 3 * w
+          l1.backward()
+          l2 = w ** 2
+          l2.backward()
+        check: |
+          assert w.grad is not None and w.grad.item() == 7.0, f"w.grad = {w.grad} (expected 3 + 4 = 7)"
+
+  - id: autograd.no-grad
+    name: torch.no_grad(), torch.inference_mode()
+    teach: |
+      ```python
+      # with torch.no_grad(): -> ops inside record no graph (outputs don't require grad)
+      with torch.no_grad():
+          out = model(x)
+      # torch.inference_mode() -> same, stricter and faster: outputs can never enter autograd later
+      with torch.inference_mode():
+          out = model(x)
+      # @torch.no_grad() -> decorator form, for a whole function
+      @torch.no_grad()
+      def predict(model, x): return model(x)
+      ```
+      Pitfall: `model.eval()` only switches dropout / batchnorm; it does **not** disable gradients.
+    cards:
+      - id: a
+        prompt: |
+          Set: `y` = `w * 2` under `torch.no_grad()` · `out` = `model(x)` under `torch.inference_mode()` ·
+          define `predict(model, x)` returning `model(x)`, decorated so it never builds a graph.
+        setup: |
+          import torch
+          import torch.nn as nn
+          w = torch.tensor([1.0, 2.0], requires_grad=True)
+          model = nn.Linear(4, 2)
+          x = torch.randn(3, 4)
+        solution: |
+          with torch.no_grad():
+              y = w * 2
+          with torch.inference_mode():
+              out = model(x)
+
+          @torch.no_grad()
+          def predict(model, x):
+              return model(x)
+        check: |
+          assert torch.equal(y, torch.tensor([2.0, 4.0])), f"y = {y}"
+          assert not y.requires_grad, "y requires grad: compute it under torch.no_grad()"
+          assert out.shape == (3, 2) and out.is_inference(), "out was not computed under torch.inference_mode()"
+          p = predict(model, x)
+          assert p.shape == (3, 2) and not p.requires_grad, "predict output requires grad: decorate with @torch.no_grad()"
+      - id: c
+        prompt: "Evaluation: switch `model` to eval mode, then without building a graph compute `acc`, the accuracy (float tensor) of `model(x).argmax(dim=1)` against `y`."
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          model = nn.Sequential(nn.Linear(4, 3), nn.Dropout(0.5))
+          x = torch.randn(8, 4)
+          y = torch.randint(0, 3, (8,))
+          seen = []
+          model.register_forward_hook(lambda m, i, o: seen.append(torch.is_grad_enabled()))
+        solution: |
+          model.eval()
+          with torch.no_grad():
+              acc = (model(x).argmax(dim=1) == y).float().mean()
+        check: |
+          assert not model.training, "model is still in train mode: call model.eval()"
+          assert seen and seen[-1] is False, "grad was enabled during the forward: wrap it in torch.no_grad()"
+          with torch.no_grad():
+              exp = (model(x).argmax(dim=1) == y).float().mean()
+          assert torch.is_tensor(acc) and torch.allclose(acc, exp), f"acc = {acc}, expected {exp}"
+
+  - id: autograd.detach
+    name: detach() to stop gradients, .item() for logging
+    teach: |
+      ```python
+      # y.detach() -> same data (shared memory), cut from the graph: no gradient flows back through it
+      target = y.detach()
+      # loss.item() -> Python float, keeps no graph alive
+      running += loss.item()
+      ```
+      Pitfall: `running += loss` keeps every step's graph alive, so memory grows each iteration.
+    cards:
+      - id: a
+        prompt: "Set: `target` = the values of `y` cut from the graph · `running` = `running` plus `loss` as a plain Python float."
+        setup: |
+          import torch
+          w = torch.tensor([1.0, 2.0], requires_grad=True)
+          y = w * 3
+          loss = (w ** 2).sum()
+          running = 1.0
+        solution: |
+          target = y.detach()
+          running += loss.item()
+        check: |
+          assert torch.equal(target, torch.tensor([3.0, 6.0])), f"target = {target}"
+          assert not target.requires_grad, "target still requires grad"
+          assert type(running) is float, f"running is a {type(running).__name__}: use loss.item()"
+          assert running == 6.0, f"running = {running}"
+      - id: c
+        prompt: Compute `loss = (w * w).sum()` but treat the **second** factor as a constant (stop its gradient), then backpropagate.
+        setup: |
+          import torch
+          w = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)
+        solution: |
+          loss = (w * w.detach()).sum()
+          loss.backward()
+        check: |
+          assert w.grad is not None, "w.grad is None: did you call backward()?"
+          assert torch.equal(w.grad, w.detach()), f"w.grad = {w.grad} (expected w, not 2w)"
+
+  - id: autograd.manual-sgd
+    name: one manual gradient-descent step
+    teach: |
+      ```python
+      loss = ((x @ w + b - y) ** 2).mean()
+      loss.backward()
+      with torch.no_grad():         # the update itself must not be tracked
+          w -= lr * w.grad          # in place: w stays the tracked tensor
+          b -= lr * b.grad
+          w.grad.zero_(); b.grad.zero_()
+      ```
+      Pitfall: `w = w - lr * w.grad` builds a new, untracked-as-input tensor, so the next `w.grad` is `None`.
+    cards:
+      - id: a
+        prompt: "One step of linear regression with `lr = 0.1`: MSE `loss` of `x @ w + b` against `y`, backward, update `w` and `b` in place, zero both grads."
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          x = torch.randn(8, 3)
+          y = torch.randn(8, 1)
+          w = torch.zeros(3, 1, requires_grad=True)
+          b = torch.zeros(1, requires_grad=True)
+        solution: |
+          loss = ((x @ w + b - y) ** 2).mean()
+          loss.backward()
+          with torch.no_grad():
+              w -= 0.1 * w.grad
+              b -= 0.1 * b.grad
+              w.grad.zero_()
+              b.grad.zero_()
+        check: |
+          ew = 0.1 * 2 * (x.T @ y) / 8
+          eb = 0.1 * 2 * y.mean().reshape(1)
+          assert w.is_leaf and b.is_leaf, "w and b must stay leaves (update in place under no_grad)"
+          assert torch.allclose(w.detach(), ew, atol=1e-6), f"w = {w.detach().flatten()}"
+          assert torch.allclose(b.detach(), eb, atol=1e-6), f"b = {b.detach()}"
+          assert w.grad is not None and b.grad is not None, "w.grad / b.grad is None: call loss.backward()"
+          assert torch.all(w.grad == 0) and torch.all(b.grad == 0), "grads were not zeroed"
+      - id: c
+        prompt: "Fit `w` so that `w * x` matches `y` (true slope 2): run 100 manual SGD steps with `lr = 0.1` on the MSE loss."
+        setup: |
+          import torch
+          x = torch.linspace(-1, 1, 10)
+          y = 2 * x
+          w = torch.tensor(0.0, requires_grad=True)
+        solution: |
+          for _ in range(100):
+              loss = ((w * x - y) ** 2).mean()
+              loss.backward()
+              with torch.no_grad():
+                  w -= 0.1 * w.grad
+                  w.grad.zero_()
+        check: |
+          assert abs(w.item() - 2.0) < 1e-2, f"w = {w.item():.4f} (expected ~2.0)"

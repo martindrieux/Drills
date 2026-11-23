@@ -1,0 +1,285 @@
+id: losses-optim
+title: Losses & optimizers
+intro: |
+  Picking the right loss with the right input format is where most interview bugs hide: raw logits
+  vs probabilities, long vs float targets, shapes for sequences. Then the optimizer: SGD, Adam,
+  AdamW, and per-group learning rates.
+problems:
+  - Train a multi-class classifier
+  - Binary classification / multi-label with BCE
+  - Language-model loss over a (B, T, V) logits tensor
+  - Fine-tune with a smaller learning rate for the backbone
+atoms: []
+skills:
+  - id: losses-optim.cross-entropy
+    name: nn.CrossEntropyLoss
+    teach: |
+      ```python
+      logits, y = torch.tensor([[2., 0, 0, 0], [0, 0, 0, 0]]), torch.tensor([0, 3])
+      # nn.CrossEntropyLoss()(logits, y) -> mean loss; logits RAW (N, C), y class ids (N,) long
+      nn.CrossEntropyLoss()(logits, y)                       # 0.864  (rows: 0.341, 1.386)
+      # label_smoothing=eps -> target = 1 - eps on the true class + eps spread over all classes
+      nn.CrossEntropyLoss(label_smoothing=0.1)(logits, y)    # 0.939
+      # ignore_index=k -> rows whose target == k are left out of the loss and the mean (default -100)
+      nn.CrossEntropyLoss(ignore_index=0)(logits, y)         # 1.386  (row 0 has y == 0: skipped)
+      ```
+      Pitfall: don't softmax the logits first; the loss applies log-softmax itself.
+    cards:
+      - id: a
+        prompt: |
+          With `nn.CrossEntropyLoss` on `logits` and class ids `y`, set: `loss` = the mean loss ·
+          `smooth` = same with label smoothing `0.1` · `masked` = same but skipping targets equal to `PAD`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          PAD = 0
+          logits = torch.randn(5, 4)
+          y = torch.tensor([3, 0, 1, 0, 2])
+        solution: |
+          loss = nn.CrossEntropyLoss()(logits, y)
+          smooth = nn.CrossEntropyLoss(label_smoothing=0.1)(logits, y)
+          masked = nn.CrossEntropyLoss(ignore_index=PAD)(logits, y)
+        check: |
+          logp = torch.log_softmax(logits, dim=1)
+          nll = -logp[torch.arange(5), y]
+          assert torch.allclose(loss, nll.mean()), f"loss = {loss}, expected {nll.mean()}"
+          es = (0.9 * nll + 0.1 * -logp.mean(dim=1)).mean()
+          assert torch.allclose(smooth, es), f"smooth = {smooth}, expected {es}"
+          em = nll[y != PAD].mean()
+          assert torch.allclose(masked, em), f"masked = {masked}, expected {em}"
+      - id: c
+        prompt: |
+          Token tagging: `y` holds one tag id per token, `PAD` marks padding. Build **one** `loss_fn` that both skips `PAD`
+          and uses label smoothing `0.1`, set `loss = loss_fn(logits, y)`, and `n_real` = number of non-pad tokens (an int).
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          PAD = 0
+          logits = torch.randn(6, 5)
+          y = torch.tensor([3, 0, 1, 4, 0, 2])
+        solution: |
+          loss_fn = nn.CrossEntropyLoss(ignore_index=PAD, label_smoothing=0.1)
+          loss = loss_fn(logits, y)
+          n_real = (y != PAD).sum().item()
+        check: |
+          keep = y != PAD
+          logp = torch.log_softmax(logits[keep], dim=1)
+          nll = -logp[torch.arange(int(keep.sum())), y[keep]]
+          exp = (0.9 * nll + 0.1 * -logp.mean(dim=1)).mean()
+          assert torch.allclose(loss, exp), f"loss = {loss}, expected {exp} (ignore_index AND label_smoothing)"
+          assert n_real == 4 and isinstance(n_real, int), f"n_real = {n_real!r}, expected 4"
+
+  - id: losses-optim.bce-mse
+    name: BCEWithLogitsLoss, MSELoss, reduction
+    teach: |
+      ```python
+      # nn.BCEWithLogitsLoss()(logits, y) -> binary CE on RAW logits; y FLOAT 0./1., same shape
+      nn.BCEWithLogitsLoss()(torch.zeros(3), torch.tensor([1., 0., 1.]))   # log(2) = 0.693
+      # nn.MSELoss()(pred, target) -> mean squared error
+      nn.MSELoss()(torch.tensor([1., 3.]), torch.zeros(2))                 # 5.0
+      # reduction="mean" (default) | "sum" | "none" (per element) -> accepted by every loss
+      nn.MSELoss(reduction="sum")(torch.tensor([1., 3.]), torch.zeros(2))  # 10.0
+      ```
+      Pitfall: integer 0/1 targets make BCE raise a dtype error; pass `y.float()`.
+    cards:
+      - id: a
+        prompt: |
+          Set: `loss` = mean binary cross-entropy of raw `logits` against the integer 0/1 labels `y` ·
+          `mse` = mean squared error of `pred` vs `target` · `sse` = the **summed** squared error, with the same loss class.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          logits = torch.randn(4)
+          y = torch.tensor([1, 0, 1, 1])
+          pred = torch.tensor([1.0, 2.0, 3.0])
+          target = torch.tensor([1.5, 2.0, 1.0])
+        solution: |
+          loss = nn.BCEWithLogitsLoss()(logits, y.float())
+          mse = nn.MSELoss()(pred, target)
+          sse = nn.MSELoss(reduction="sum")(pred, target)
+        check: |
+          p = torch.sigmoid(logits)
+          exp = -(y * p.log() + (1 - y) * (1 - p).log()).mean()
+          assert torch.allclose(loss, exp), f"loss = {loss}, expected {exp}"
+          assert torch.allclose(mse, torch.tensor(4.25 / 3)), f"mse = {mse}, expected 1.4167"
+          assert torch.allclose(sse, torch.tensor(4.25)), f"sse = {sse}, expected 4.25"
+      - id: c
+        prompt: |
+          Multi-label: `logits` is `(4, 3)` (4 samples, 3 independent labels), `y` the float 0/1 targets.
+          Set `per_sample` = the BCE-with-logits loss of each sample, averaged over its 3 labels (shape `(4,)`).
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          logits = torch.randn(4, 3)
+          y = torch.tensor([[1., 0., 1.], [0., 0., 1.], [1., 1., 1.], [0., 1., 0.]])
+        solution: |
+          per_sample = nn.BCEWithLogitsLoss(reduction="none")(logits, y).mean(dim=1)
+        check: |
+          p = torch.sigmoid(logits)
+          exp = -(y * p.log() + (1 - y) * (1 - p).log()).mean(dim=1)
+          assert per_sample.shape == (4,), f"per_sample.shape = {tuple(per_sample.shape)}"
+          assert torch.allclose(per_sample, exp), f"per_sample = {per_sample}, expected {exp}"
+
+  - id: losses-optim.functional
+    name: F.cross_entropy / F.mse_loss (and sequences)
+    teach: |
+      ```python
+      # F.mse_loss(pred, target) / F.cross_entropy(logits, y) -> the loss modules as plain functions
+      F.mse_loss(torch.tensor([1., 3.]), torch.zeros(2))    # 5.0
+      logits, y = torch.tensor([[2., 0, 0, 0], [0, 0, 0, 0]]), torch.tensor([0, 3])
+      F.cross_entropy(logits, y)                            # 0.864
+      # F.log_softmax(x, dim) -> log(softmax(x));  F.nll_loss(logp, y) -> mean of -logp[i, y[i]]
+      F.nll_loss(F.log_softmax(logits, dim=-1), y)          # 0.864, same as F.cross_entropy
+      ```
+      Pitfall: `cross_entropy` wants classes on dim 1; flatten `(B, T, V)` logits to `(B*T, V)` and targets to `(B*T,)`.
+    cards:
+      - id: a
+        prompt: |
+          With `F` functions only, set: `loss` = MSE of `pred` vs `target` · `ce` = cross-entropy of `logits` vs `y` ·
+          `nll` = the same cross-entropy built from `F.log_softmax` then `F.nll_loss`.
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          pred = torch.tensor([0.0, 1.0, 2.0])
+          target = torch.tensor([1.0, 1.0, 0.0])
+          logits = torch.randn(4, 5)
+          y = torch.tensor([4, 0, 2, 2])
+        solution: |
+          loss = F.mse_loss(pred, target)
+          ce = F.cross_entropy(logits, y)
+          nll = F.nll_loss(F.log_softmax(logits, dim=-1), y)
+        check: |
+          assert torch.allclose(loss, torch.tensor(5 / 3)), f"loss = {loss}, expected 1.6667"
+          exp = -torch.log_softmax(logits, dim=1)[torch.arange(4), y].mean()
+          assert torch.allclose(ce, exp), f"ce = {ce}, expected {exp}"
+          assert torch.allclose(nll, exp), f"nll = {nll}, expected {exp}"
+      - id: c
+        prompt: "`logits` is `(B, T, V)` and `targets` is `(B, T)`. Compute the mean next-token cross-entropy `loss` over all positions."
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          B, T, V = 2, 3, 5
+          logits = torch.randn(B, T, V)
+          targets = torch.randint(0, V, (B, T))
+        solution: |
+          loss = F.cross_entropy(logits.view(-1, V), targets.view(-1))
+        check: |
+          logp = torch.log_softmax(logits, dim=-1)
+          exp = -logp.gather(-1, targets[..., None]).mean()
+          assert torch.allclose(loss, exp), f"loss = {loss}, expected {exp}"
+
+  - id: losses-optim.optimizers
+    name: torch.optim.SGD / Adam / AdamW
+    teach: |
+      ```python
+      # torch.optim.SGD(params, lr, momentum=0)
+      opt = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+      # torch.optim.Adam(params, lr=1e-3, betas=(0.9, 0.999))
+      opt = torch.optim.Adam(model.parameters(), lr=1e-3, betas=(0.9, 0.98))
+      # torch.optim.AdamW(params, lr, weight_decay) -> Adam with decoupled weight decay (transformers)
+      opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Over `model`'s parameters, set: `opt` = SGD, lr `0.1`, momentum `0.9` · `adam` = Adam, lr `3e-4`, betas `(0.9, 0.98)` ·
+          `adamw` = AdamW, lr `1e-3`, weight decay `0.01`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Linear(3, 1)
+        solution: |
+          opt = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+          adam = torch.optim.Adam(model.parameters(), lr=3e-4, betas=(0.9, 0.98))
+          adamw = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
+        check: |
+          assert isinstance(opt, torch.optim.SGD), f"opt = {type(opt).__name__}"
+          g = opt.param_groups[0]
+          assert g["lr"] == 0.1 and g["momentum"] == 0.9, f"lr = {g['lr']}, momentum = {g['momentum']}"
+          assert len(g["params"]) == 2, "pass model.parameters()"
+          assert type(adam) is torch.optim.Adam, f"adam = {type(adam).__name__}"
+          g = adam.param_groups[0]
+          assert g["lr"] == 3e-4 and tuple(g["betas"]) == (0.9, 0.98), f"adam lr = {g['lr']}, betas = {g['betas']}"
+          assert type(adamw) is torch.optim.AdamW, f"adamw = {type(adamw).__name__}"
+          g = adamw.param_groups[0]
+          assert g["lr"] == 1e-3 and g["weight_decay"] == 0.01, f"adamw lr = {g['lr']}, weight_decay = {g['weight_decay']}"
+      - id: b
+        prompt: |
+          `model.backbone` is frozen (`requires_grad=False`). Create `opt`, AdamW with lr `1e-4` and weight decay `0.01`,
+          over **only** the parameters of `model` that require grad.
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Module()
+          model.backbone = nn.Linear(8, 8)
+          model.head = nn.Linear(8, 2)
+          model.backbone.requires_grad_(False)
+        solution: |
+          opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4, weight_decay=0.01)
+        check: |
+          assert type(opt) is torch.optim.AdamW, f"opt = {type(opt).__name__}"
+          g = opt.param_groups[0]
+          assert g["lr"] == 1e-4 and g["weight_decay"] == 0.01, f"lr = {g['lr']}, weight_decay = {g['weight_decay']}"
+          got = {id(p) for p in g["params"]}
+          assert got == {id(p) for p in model.head.parameters()}, f"{len(got)} params in opt, expected only the 2 head params"
+
+  - id: losses-optim.param-groups
+    name: param groups and per-group lr
+    teach: |
+      ```python
+      # Optim([{"params": ..., option: value}, ...], **defaults) -> per-group options; missing keys use the defaults
+      opt = torch.optim.AdamW([
+          {"params": model.backbone.parameters(), "lr": 1e-5},
+          {"params": model.head.parameters()},             # lr=1e-3 from the defaults
+      ], lr=1e-3)
+      # opt.param_groups -> list of dicts; read or assign g["lr"] to change a group's lr
+      opt.param_groups[0]["lr"]                            # 1e-05
+      ```
+      Pitfall: a parameter listed in two groups makes the optimizer raise.
+    cards:
+      - id: a
+        prompt: |
+          Create `opt`, SGD with lr `1e-4` for `model.backbone` and the default lr `1e-3` for `model.head` ·
+          set `lr0` = the backbone group's lr, read from `opt` · then change the head group's lr to `5e-4`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Module()
+          model.backbone = nn.Linear(4, 4)
+          model.head = nn.Linear(4, 2)
+        solution: |
+          opt = torch.optim.SGD([
+              {"params": model.backbone.parameters(), "lr": 1e-4},
+              {"params": model.head.parameters()},
+          ], lr=1e-3)
+          lr0 = opt.param_groups[0]["lr"]
+          opt.param_groups[1]["lr"] = 5e-4
+        check: |
+          assert opt.param_groups[1]["params"][0] is model.head.weight, "group 1 should be the head"
+          assert opt.defaults["lr"] == 1e-3, f"default lr = {opt.defaults['lr']}, expected 1e-3"
+          assert lr0 == 1e-4, f"lr0 = {lr0}"
+          lrs = [g["lr"] for g in opt.param_groups]
+          assert lrs == [1e-4, 5e-4], f"lrs = {lrs}"
+      - id: b
+        prompt: |
+          Manual lr decay: validation stalled, so **halve** the lr of every param group of `opt` (each group keeps its own ratio).
+          Then set `lrs` = the list of group lrs.
+        setup: |
+          import torch
+          import torch.nn as nn
+          a, b = nn.Linear(2, 2), nn.Linear(2, 2)
+          opt = torch.optim.Adam([{"params": a.parameters(), "lr": 1e-4}, {"params": b.parameters()}], lr=1e-3)
+        solution: |
+          for g in opt.param_groups:
+              g["lr"] *= 0.5
+          lrs = [g["lr"] for g in opt.param_groups]
+        check: |
+          real = [g["lr"] for g in opt.param_groups]
+          assert all(abs(r - e) < 1e-12 for r, e in zip(real, [5e-5, 5e-4])), f"group lrs = {real}, expected [5e-05, 0.0005]"
+          assert lrs == real, f"lrs = {lrs}, but the groups hold {real}"

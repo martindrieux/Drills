@@ -1,0 +1,1685 @@
+id: trees
+title: Binary tree idioms
+intro: |
+  Almost every tree problem is one of a handful of shapes: a recursive function that **returns** a value,
+  one that **passes state down**, or a **level-by-level** BFS. Each card gives you `TreeNode` and
+  `build(level_order_list)` (`None` = no node), so you only write the idiom.
+problems:
+  - Maximum Depth of Binary Tree
+  - Invert Binary Tree
+  - Same Tree
+  - Binary Tree Level Order Traversal
+  - Validate Binary Search Tree
+  - Count Good Nodes in Binary Tree
+atoms: [graph-dfs, graph-bfs, py-deque, py-stack]
+skills:
+  - id: trees.dfs-return
+    name: recursive dfs that returns a value
+    teach: |
+      ```python
+      def max_depth(node):
+          if not node:             # handle None first
+              return 0
+          return 1 + max(max_depth(node.left), max_depth(node.right))   # combine the children
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node).
+          - **Write** `max_depth(node)`, recursively.
+          - **Returns**: `int`, the number of **nodes** on the longest root-to-leaf path; `0` for an empty tree (`node is None`).
+          - **Checked on**: `build([3, 9, 20, None, None, 15, 7])` (3), empty, one node, one-sided chains, and 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def max_depth(node):
+              if not node:
+                  return 0
+              return 1 + max(max_depth(node.left), max_depth(node.right))
+        check: |
+          res = max_depth(build([3, 9, 20, None, None, 15, 7]))
+          assert res == 3, f"max_depth = {res!r}"
+          assert max_depth(None) == 0, f"max_depth(None) = {max_depth(None)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _ref(t):  # iterative: deepest (node, depth) pair
+              best, stack = 0, [(t, 1)]
+              while stack:
+                  n, d = stack.pop()
+                  if n:
+                      best = max(best, d)
+                      stack += [(n.left, d + 1), (n.right, d + 1)]
+              return best
+          edge = [([],), ([7],), ([1, 2],), ([1, None, 2],), ([1, 2, 3, 4, None, None, 5, 6],)]
+          against(_on_tree(max_depth), _on_tree(_ref), edge + rand_cases(lambda r: (_rand_tree(r),), 300), name="max_depth", show=_show)
+      - id: b
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node).
+          - **Write** `count(node)`, recursively.
+          - **Returns**: `int`, the total number of nodes; `0` for an empty tree.
+          - **Checked on**: `build([1, 2, 3, 4, None, 5])` (5), empty, one node, chains, and 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def count(node):
+              if not node:
+                  return 0
+              return 1 + count(node.left) + count(node.right)
+        check: |
+          res = count(build([1, 2, 3, 4, None, 5]))
+          assert res == 5, f"count = {res!r}"
+          assert count(None) == 0, f"count(None) = {count(None)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _ref(t):  # non-None entries of the level-order list
+              return sum(v is not None for v in _lo(t))
+          edge = [([],), ([7],), ([1, 2],), ([1, None, 2],), ([0, 0, 0],)]
+          against(_on_tree(count), _on_tree(_ref), edge + rand_cases(lambda r: (_rand_tree(r),), 300), name="count", show=_show)
+      - id: c
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node).
+          - **Write** `leaves(node)`, recursively (you need a second base case, for a leaf).
+          - **Returns**: `int`, the number of leaves (nodes with no left **and** no right child); `0` for an empty tree.
+          - **Checked on**: `build([1, 2, 3, 4, 5, None, 6])` (3), empty, one node (1), nodes with a single child, and 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def leaves(node):
+              if not node:
+                  return 0
+              if not node.left and not node.right:
+                  return 1
+              return leaves(node.left) + leaves(node.right)
+        check: |
+          res = leaves(build([1, 2, 3, 4, 5, None, 6]))
+          assert res == 3, f"leaves = {res!r}"
+          assert leaves(None) == 0, f"leaves(None) = {leaves(None)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _ref(t):  # iterative: count nodes without children
+              total, stack = 0, [t]
+              while stack:
+                  n = stack.pop()
+                  if n:
+                      total += not n.left and not n.right
+                      stack += [n.left, n.right]
+              return total
+          edge = [([],), ([7],), ([1, 2],), ([1, None, 2],), ([1, 2, 3, None, 4],)]
+          against(_on_tree(leaves), _on_tree(_ref), edge + rand_cases(lambda r: (_rand_tree(r),), 300), name="leaves", show=_show)
+
+  - id: trees.dfs-state
+    name: passing state down the recursion
+    teach: |
+      ```python
+      def depth_sum(node, depth):    # state from above = an argument: each call has its own, nothing to undo
+          if not node:
+              return 0
+          return depth + depth_sum(node.left, depth + 1) + depth_sum(node.right, depth + 1)
+      depth_sum(build([1, 2, 3]), 0)   # 2  (0 + 1 + 1)
+      # leaf test (for root-to-leaf answers): not node.left and not node.right
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node); `root = build([5, 4, 8, 11, None, 13, 4, 7, 2, None, None, None, 1])`.
+          - **Write** `has_path_sum(node, target)`, recursively, passing `target - node.val` down.
+          - **Returns**: `True` if some root-to-**leaf** path (ending at a node with no children) sums to `target`, else `False`; `False` for an empty tree, even when `target == 0`.
+          - **Checked on**: `root` with 22 and 26 (True) and 9 (a path that stops above a leaf: False), empty, nodes with one child, negative values, and 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+
+          root = build([5, 4, 8, 11, None, 13, 4, 7, 2, None, None, None, 1])
+        solution: |
+          def has_path_sum(node, target):
+              if not node:
+                  return False
+              if not node.left and not node.right:
+                  return node.val == target
+              rest = target - node.val
+              return has_path_sum(node.left, rest) or has_path_sum(node.right, rest)
+        check: |
+          assert has_path_sum(root, 22) is True, f"has_path_sum(root, 22) = {has_path_sum(root, 22)!r}"
+          assert has_path_sum(root, 26) is True, f"has_path_sum(root, 26) = {has_path_sum(root, 26)!r}"
+          assert has_path_sum(root, 9) is False, f"has_path_sum(root, 9) = {has_path_sum(root, 9)!r} (5->4 does not end at a leaf)"
+          assert has_path_sum(None, 0) is False, f"has_path_sum(None, 0) = {has_path_sum(None, 0)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _sums(t):  # (sum from the root down to this node, is it a leaf?) for every node
+              out, stack = [], [(t, 0)]
+              while stack:
+                  n, s = stack.pop()
+                  if n:
+                      s += n.val
+                      out.append((s, not n.left and not n.right))
+                      stack += [(n.left, s), (n.right, s)]
+              return out
+          def _ref(t, target):
+              return any(leaf and s == target for s, leaf in _sums(t))
+          def _gen(r):
+              vals = _rand_tree(r)
+              sums = _sums(build(vals))
+              target = r.choice(sums)[0] if sums and r.random() < 0.7 else r.randint(-15, 15)  # often a sum stopping at an inner node
+              return (vals, target)
+          edge = [([], 0), ([1], 1), ([1], 0), ([1, 2], 1), ([1, 2], 3), ([1, None, 2], 1), ([-2, None, -3], -5), ([0, 1, 1], 0)]
+          against(_on_tree(has_path_sum), _on_tree(_ref), edge + rand_cases(_gen, 300), name="has_path_sum", show=_show)
+      - id: b
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node); `root = build([3, 1, 4, 3, None, 1, 5])`.
+          - **Write** `good(node, best)`, recursively, where `best` = the largest value on the path above `node`. It is called as `good(root, root.val)` on a non-empty tree.
+          - **Returns**: `int`, how many nodes (the root included) have `val >= ` every value above them (ties count as good); `0` for `node is None`.
+          - **Checked on**: `root` (4), one node, all-equal values, negative values, and 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+
+          root = build([3, 1, 4, 3, None, 1, 5])
+        solution: |
+          def good(node, best):
+              if not node:
+                  return 0
+              n = 1 if node.val >= best else 0
+              best = max(best, node.val)
+              return n + good(node.left, best) + good(node.right, best)
+        check: |
+          res = good(root, root.val)
+          assert res == 4, f"good(root, root.val) = {res!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _ref(t):  # iterative: carry the max of the values above each node
+              total, stack = 0, [(t, t.val)]
+              while stack:
+                  n, top = stack.pop()
+                  if n:
+                      total += n.val >= top
+                      stack += [(n.left, max(top, n.val)), (n.right, max(top, n.val))]
+              return total
+          def _gen(r):
+              return (_rand_tree(r) or [r.randint(-5, 5)],)
+          edge = [([5],), ([2, 2, 2],), ([-1, -2, -1],), ([3, 3, None, 4, 2],), ([1, None, 0, None, 2],)]
+          against(lambda vals: good(build(vals), vals[0]), lambda vals: _ref(build(vals)), edge + rand_cases(_gen, 300),
+                  name="good", show=lambda vals: f"(build({vals}), {vals[0]})")
+      - id: c
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node); `root = build([1, 2, 3, None, 5])` and `paths = []`.
+          - **Write** `dfs(node, path)`, where `path` is the string for the nodes above (`""` at the root); at each leaf it appends the full path to `paths`. Then call `dfs(root, "")`.
+          - **Result**: `paths` holds one `str` per root-to-leaf path, values joined by `"->"`, e.g. `"1->2->5"` (`"-1->-2"` with negatives); any order; nothing for an empty tree.
+          - **Checked on**: `root` (`["1->2->5", "1->3"]`), then your `dfs` re-run with `paths` emptied on empty, one-node, one-child and 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+
+          root = build([1, 2, 3, None, 5])
+          paths = []
+        solution: |
+          def dfs(node, path):
+              if not node:
+                  return
+              path += str(node.val)
+              if not node.left and not node.right:
+                  paths.append(path)
+              dfs(node.left, path + "->")
+              dfs(node.right, path + "->")
+          dfs(root, "")
+        check: |
+          assert sorted(paths) == ["1->2->5", "1->3"], f"paths = {paths!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _run(t):  # empty paths, run your dfs, compare in any order
+              paths.clear()
+              dfs(t, "")
+              return sorted(paths)
+          def _ref(t):  # iterative: carry the list of values above
+              out, stack = [], [(t, [])]
+              while stack:
+                  n, above = stack.pop()
+                  if n:
+                      here = above + [str(n.val)]
+                      if not n.left and not n.right:
+                          out.append("->".join(here))
+                      stack += [(n.left, here), (n.right, here)]
+              return sorted(out)
+          edge = [([],), ([7],), ([1, 2],), ([1, None, 2],), ([-1, -2, 3],), ([1, 1, 1],)]
+          against(_on_tree(_run), _on_tree(_ref), edge + rand_cases(lambda r: (_rand_tree(r),), 300),
+                  name="dfs", show=lambda vals: f"(build({vals}), '') then sorted(paths)")
+
+  - id: trees.bfs-levels
+    name: BFS level by level
+    teach: |
+      ```python
+      q = deque([root] if root else [])     # guard the empty tree
+      levels = []
+      while q:
+          level = []
+          for _ in range(len(q)):           # len(q) read once: exactly one level
+              node = q.popleft()
+              level.append(node.val)
+              if node.left: q.append(node.left)
+              if node.right: q.append(node.right)
+          levels.append(level)
+      # or carry the depth with each node: q = deque([(root, 1)]); node, d = q.popleft()
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node); `deque` is imported.
+          - **Write** `level_order(root)` with a deque (BFS, one level per pass). **Returns** `list[list[int]]`: the values level by level, top to bottom, each level left to right; `[]` for an empty tree.
+          - **Write** `depth(root)` with a deque of `(node, depth)` pairs. **Returns** `int`: the max depth counted in **nodes** (a lone root = 1); `0` for an empty tree.
+          - **Checked on**: `[3, 9, 20, None, None, 15, 7]`, `[1, 2, None, 4]`, `[5]`, empty, and 300 random trees.
+        setup: |
+          from collections import deque
+
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def level_order(root):
+              q = deque([root] if root else [])
+              levels = []
+              while q:
+                  level = []
+                  for _ in range(len(q)):
+                      node = q.popleft()
+                      level.append(node.val)
+                      if node.left:
+                          q.append(node.left)
+                      if node.right:
+                          q.append(node.right)
+                  levels.append(level)
+              return levels
+
+          def depth(root):
+              if not root:
+                  return 0
+              q, best = deque([(root, 1)]), 0
+              while q:
+                  node, d = q.popleft()
+                  best = max(best, d)
+                  for kid in (node.left, node.right):
+                      if kid:
+                          q.append((kid, d + 1))
+              return best
+        check: |
+          for vals, want in [([3, 9, 20, None, None, 15, 7], [[3], [9, 20], [15, 7]]), ([1, 2, None, 4], [[1], [2], [4]]), ([5], [[5]])]:
+              got = level_order(build(vals))
+              assert got == want, f"level_order({vals!r}) = {got!r}"
+          assert level_order(None) == [], f"level_order(None) = {level_order(None)!r}"
+          for vals, want in [([3, 9, 20, None, None, 15, 7], 3), ([1, 2, None, 4], 3), ([5], 1)]:
+              got = depth(build(vals))
+              assert got == want, f"depth({vals!r}) = {got!r}"
+          assert depth(None) == 0, f"depth(None) = {depth(None)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _levels(t):  # recursive: levels[d] collects the values at depth d, left to right
+              out = []
+              def go(n, d):
+                  if n:
+                      if d == len(out):
+                          out.append([])
+                      out[d].append(n.val)
+                      go(n.left, d + 1)
+                      go(n.right, d + 1)
+              go(t, 0)
+              return out
+          cases = [([],), ([1, None, 2, 3],), ([1, 2, 3, 4, None, None, 5],)] + rand_cases(lambda r: (_rand_tree(r),), 300)
+          against(_on_tree(level_order), _on_tree(_levels), cases, name="level_order", show=_show)
+          against(_on_tree(depth), _on_tree(lambda t: len(_levels(t))), cases, name="depth", show=_show)
+      - id: b
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node); `deque` is imported.
+          - **Write** `right_view(root)` with a level-by-level BFS.
+          - **Returns**: `list[int]`, the **last** (rightmost) value of each level, top to bottom; `[]` for an empty tree. The last node of a level can be a left child.
+          - **Checked on**: `[1, 2, 3, None, 5, None, 4]` (`[1, 3, 4]`), empty, `[1, 2]` (`[1, 2]`), and 300 random trees.
+        setup: |
+          from collections import deque
+
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def right_view(root):
+              q = deque([root] if root else [])
+              out = []
+              while q:
+                  for _ in range(len(q)):
+                      node = q.popleft()
+                      if node.left:
+                          q.append(node.left)
+                      if node.right:
+                          q.append(node.right)
+                  out.append(node.val)
+              return out
+        check: |
+          res = right_view(build([1, 2, 3, None, 5, None, 4]))
+          assert res == [1, 3, 4], f"right_view = {res!r}"
+          assert right_view(None) == [], f"right_view(None) = {right_view(None)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _levels(t):  # recursive: levels[d] collects the values at depth d, left to right
+              out = []
+              def go(n, d):
+                  if n:
+                      if d == len(out):
+                          out.append([])
+                      out[d].append(n.val)
+                      go(n.left, d + 1)
+                      go(n.right, d + 1)
+              go(t, 0)
+              return out
+          edge = [([],), ([7],), ([1, 2],), ([1, 2, 3, 4],), ([1, 2, 3, None, 4],)]
+          against(_on_tree(right_view), _on_tree(lambda t: [lvl[-1] for lvl in _levels(t)]), edge + rand_cases(lambda r: (_rand_tree(r),), 300),
+                  name="right_view", show=_show)
+      - id: c
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node); `deque` is imported.
+          - **Write** `min_depth(root)`: BFS over `(node, depth)` pairs, returning as soon as you pop a leaf.
+          - **Returns**: `int`, the number of **nodes** on the shortest root-to-**leaf** path (a node with one child is not a leaf); `0` for an empty tree.
+          - **Checked on**: `[3, 9, 20, None, None, 15, 7]` (2), the chain `[2, None, 3, None, 4]` (3), `[1, 2]` (2), empty, and 300 random trees.
+        setup: |
+          from collections import deque
+
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def min_depth(root):
+              if not root:
+                  return 0
+              q = deque([(root, 1)])
+              while q:
+                  node, d = q.popleft()
+                  if not node.left and not node.right:
+                      return d
+                  for kid in (node.left, node.right):
+                      if kid:
+                          q.append((kid, d + 1))
+        check: |
+          res = min_depth(build([3, 9, 20, None, None, 15, 7]))
+          assert res == 2, f"min_depth = {res!r}"
+          res = min_depth(build([2, None, 3, None, 4]))
+          assert res == 3, f"min_depth of a chain = {res!r}"
+          assert min_depth(None) == 0, f"min_depth(None) = {min_depth(None)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _ref(t):  # smallest depth among all leaves
+              if not t:
+                  return 0
+              depths, stack = [], [(t, 1)]
+              while stack:
+                  n, d = stack.pop()
+                  if not n.left and not n.right:
+                      depths.append(d)
+                  stack += [(k, d + 1) for k in (n.left, n.right) if k]
+              return min(depths)
+          edge = [([],), ([7],), ([1, 2],), ([1, None, 2],), ([1, 2, 3, 4],), ([1, 2, 3, 4, None, None, 5, 6],)]
+          against(_on_tree(min_depth), _on_tree(_ref), edge + rand_cases(lambda r: (_rand_tree(r),), 300), name="min_depth", show=_show)
+
+  - id: trees.iterative
+    name: iterative traversal with a stack
+    teach: |
+      ```python
+      # preorder: pop, record, push right THEN left (so left pops first)
+      stack, out = [root], []
+      while stack:
+          node = stack.pop()
+          if node:
+              out.append(node.val)
+              stack.append(node.right)
+              stack.append(node.left)
+      # inorder: walk left pushing, pop, record, go right
+      stack, cur, out = [], root, []
+      while stack or cur:
+          while cur:
+              stack.append(cur)
+              cur = cur.left
+          cur = stack.pop()
+          out.append(cur.val)
+          cur = cur.right
+      # depth too: push (node, depth) tuples, e.g. stack = [(root, 1)]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node). No recursion in any of the three.
+          - **Write** `preorder(root)` with a stack. **Returns** `list[int]`: node, then its left subtree, then its right subtree; `[]` for an empty tree.
+          - **Write** `inorder(root)` with a stack and a `cur` pointer. **Returns** `list[int]`: left subtree, node, right subtree; `[]` for an empty tree.
+          - **Write** `depth(root)` with a stack of `(node, depth)` tuples. **Returns** `int`: the max depth counted in **nodes**; `0` for an empty tree.
+          - **Checked on**: `[1, 2, 3, 4, 5]`, `[1, None, 2, 3]`, `[7]`, empty, and 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def preorder(root):
+              stack, out = [root], []
+              while stack:
+                  node = stack.pop()
+                  if node:
+                      out.append(node.val)
+                      stack.append(node.right)
+                      stack.append(node.left)
+              return out
+
+          def inorder(root):
+              stack, cur, out = [], root, []
+              while stack or cur:
+                  while cur:
+                      stack.append(cur)
+                      cur = cur.left
+                  cur = stack.pop()
+                  out.append(cur.val)
+                  cur = cur.right
+              return out
+
+          def depth(root):
+              res, stack = 0, [(root, 1)]
+              while stack:
+                  node, d = stack.pop()
+                  if node:
+                      res = max(res, d)
+                      stack.append((node.left, d + 1))
+                      stack.append((node.right, d + 1))
+              return res
+        check: |
+          cases = [
+              ([1, 2, 3, 4, 5], [1, 2, 4, 5, 3], [4, 2, 5, 1, 3], 3),
+              ([1, None, 2, 3], [1, 2, 3], [1, 3, 2], 3),
+              ([7], [7], [7], 1),
+          ]
+          for vals, pre, ino, d in cases:
+              assert preorder(build(vals)) == pre, f"preorder({vals!r}) = {preorder(build(vals))!r}"
+              assert inorder(build(vals)) == ino, f"inorder({vals!r}) = {inorder(build(vals))!r}"
+              assert depth(build(vals)) == d, f"depth({vals!r}) = {depth(build(vals))!r}"
+          assert preorder(None) == [] and inorder(None) == [], f"preorder(None) = {preorder(None)!r}, inorder(None) = {inorder(None)!r}"
+          assert depth(None) == 0, f"depth(None) = {depth(None)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _pre(t):  # recursive references
+              return [t.val] + _pre(t.left) + _pre(t.right) if t else []
+          def _in(t):
+              return _in(t.left) + [t.val] + _in(t.right) if t else []
+          def _depth(t):
+              return 1 + max(_depth(t.left), _depth(t.right)) if t else 0
+          cases = [([],), ([1, 2],), ([1, 2, None, 3],), ([1, None, 2, None, 3],)] + rand_cases(lambda r: (_rand_tree(r),), 300)
+          against(_on_tree(preorder), _on_tree(_pre), cases, name="preorder", show=_show)
+          against(_on_tree(inorder), _on_tree(_in), cases, name="inorder", show=_show)
+          against(_on_tree(depth), _on_tree(_depth), cases, name="depth", show=_show)
+      - id: b
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node); `root = build([1, 2, 3, 4, 5])`.
+          - **Set** `out`: `list[int]`, the **inorder** values of `root` (left subtree, node, right subtree), using a stack and a `cur` pointer (no recursion).
+          - **Checked on**: `root` (`[4, 2, 5, 1, 3]`).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+
+          root = build([1, 2, 3, 4, 5])
+        solution: |
+          stack, cur, out = [], root, []
+          while stack or cur:
+              while cur:
+                  stack.append(cur)
+                  cur = cur.left
+              cur = stack.pop()
+              out.append(cur.val)
+              cur = cur.right
+        check: |
+          assert out == [4, 2, 5, 1, 3], f"out = {out!r}"
+      - id: c
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node); `root = build([3, 9, 20, None, None, 15, 7])`.
+          - **Set** `res`: `int`, the max depth of `root` counted in **nodes**, using a stack of `(node, depth)` tuples (no recursion).
+          - **Checked on**: `root` (3).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+
+          root = build([3, 9, 20, None, None, 15, 7])
+        solution: |
+          res = 0
+          stack = [(root, 1)]
+          while stack:
+              node, d = stack.pop()
+              if node:
+                  res = max(res, d)
+                  stack.append((node.left, d + 1))
+                  stack.append((node.right, d + 1))
+        check: |
+          assert res == 3, f"res = {res!r}"
+
+  - id: trees.bst
+    name: BST bounds, search, sorted inorder
+    teach: |
+      ```python
+      # each node must fit between bounds set by ALL its ancestors, not just its parent
+      def valid(node, lo=float('-inf'), hi=float('inf')):
+          if not node:
+              return True
+          if not lo < node.val < hi:
+              return False
+          return valid(node.left, lo, node.val) and valid(node.right, node.val, hi)
+      # search step: node = node.left if x < node.val else node.right
+      # the inorder of a BST is sorted: k-th smallest = inorder[k - 1]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node). A tree is a valid BST when every node is strictly greater than all values in its left subtree and strictly smaller than all values in its right subtree.
+          - **Write** `valid(node, lo=float('-inf'), hi=float('inf'))`, called as `valid(root)`. **Returns** `bool`: whether the tree is a valid BST (empty: `True`; any duplicate: `False`).
+          - **Write** `find(root, x)`, walking left or right (`root` is a valid BST). **Returns** the **node** (`TreeNode`, not its value) with `val == x`, or `None` if there is none.
+          - **Write** `kth(root, k)` (`root` is a valid BST, `1 <= k <=` number of nodes). **Returns** `int`: the k-th smallest value (`k = 1` is the smallest).
+          - **Checked on**: valid BSTs (incl. skewed), trees where a deep node fits its parent but breaks a farther ancestor's bound, duplicates, empty, missing `x`, every `k`, and 300 random cases each.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def valid(node, lo=float('-inf'), hi=float('inf')):
+              if not node:
+                  return True
+              if not lo < node.val < hi:
+                  return False
+              return valid(node.left, lo, node.val) and valid(node.right, node.val, hi)
+
+          def find(root, x):
+              node = root
+              while node and node.val != x:
+                  node = node.left if x < node.val else node.right
+              return node
+
+          def kth(root, k):
+              def inorder(n):
+                  return inorder(n.left) + [n.val] + inorder(n.right) if n else []
+              return inorder(root)[k - 1]
+        check: |
+          assert valid(build([2, 1, 3])) is True, "[2, 1, 3] is a valid BST"
+          assert valid(build([5, 1, 4, None, None, 3, 6])) is False, "[5, 1, 4, ...] is not valid (4 < 5 on the right)"
+          assert valid(build([5, 4, 6, None, None, 3, 7])) is False, "[5, 4, 6, None, None, 3, 7] is not valid (3 is right of 5): check bounds, not just children"
+          assert valid(None) is True, f"valid(None) = {valid(None)!r}"
+          t = build([8, 3, 10, 1, 6, None, 14])
+          got = find(t, 6)
+          assert got is t.left.right, f"find(t, 6) = {getattr(got, 'val', got)!r}, expected the node with value 6"
+          assert find(t, 8) is t, "find(t, 8) should be the root"
+          assert find(t, 7) is None, f"find(t, 7) = {getattr(find(t, 7), 'val', None)!r}, expected None"
+          t = build([5, 3, 6, 2, 4, None, None, 1])
+          for k, want in [(1, 1), (3, 3), (6, 6)]:
+              assert kth(t, k) == want, f"kth(t, {k}) = {kth(t, k)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _ins(root, v):  # plain BST insert (equal values go right)
+              if not root:
+                  return TreeNode(v)
+              if v < root.val:
+                  root.left = _ins(root.left, v)
+              else:
+                  root.right = _ins(root.right, v)
+              return root
+          def _bst(r, least=0):  # random valid BST, distinct values; sometimes inserted sorted (skewed)
+              vals = r.sample(range(-20, 21), r.randint(least, 12))
+              if r.random() < 0.2:
+                  vals.sort(reverse=r.random() < 0.5)
+              root = None
+              for v in vals:
+                  root = _ins(root, v)
+              return root
+          def _nodes(t):  # (node, lo, hi, parent) for every node; lo/hi = bounds from ALL ancestors
+              out, stack = [], [(t, float('-inf'), float('inf'), None)]
+              while stack:
+                  n, lo, hi, p = stack.pop()
+                  if n:
+                      out.append((n, lo, hi, p))
+                      stack += [(n.left, lo, n.val, n), (n.right, n.val, hi, n)]
+              return out
+          def _in(t):
+              return _in(t.left) + [t.val] + _in(t.right) if t else []
+          def _gen_valid(r):
+              t = _bst(r)
+              kind = r.randrange(4)
+              if kind == 1 and t:  # near-valid: a deep leaf still fits its parent but breaks a farther ancestor's bound
+                  cands = [(n, lo, hi, p) for n, lo, hi, p in _nodes(t) if p and not n.left and not n.right
+                           and ((n is p.left and lo > float('-inf')) or (n is p.right and hi < float('inf')))]
+                  if cands:
+                      n, lo, hi, p = r.choice(cands)
+                      n.val = lo - r.choice([0, 1, 2]) if n is p.left else hi + r.choice([0, 1, 2])
+              elif kind == 2 and t:  # a duplicate, placed where an insert puts it
+                  _ins(t, r.choice(_nodes(t))[0].val)
+              elif kind == 3:  # any shape and values
+                  return (_rand_tree(r),)
+              return (_lo(t),)
+          def _valid_ref(t):  # inorder strictly increasing
+              vals = _in(t)
+              return all(a < b for a, b in zip(vals, vals[1:]))
+          edge = [([],), ([1],), ([2, 2],), ([2, None, 2],), ([3, 1, 5, 0, 2, 4, 6],), ([10, 5, 15, None, None, 6, 20],),
+                  ([5, 3, 8, None, 5],), ([-1, -2, 0],), ([1, None, 2, None, 3, None, 4],)]
+          against(_on_tree(valid), _on_tree(_valid_ref), edge + rand_cases(_gen_valid, 300), name="valid", show=_show)
+          def _where(t, node):  # 'root', 'root.left.right', ... ; None stays None
+              if node is None:
+                  return None
+              for n, *_ in _nodes(t):
+                  if n is node:
+                      path, cur = [], t
+                      while cur is not n:
+                          path.append("left" if n.val < cur.val else "right")
+                          cur = cur.left if n.val < cur.val else cur.right
+                      return ".".join(["root"] + path)
+              return f"{node!r} (not a node of the tree)"
+          def _find_on(f):
+              def run(vals, x):
+                  t = build(vals)
+                  return _where(t, f(t, x))
+              return run
+          def _find_ref(t, x):  # brute force: scan every node
+              return next((n for n, *_ in _nodes(t) if n.val == x), None)
+          def _gen_find(r):
+              t = _bst(r)
+              vals = [n.val for n, *_ in _nodes(t)]
+              return (_lo(t), r.choice(vals) if vals and r.random() < 0.6 else r.randint(-22, 22))
+          edge = [([], 3), ([5], 5), ([5], 4), ([8, 3, 10, 1, 6, None, 14], 14), ([8, 3, 10, 1, 6, None, 14], 1),
+                  ([8, 3, 10, 1, 6, None, 14], 0), ([8, 3, 10, 1, 6, None, 14], 99), ([-3, -5, None, None, -4], -4)]
+          against(_find_on(find), _find_on(_find_ref), edge + rand_cases(_gen_find, 300), name="find", show=_show)
+          def _gen_kth(r):
+              t = _bst(r, least=1)
+              return (_lo(t), r.randint(1, len(_in(t))))
+          edge = [([1], 1), ([2, 1], 1), ([2, 1], 2), ([1, None, 2], 2)] + [([5, 3, 6, 2, 4, None, None, 1], k) for k in range(1, 7)]
+          against(_on_tree(kth), _on_tree(lambda t, k: sorted(n.val for n, *_ in _nodes(t))[k - 1]), edge + rand_cases(_gen_kth, 300),
+                  name="kth", show=_show)
+      - id: b
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node); `root = build([8, 3, 10, 1, 6, None, 14])` (a valid BST) and `x = 6`.
+          - **Set** `res`: the **node** (a `TreeNode`, not its value) whose `val == x`, found by walking left or right from the root.
+          - **Checked on**: `x = 6` (`res` must be that very node, `root.left.right`).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+
+          root = build([8, 3, 10, 1, 6, None, 14])
+          x = 6
+        solution: |
+          node = root
+          while node and node.val != x:
+              node = node.left if x < node.val else node.right
+          res = node
+        check: |
+          assert res is root.left.right, f"res = {getattr(res, 'val', res)!r}, expected the node with value 6"
+      - id: c
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node); `root = build([5, 3, 6, 2, 4, None, None, 1])` (a valid BST) and `k = 3`.
+          - **Set** `res`: `int`, the `k`-th smallest value of the tree (`k = 1` is the smallest). Hint: the inorder of a BST is sorted.
+          - **Checked on**: `k = 3` (3).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+
+          root = build([5, 3, 6, 2, 4, None, None, 1])
+          k = 3
+        solution: |
+          def inorder(n):
+              return inorder(n.left) + [n.val] + inorder(n.right) if n else []
+          res = inorder(root)[k - 1]
+        check: |
+          assert res == 3, f"res = {res!r}"
+
+  - id: trees.swap-children
+    name: invert / compare two trees
+    teach: |
+      ```python
+      def invert(node):
+          if node:   # swap in ONE tuple assignment (two lines would lose a child)
+              node.left, node.right = invert(node.right), invert(node.left)
+          return node
+
+      def same(p, q):
+          if not p or not q:
+              return p is q          # True only if both are None
+          return p.val == q.val and same(p.left, q.left) and same(p.right, q.right)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node).
+          - **Write** `invert(node)`. It mirrors the tree **in place** (left and right swapped at every node) and **returns** the same root object (`None` for an empty tree).
+          - **Write** `same(p, q)`. **Returns** `bool`: `True` when both trees have the same shape and the same value at each position (two empty trees are the same).
+          - **Checked on**: `[4, 2, 7, 1, 3, 6, 9]`, `[1, 2]`, empty, equal trees, the same values in another shape, one empty tree, and 300 random trees / pairs that differ by one change.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def invert(node):
+              if node:
+                  node.left, node.right = invert(node.right), invert(node.left)
+              return node
+
+          def same(p, q):
+              if not p or not q:
+                  return p is q
+              return p.val == q.val and same(p.left, q.left) and same(p.right, q.right)
+        check: |
+          def ser(n):
+              return [n.val, ser(n.left), ser(n.right)] if n else None
+          res = ser(invert(build([4, 2, 7, 1, 3, 6, 9])))
+          want = ser(build([4, 7, 2, 9, 6, 3, 1]))
+          assert res == want, f"inverted = {res!r}"
+          res = ser(invert(build([1, 2])))
+          assert res == [1, None, [2, None, None]], f"invert([1, 2]) = {res!r}"
+          assert invert(None) is None, f"invert(None) = {invert(None)!r}"
+          assert same(build([1, 2, 3]), build([1, 2, 3])) is True, "[1, 2, 3] vs [1, 2, 3] should be True"
+          assert same(build([1, 2]), build([1, None, 2])) is False, "[1, 2] vs [1, None, 2] should be False"
+          assert same(build([1, 2, 1]), build([1, 1, 2])) is False, "[1, 2, 1] vs [1, 1, 2] should be False"
+          assert same(None, None) is True, f"same(None, None) = {same(None, None)!r}"
+          assert same(build([1]), None) is False, "same([1], None) should be False"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _mir(n):  # mirrored copy, new nodes
+              return TreeNode(n.val, _mir(n.right), _mir(n.left)) if n else None
+          def _all(t):
+              out, stack = [], [t]
+              while stack:
+                  n = stack.pop()
+                  if n:
+                      out.append(n)
+                      stack += [n.left, n.right]
+              return out
+          def _mutate(r, vals):  # one small change: a value, swap two children, cut a subtree, or add / replace a child
+              t = build(vals)
+              if not t:
+                  return [r.randint(-5, 5)]
+              n = r.choice(_all(t))
+              k = r.randrange(4)
+              if k == 0:
+                  n.val += r.choice([-1, 1])
+              elif k == 1:
+                  n.left, n.right = n.right, n.left
+              elif k == 2:
+                  setattr(n, r.choice(["left", "right"]), None)
+              else:
+                  setattr(n, r.choice(["left", "right"]), TreeNode(n.val))
+              return _lo(t)
+          def _inv_run(vals):
+              t = build(vals)
+              out = invert(t)
+              return _lo(out), out is t
+          against(_inv_run, lambda vals: (_lo(_mir(build(vals))), True),
+                  [([],), ([1],), ([1, 2],), ([1, None, 2],), ([1, 2, 3, 4, None, None, 5],)] + rand_cases(lambda r: (_rand_tree(r),), 300),
+                  name="invert", show=lambda vals: f"(build({vals})), compared as (level order of the result, result is the original root)")
+          def _gen_pair(r):  # identical copy, a copy with one change, or unrelated trees
+              p = _rand_tree(r)
+              k = r.randrange(4)
+              q = list(p) if k == 0 else _mutate(r, p) if k <= 2 else _rand_tree(r)
+              return (p, q) if r.random() < 0.5 else (q, p)
+          edge = [([], []), ([1], []), ([1], [1]), ([1], [2]), ([1, 2], [1, None, 2]), ([1, 2, 1], [1, 1, 2]), ([1, 2, 3], [1, 2, 3]),
+                  ([1, 2, None, 3], [1, 2, None, None, 3]), ([0], [0, 0])]
+          against(lambda a, b: same(build(a), build(b)), lambda a, b: _lo(build(a)) == _lo(build(b)), edge + rand_cases(_gen_pair, 300),
+                  name="same", show=lambda a, b: f"(build({a}), build({b}))")
+      - id: b
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node).
+          - **Write** `same(p, q)`. **Returns** `bool`: `True` when both trees have the same shape and the same value at each position (two empty trees are the same).
+          - **Checked on**: equal trees, the same values in another shape, one or both empty, and 300 random pairs (identical, one change apart, unrelated).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def same(p, q):
+              if not p or not q:
+                  return p is q
+              return p.val == q.val and same(p.left, q.left) and same(p.right, q.right)
+        check: |
+          assert same(build([1, 2, 3]), build([1, 2, 3])) is True, "[1, 2, 3] vs [1, 2, 3] should be True"
+          assert same(build([1, 2]), build([1, None, 2])) is False, "[1, 2] vs [1, None, 2] should be False"
+          assert same(build([1, 2, 1]), build([1, 1, 2])) is False, "[1, 2, 1] vs [1, 1, 2] should be False"
+          assert same(None, None) is True, f"same(None, None) = {same(None, None)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _mir(n):  # mirrored copy, new nodes
+              return TreeNode(n.val, _mir(n.right), _mir(n.left)) if n else None
+          def _all(t):
+              out, stack = [], [t]
+              while stack:
+                  n = stack.pop()
+                  if n:
+                      out.append(n)
+                      stack += [n.left, n.right]
+              return out
+          def _mutate(r, vals):  # one small change: a value, swap two children, cut a subtree, or add / replace a child
+              t = build(vals)
+              if not t:
+                  return [r.randint(-5, 5)]
+              n = r.choice(_all(t))
+              k = r.randrange(4)
+              if k == 0:
+                  n.val += r.choice([-1, 1])
+              elif k == 1:
+                  n.left, n.right = n.right, n.left
+              elif k == 2:
+                  setattr(n, r.choice(["left", "right"]), None)
+              else:
+                  setattr(n, r.choice(["left", "right"]), TreeNode(n.val))
+              return _lo(t)
+          def _gen_pair(r):  # identical copy, a copy with one change, or unrelated trees
+              p = _rand_tree(r)
+              k = r.randrange(4)
+              q = list(p) if k == 0 else _mutate(r, p) if k <= 2 else _rand_tree(r)
+              return (p, q) if r.random() < 0.5 else (q, p)
+          edge = [([], []), ([1], []), ([1], [1]), ([1], [2]), ([1, 2], [1, None, 2]), ([1, 2, 1], [1, 1, 2]), ([1, 2, 3], [1, 2, 3]),
+                  ([1, 2, None, 3], [1, 2, None, None, 3]), ([0], [0, 0])]
+          against(lambda a, b: same(build(a), build(b)), lambda a, b: _lo(build(a)) == _lo(build(b)), edge + rand_cases(_gen_pair, 300),
+                  name="same", show=lambda a, b: f"(build({a}), build({b}))")
+      - id: c
+        prompt: |
+          - **Given** (see setup): `TreeNode` (`.val`, `.left`, `.right`) and `build(vals)`, which makes a tree from a level-order list (`None` = no node).
+          - **Write** `mirror(a, b)`. **Returns** `bool`: `True` when `a` is the mirror image of `b` (equal root values, `a`'s left mirrors `b`'s right and `a`'s right mirrors `b`'s left); two empty trees → `True`. A tree `t` is symmetric when `mirror(t.left, t.right)`.
+          - **Checked on**: `[1, 2, 2, 3, 4, 4, 3]` (symmetric), `[1, 2, 2, None, 3, None, 3]` (not), empty, a tree vs itself, and 300 random pairs (mirror copies, mirror copies with one change, unrelated).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for node in nodes:
+                  if node:
+                      node.left, node.right = next(kids, None), next(kids, None)
+              return nodes[0] if nodes else None
+        solution: |
+          def mirror(a, b):
+              if not a or not b:
+                  return a is b
+              return a.val == b.val and mirror(a.left, b.right) and mirror(a.right, b.left)
+        check: |
+          t = build([1, 2, 2, 3, 4, 4, 3])
+          assert mirror(t.left, t.right) is True, "[1, 2, 2, 3, 4, 4, 3] is symmetric"
+          t = build([1, 2, 2, None, 3, None, 3])
+          assert mirror(t.left, t.right) is False, "[1, 2, 2, None, 3, None, 3] is not symmetric"
+          assert mirror(None, None) is True, f"mirror(None, None) = {mirror(None, None)!r}"
+          from cardtest import against, rand_cases
+
+          def _lo(root):  # tree -> its level-order list (what build() takes)
+              out, q, i = [], [root], 0
+              while i < len(q):
+                  n = q[i]
+                  i += 1
+                  out.append(n.val if n else None)
+                  if n:
+                      q += [n.left, n.right]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _grow(r, size):  # random shape with `size` nodes, values -5..5 (duplicates, negatives)
+              if size == 0:
+                  return None
+              k = r.randint(0, size - 1)
+              return TreeNode(r.randint(-5, 5), _grow(r, k), _grow(r, size - 1 - k))
+
+          def _rand_tree(r):  # level-order list: empty, single, skewed / zigzag chain, random shapes, sparse lists
+              kind = r.randrange(6)
+              if kind == 0:
+                  return r.choice([[], [r.randint(-5, 5)]])
+              if kind == 1:
+                  root = cur = TreeNode(r.randint(-5, 5))
+                  bias = r.choice([0, 1, r.random()])
+                  for _ in range(r.randint(1, 9)):
+                      kid = TreeNode(r.randint(-5, 5))
+                      if r.random() < bias:
+                          cur.left = kid
+                      else:
+                          cur.right = kid
+                      cur = kid
+                  return _lo(root)
+              if kind <= 3:
+                  return _lo(_grow(r, r.randint(1, 14)))
+              p = r.choice([0.0, 0.25, 0.5])
+              return _lo(build([r.randint(-5, 5)] + [None if r.random() < p else r.randint(-5, 5) for _ in range(r.randint(0, 14))]))
+
+          def _on_tree(f):  # cases hold level-order lists; build the tree just before the call
+              return lambda vals, *a: f(build(vals), *a)
+
+          def _show(vals, *a):
+              return "(" + ", ".join([f"build({vals})"] + [repr(x) for x in a]) + ")"
+          def _mir(n):  # mirrored copy, new nodes
+              return TreeNode(n.val, _mir(n.right), _mir(n.left)) if n else None
+          def _all(t):
+              out, stack = [], [t]
+              while stack:
+                  n = stack.pop()
+                  if n:
+                      out.append(n)
+                      stack += [n.left, n.right]
+              return out
+          def _mutate(r, vals):  # one small change: a value, swap two children, cut a subtree, or add / replace a child
+              t = build(vals)
+              if not t:
+                  return [r.randint(-5, 5)]
+              n = r.choice(_all(t))
+              k = r.randrange(4)
+              if k == 0:
+                  n.val += r.choice([-1, 1])
+              elif k == 1:
+                  n.left, n.right = n.right, n.left
+              elif k == 2:
+                  setattr(n, r.choice(["left", "right"]), None)
+              else:
+                  setattr(n, r.choice(["left", "right"]), TreeNode(n.val))
+              return _lo(t)
+          def _gen(r):
+              a = _rand_tree(r)
+              k = r.randrange(4)
+              b = _lo(_mir(build(a))) if k <= 1 else list(a) if k == 2 else _rand_tree(r)
+              if k == 1:
+                  b = _mutate(r, b)
+              return (a, b) if r.random() < 0.5 else (b, a)
+          edge = [([], []), ([1], []), ([1], [1]), ([1, 2], [1, None, 2]), ([1, 2], [1, 2]), ([2, 3, 4], [2, 4, 3]), ([2, 3, 4], [2, 3, 4]),
+                  ([1, 2, 2], [1, 2, 2]), ([1, 2, None, 3], [1, None, 2, None, 3])]
+          against(lambda a, b: mirror(build(a), build(b)), lambda a, b: _lo(build(a)) == _lo(_mir(build(b))), edge + rand_cases(_gen, 300),
+                  name="mirror", show=lambda a, b: f"(build({a}), build({b}))")

@@ -1,0 +1,602 @@
+id: idx-gather
+title: gather & scatter drills
+intro: |
+  `gather` reads one value per index position (`out[i][j] = t[i][index[i][j]]`), `scatter` writes them back, and
+  `scatter_add_` adds them up. Small drills, from one pick per row to whole vectors, histograms and un-sorting.
+problems:
+  - Log-probability of the target label (cross-entropy by hand)
+  - Last real token of each padded sequence
+  - Reorder the KV cache after a beam-search step
+  - Sort / top-k one tensor by another tensor's scores
+  - Frequency penalty and token histograms in LM sampling
+atoms: []
+skills:
+  - id: idx-gather.one-per-row
+    name: t.gather(1, index), one pick per row
+    teach: |
+      ```python
+      # t.gather(1, index) -> index's shape: out[i][j] = t[i][index[i][j]]; index int64, same ndim as t
+      t = torch.tensor([[10., 11., 12.], [20., 21., 22.]])  # (2, 3)
+      t.gather(1, torch.tensor([[2, 0], [1, 1]]))          # (2, 2): [[12., 10.], [21., 21.]]
+      y = torch.tensor([1, 2])                             # (2,) one column per row
+      t.gather(1, y[:, None]).squeeze(1)                   # (2, 1) -> (2,): [11., 22.]
+      ```
+      Pitfall: `t.gather(1, y)` with `y` of shape `(B,)` raises: the index needs 2 dims, like `t`.
+    cards:
+      - id: a
+        prompt: |
+          Use `gather` to pick log-probabilities from each row of `logp` (3, 4).
+          - `sel` (3, 2): `sel[i][j] = logp[i][alt[i][j]]`
+          - `nll` (3,): the negative log-likelihood of each row's label, `nll[i] = -logp[i][y[i]]`
+        setup: |
+          import torch
+          logp = torch.log_softmax(torch.tensor([[2.0, 0.5, -1.0, 1.0], [0.0, 3.0, 1.0, -2.0], [1.5, 1.5, 0.0, 2.5]]), dim=1)
+          alt = torch.tensor([[0, 2], [3, 3], [1, 0]])
+          y = torch.tensor([3, 1, 0])
+        solution: |
+          sel = logp.gather(1, alt)
+          nll = -logp.gather(1, y[:, None]).squeeze(1)
+        check: |
+          def _eq(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.allclose(got.double(), exp.double(), atol=1e-6), f"{name} = {got}, expected {exp}"
+
+          _eq("sel", sel, torch.tensor([[logp[i, alt[i, j]].item() for j in range(2)] for i in range(3)]))
+          _eq("nll", nll, torch.tensor([-logp[i, y[i]].item() for i in range(3)]))
+      - id: b
+        prompt: |
+          Write `clicked_logp(scores, clicked)`: for each row, the log-softmax probability of the clicked item.
+          - `scores` (B, N) float: item scores, possibly near ±1000; `clicked` (B,) int64: index of the clicked item of each row
+          - returns (B,), dtype of `scores`: `out[b] = log_softmax(scores[b])[clicked[b]]`, numerically stable
+          - use `gather`; no Python loops
+        setup: |
+          import torch
+        starter: |
+          def clicked_logp(scores, clicked):
+              raise NotImplementedError
+        solution: |
+          def clicked_logp(scores, clicked):
+              logp = torch.log_softmax(scores, dim=1)          # (B, N)
+              return logp.gather(1, clicked[:, None]).squeeze(1)  # (B, 1) -> (B,)
+        check: |
+          import dis
+          import math
+          from cardtest import against, rand_cases
+
+          def _walk(co):
+              yield co
+              for c in co.co_consts:
+                  if hasattr(c, "co_code"):
+                      yield from _walk(c)
+
+          _cos = list(_walk(clicked_logp.__code__))
+          assert not any(i.opname in ("FOR_ITER", "JUMP_BACKWARD") for co in _cos for i in dis.get_instructions(co)), \
+              "clicked_logp contains a Python loop: use gather"
+          assert any({"gather", "take_along_dim"} & set(co.co_names) for co in _cos), "clicked_logp must use gather"
+
+          def _ref(scores, clicked):
+              out = []
+              for row, c in zip(scores.tolist(), clicked.tolist()):
+                  m = max(row)
+                  out.append(row[c] - m - math.log(sum(math.exp(v - m) for v in row)))
+              return torch.tensor(out, dtype=scores.dtype)
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got.double(), exp.double(), rtol=1e-5, atol=1e-4))
+
+          def _show(s, c):
+              return f"(scores {tuple(s.shape)} {s.dtype} = {s.tolist()}, clicked = {c.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, N = r.randint(1, 5), r.randint(1, 6)
+              s = torch.randn(B, N, generator=g, dtype=r.choice([torch.float32, torch.float64])) * r.choice([1, 5, 1000])
+              return (s, torch.randint(0, N, (B,), generator=g))
+
+          T = torch.tensor
+          cases = [
+              (T([[2.0, 0.0, 1.0]]), T([0])),                                      # B = 1
+              (T([[3.0], [-1.0]]), T([0, 0])),                                       # N = 1: log-prob 0
+              (T([[1.0, 2.0, 3.0], [3.0, 2.0, 1.0], [0.0, 0.0, 0.0]]), T([2, 2, 2])),  # same item everywhere
+              (T([[1000.0, -1000.0, 0.0], [-1000.0, 1000.0, 999.0]]), T([1, 2])),    # large scores
+              (T([[0.5, -0.5], [1.5, 2.5]], dtype=torch.float64), T([1, 0])),        # float64
+          ]
+          against(clicked_logp, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: idx-gather.dim0
+    name: t.gather(0, index), pick a row per column
+    teach: |
+      ```python
+      # t.gather(0, index) -> index's shape: out[i][j] = t[index[i][j]][j] (row looked up, column kept)
+      t = torch.tensor([[10., 11., 12.], [20., 21., 22.]])  # (2, 3)
+      t.gather(0, torch.tensor([[1, 0, 1]]))               # (1, 3): [[20., 11., 22.]]
+      # s.argmax(0, keepdim=True) -> (1, C) int64: row of each column's max
+      s = torch.tensor([[0.9, 0.2, 0.4], [0.1, 0.8, 0.6]])  # (2, 3)
+      t.gather(0, s.argmax(0, keepdim=True)).squeeze(0)    # (1, 3) -> (3,): [10., 21., 22.]
+      ```
+      Pitfall: without `keepdim=True`, `argmax(0)` is `(C,)`: not a valid index for a 2-D `t`.
+    cards:
+      - id: a
+        prompt: |
+          Use `gather` along dim 0 to pick, in each column of `t` (3, 4), the rows listed in `rows`, then the most confident row.
+          - `out` (2, 4): `out[i][j] = t[rows[i][j]][j]`
+          - `best` (4,): `best[j] = t[r][j]` where `r` = argmax of `conf[:, j]`
+        setup: |
+          import torch
+          t = torch.tensor([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0]])
+          rows = torch.tensor([[2, 0, 1, 2], [0, 0, 2, 1]])
+          conf = torch.tensor([[0.1, 0.7, 0.2, 0.3], [0.8, 0.1, 0.1, 0.6], [0.1, 0.2, 0.7, 0.1]])
+        solution: |
+          out = t.gather(0, rows)
+          best = t.gather(0, conf.argmax(0, keepdim=True)).squeeze(0)
+        check: |
+          def _eq(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.equal(got, exp), f"{name} = {got}, expected {exp}"
+
+          _eq("out", out, torch.tensor([[t[rows[i, j], j].item() for j in range(4)] for i in range(2)]))
+          _eq("best", best, torch.tensor([5.0, 2.0, 11.0, 8.0]))
+      - id: b
+        prompt: |
+          Write `last_step(x, lengths)`: the value at the last real time step of each padded, time-major sequence.
+          - `x` (T, B): column `b` is sequence `b`, padded to length `T`; `lengths` (B,) int64 in `[1, T]`: real length of each sequence
+          - returns (B,), dtype of `x`: `out[b] = x[lengths[b] - 1][b]`
+          - use `gather`; no Python loops
+        setup: |
+          import torch
+        starter: |
+          def last_step(x, lengths):
+              raise NotImplementedError
+        solution: |
+          def last_step(x, lengths):
+              return x.gather(0, (lengths - 1)[None]).squeeze(0)   # index (1, B) -> (1, B) -> (B,)
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _walk(co):
+              yield co
+              for c in co.co_consts:
+                  if hasattr(c, "co_code"):
+                      yield from _walk(c)
+
+          _cos = list(_walk(last_step.__code__))
+          assert not any(i.opname in ("FOR_ITER", "JUMP_BACKWARD") for co in _cos for i in dis.get_instructions(co)), \
+              "last_step contains a Python loop: use gather"
+          assert any({"gather", "take_along_dim"} & set(co.co_names) for co in _cos), "last_step must use gather"
+
+          def _ref(x, lengths):
+              return torch.tensor([x[int(lengths[b]) - 1, b].item() for b in range(x.shape[1])], dtype=x.dtype)
+
+          def _same(got, exp):
+              return torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype and torch.equal(got, exp)
+
+          def _show(x, l):
+              return f"(x {tuple(x.shape)} {x.dtype} = {x.tolist()}, lengths = {l.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              T, B = r.randint(1, 6), r.randint(1, 5)
+              x = torch.randint(-9, 10, (T, B), generator=g) if r.random() < 0.3 else torch.randn(T, B, generator=g)
+              return (x, torch.randint(1, T + 1, (B,), generator=g))
+
+          _x = torch.arange(12.0).view(4, 3)
+          cases = [
+              (torch.tensor([[1.0], [2.0], [3.0]]), torch.tensor([2])),            # B = 1
+              (torch.tensor([[4.0, 5.0, 6.0]]), torch.tensor([1, 1, 1])),          # T = 1
+              (_x, torch.tensor([1, 1, 1])),                                       # all lengths 1
+              (_x, torch.tensor([4, 4, 4])),                                       # all full
+              (_x, torch.tensor([3, 1, 4])),
+              (torch.arange(8).view(2, 4), torch.tensor([2, 1, 1, 2])),           # int64, B > T
+          ]
+          against(last_step, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: idx-gather.k-per-row
+    name: K picks per row, sort one tensor by another
+    teach: |
+      ```python
+      # t.argsort(dim=1) -> (B, C) int64: columns in increasing order of t
+      # t.topk(K, dim=1).indices -> (B, K) int64: columns of the K largest, largest first
+      # torch.take_along_dim(t, index, dim) -> same as t.gather(dim, index)
+      key = torch.tensor([[3., 1., 2.], [0., 5., 4.]])            # (2, 3)
+      A   = torch.tensor([[30, 10, 20], [70, 90, 80]])            # (2, 3)
+      A.gather(1, key.argsort(dim=1))                             # (2, 3): [[10, 20, 30], [70, 80, 90]]
+      torch.take_along_dim(A, key.topk(2, dim=1).indices, dim=1)  # (2, 2): [[30, 20], [90, 80]]
+      ```
+      Pitfall: `A[:, key.argsort(1)]` is not a per-row pick: it gives a (2, 2, 3) tensor.
+    cards:
+      - id: a
+        prompt: |
+          Reorder each row of `A` (3, 5) by the matching row of `key`.
+          - `A_sorted` (3, 5): row `i` of `A` ordered by increasing `key[i]`, with `argsort` + `gather`
+          - `top3` (3, 3): the entries of `A[i]` at the 3 largest `key[i]`, largest first, with `topk` + `take_along_dim`
+        setup: |
+          import torch
+          key = torch.tensor([[0.3, 0.9, 0.1, 0.5, 0.7], [0.6, 0.2, 0.8, 0.4, 0.0], [0.5, 0.1, 0.3, 0.9, 0.7]])
+          A = torch.tensor([[10, 11, 12, 13, 14], [20, 21, 22, 23, 24], [30, 31, 32, 33, 34]])
+        solution: |
+          A_sorted = A.gather(1, key.argsort(dim=1))
+          top3 = torch.take_along_dim(A, key.topk(3, dim=1).indices, dim=1)
+        check: |
+          def _eq(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.equal(got, exp), f"{name} = {got}, expected {exp}"
+
+          _order = [sorted(range(5), key=lambda j: key[i, j].item()) for i in range(3)]
+          _eq("A_sorted", A_sorted, torch.tensor([[A[i, j].item() for j in _order[i]] for i in range(3)]))
+          _eq("top3", top3, torch.tensor([[A[i, j].item() for j in _order[i][::-1][:3]] for i in range(3)]))
+      - id: b
+        prompt: |
+          Write `nearest_ids(d, cand, k)`: for each query, the ids of its `k` closest candidates.
+          - `d` (N, M) float: `d[n][m]` = distance from query `n` to its candidate `m`; `cand` (N, M) int64: id of that candidate; `k` (int, 1 ≤ k ≤ M)
+          - returns (N, k) int64: the `cand[n]` entries at the `k` smallest `d[n]`, closest first
+          - use `gather` or `take_along_dim`; no Python loops
+        setup: |
+          import torch
+        starter: |
+          def nearest_ids(d, cand, k):
+              raise NotImplementedError
+        solution: |
+          def nearest_ids(d, cand, k):
+              cols = d.argsort(dim=1)[:, :k]      # (N, k) columns of the k smallest distances
+              return cand.gather(1, cols)         # (N, k)
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _walk(co):
+              yield co
+              for c in co.co_consts:
+                  if hasattr(c, "co_code"):
+                      yield from _walk(c)
+
+          _cos = list(_walk(nearest_ids.__code__))
+          assert not any(i.opname in ("FOR_ITER", "JUMP_BACKWARD") for co in _cos for i in dis.get_instructions(co)), \
+              "nearest_ids contains a Python loop: use gather"
+          assert any({"gather", "take_along_dim"} & set(co.co_names) for co in _cos), "nearest_ids must use gather or take_along_dim"
+
+          def _ref(d, cand, k):
+              out = []
+              for drow, crow in zip(d.tolist(), cand.tolist()):
+                  order = sorted(range(len(drow)), key=lambda m: drow[m])
+                  out.append([crow[m] for m in order[:k]])
+              return torch.tensor(out, dtype=torch.long).view(d.shape[0], k)
+
+          def _same(got, exp):
+              return torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype and torch.equal(got, exp)
+
+          def _show(d, c, k):
+              return f"(d = {d.tolist()}, cand = {c.tolist()}, k = {k})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              N, M = r.randint(1, 5), r.randint(1, 7)
+              d = torch.rand(N, M, generator=g) * 10
+              return (d, torch.randint(-20, 100, (N, M), generator=g), r.randint(1, M))
+
+          T = torch.tensor
+          cases = [
+              (T([[0.5, 0.1, 0.9]]), T([[7, 8, 9]]), 2),                                  # N = 1
+              (T([[3.0], [1.0]]), T([[4], [5]]), 1),                                       # M = 1
+              (T([[0.2, 0.4, 0.1], [0.9, 0.3, 0.6]]), T([[1, 2, 3], [4, 5, 6]]), 1),       # k = 1
+              (T([[0.2, 0.4, 0.1], [0.9, 0.3, 0.6]]), T([[1, 2, 3], [4, 5, 6]]), 3),       # k = M
+              (T([[0.7, 0.2, 0.5, 0.1]]), T([[5, 5, -3, 5]]), 3),                          # repeated / negative ids
+          ]
+          against(nearest_ids, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: idx-gather.expand
+    name: gather whole vectors with unsqueeze + expand
+    teach: |
+      ```python
+      # gather's index needs the full ndim: (B, K) -> unsqueeze(-1) -> expand(-1, -1, D) -> (B, K, D)
+      # t.expand(-1, -1, D): repeats size-1 dims without copying (-1 keeps that size)
+      x = torch.arange(12.).view(1, 4, 3)                  # (1, 4, 3)
+      idx = torch.tensor([[3, 0]])                         # (1, 2)
+      x.gather(1, idx.unsqueeze(-1).expand(-1, -1, 3))     # (1, 2, 3): [[[9, 10, 11], [0, 1, 2]]]
+      ```
+      Pitfall: without `expand` you get `(B, K, 1)`, only feature 0, and no error.
+    cards:
+      - id: a
+        prompt: |
+          Use `gather` along dim 1 of `x` (2, 5, 3) to pick whole feature vectors.
+          - `picked` (2, 3, 3): `picked[b][k] = x[b][idx[b][k]]`
+          - `last` (2, 3): the vector at the last real step of each sequence, `last[b] = x[b][lengths[b] - 1]`
+        setup: |
+          import torch
+          x = torch.arange(30.0).view(2, 5, 3)
+          idx = torch.tensor([[4, 0, 4], [2, 3, 1]])
+          lengths = torch.tensor([3, 5])
+        solution: |
+          picked = x.gather(1, idx.unsqueeze(-1).expand(-1, -1, 3))
+          last = x.gather(1, (lengths - 1).view(-1, 1, 1).expand(-1, 1, 3)).squeeze(1)
+        check: |
+          def _eq(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.equal(got, exp), f"{name} = {got}, expected {exp}"
+
+          _eq("picked", picked, torch.stack([torch.stack([x[b, idx[b, k]] for k in range(3)]) for b in range(2)]))
+          _eq("last", last, torch.stack([x[b, lengths[b] - 1] for b in range(2)]))
+      - id: b
+        prompt: |
+          Write `reorder_cache(cache, parent)`, the beam-search cache reorder: each beam slot copies the cache of its parent beam.
+          - `cache` (B, W, T, D): cache of each of the `W` beams; `parent` (B, W) int64 in `[0, W)`: parent beam of each slot (repeats allowed)
+          - returns (B, W, T, D): `out[b][w] = cache[b][parent[b][w]]`
+          - use `gather`; no Python loops
+        setup: |
+          import torch
+        starter: |
+          def reorder_cache(cache, parent):
+              raise NotImplementedError
+        solution: |
+          def reorder_cache(cache, parent):
+              B, W, T, D = cache.shape
+              idx = parent[:, :, None, None].expand(-1, -1, T, D)   # (B, W, 1, 1) -> (B, W, T, D)
+              return cache.gather(1, idx)                           # out[b][w][t][d] = cache[b][parent[b][w]][t][d]
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _walk(co):
+              yield co
+              for c in co.co_consts:
+                  if hasattr(c, "co_code"):
+                      yield from _walk(c)
+
+          _cos = list(_walk(reorder_cache.__code__))
+          assert not any(i.opname in ("FOR_ITER", "JUMP_BACKWARD") for co in _cos for i in dis.get_instructions(co)), \
+              "reorder_cache contains a Python loop: use gather"
+          assert any({"gather", "take_along_dim"} & set(co.co_names) for co in _cos), "reorder_cache must use gather or take_along_dim"
+
+          def _ref(cache, parent):
+              out = torch.empty_like(cache)
+              for b in range(cache.shape[0]):
+                  for w in range(cache.shape[1]):
+                      out[b, w] = cache[b, int(parent[b, w])]
+              return out
+
+          def _same(got, exp):
+              return torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype and torch.equal(got, exp)
+
+          def _show(c, p):
+              return f"(cache {tuple(c.shape)} = {c.tolist()}, parent = {p.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, W, T, D = r.randint(1, 3), r.randint(1, 4), r.randint(1, 4), r.randint(1, 3)
+              return (torch.randn(B, W, T, D, generator=g), torch.randint(0, W, (B, W), generator=g))
+
+          _c = torch.arange(24.0).view(2, 3, 2, 2)
+          cases = [
+              (torch.arange(12.0).view(1, 3, 2, 2), torch.tensor([[2, 0, 0]])),     # B = 1
+              (torch.arange(6.0).view(2, 1, 3, 1), torch.tensor([[0], [0]])),       # W = 1, D = 1
+              (torch.arange(6.0).view(1, 2, 1, 3), torch.tensor([[1, 0]])),         # T = 1
+              (_c, torch.tensor([[0, 1, 2], [0, 1, 2]])),                           # identity
+              (_c, torch.tensor([[1, 1, 1], [2, 2, 2]])),                           # all from one parent
+              (_c, torch.tensor([[2, 0, 1], [1, 2, 2]])),
+          ]
+          against(reorder_cache, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: idx-gather.scatter
+    name: t.scatter, write values at positions (the inverse of gather)
+    teach: |
+      ```python
+      # t.scatter(dim, index, src) -> copy of t, out[i][index[i][j]] = src[i][j]; src: like index, or a number
+      # t.scatter_(...): same write, in place
+      torch.zeros(2, 3).scatter_(1, torch.tensor([[2], [0]]), 1.0)   # one-hot (2, 3): [[0, 0, 1], [1, 0, 0]]
+      # x.sort(dim=1) -> (vals, perm), perm[i][k] = original column of vals[i][k]
+      # torch.empty_like(x): uninitialized, x's shape and dtype
+      x = torch.tensor([[3., 1., 2.]])                     # (1, 3)
+      vals, perm = x.sort(dim=1)                           # [[1., 2., 3.]], [[1, 2, 0]]
+      torch.empty_like(x).scatter(1, perm, vals * 10)      # (1, 3): [[30., 10., 20.]], back in x's order
+      ```
+      Pitfall: a column repeated in a row of `index` keeps only one write (to add: `scatter_add_`).
+    cards:
+      - id: a
+        prompt: |
+          Use `scatter` to write values at given columns of each row.
+          - `out` (2, 5): a copy of `base` with `out[i][idx[i][j]] = src[i][j]`; don't modify `base`
+          - `oh` (3, 4) float: one-hot rows of `y` (`oh[i][y[i]] = 1`), with `scatter_` on zeros
+          - `cum` (2, 4): `cum[i][j]` = sum of the `x[i][k]` that are `<= x[i][j]`: sort each row, take `vals.cumsum(dim=1)`, scatter it back to the original columns
+        setup: |
+          import torch
+          base = torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0], [6.0, 7.0, 8.0, 9.0, 10.0]])
+          idx = torch.tensor([[4, 1], [0, 2]])
+          src = torch.tensor([[-1.0, -2.0], [-3.0, -4.0]])
+          y = torch.tensor([3, 0, 3])
+          x = torch.tensor([[0.4, 0.1, 0.3, 0.2], [2.0, -1.0, 5.0, 0.0]])
+        solution: |
+          out = base.scatter(1, idx, src)
+          oh = torch.zeros(3, 4).scatter_(1, y[:, None], 1.0)
+          vals, perm = x.sort(dim=1)
+          cum = torch.empty_like(x).scatter(1, perm, vals.cumsum(dim=1))
+        check: |
+          def _eq(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.allclose(got, exp, atol=1e-6), f"{name} = {got}, expected {exp}"
+
+          _base0 = torch.tensor([[1.0, 2.0, 3.0, 4.0, 5.0], [6.0, 7.0, 8.0, 9.0, 10.0]])
+          assert torch.equal(base, _base0), f"base was modified: base = {base} (use the out-of-place scatter)"
+          _out = _base0.clone()
+          for i in range(2):
+              for j in range(2):
+                  _out[i, idx[i, j]] = src[i, j]
+          _eq("out", out, _out)
+          _eq("oh", oh, torch.tensor([[1.0 if c == y[i] else 0.0 for c in range(4)] for i in range(3)]))
+          _eq("cum", cum, torch.tensor([[sum(v for v in row if v <= row[j]) for j in range(4)] for row in x.tolist()]))
+      - id: b
+        prompt: |
+          Write `ranks(x)`: the rank of each entry within its row, in increasing order.
+          - `x` (B, N) float
+          - returns (B, N) int64: `out[b][j]` = position of `x[b][j]` in row `b` sorted increasingly (0 = smallest); ties -> the lower column gets the lower rank
+          - sort once (`x.sort(dim=1, stable=True)`), then `scatter` the positions `0..N-1` back; no second sort, no Python loops
+        setup: |
+          import torch
+        starter: |
+          def ranks(x):
+              raise NotImplementedError
+        solution: |
+          def ranks(x):
+              B, N = x.shape
+              _, perm = x.sort(dim=1, stable=True)                  # (B, N) original column of each sorted position
+              pos = torch.arange(N).expand(B, N)                    # (B, N), pos[b][k] = k
+              return torch.empty_like(perm).scatter(1, perm, pos)   # out[b][perm[b][k]] = k
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _walk(co):
+              yield co
+              for c in co.co_consts:
+                  if hasattr(c, "co_code"):
+                      yield from _walk(c)
+
+          _cos = list(_walk(ranks.__code__))
+          _ins = [i for co in _cos for i in dis.get_instructions(co)]
+          assert not any(i.opname in ("FOR_ITER", "JUMP_BACKWARD") for i in _ins), "ranks contains a Python loop: use scatter"
+          _sorts = [i for i in _ins if i.argval in ("sort", "argsort", "sorted")]
+          assert len(_sorts) <= 1, "ranks sorts twice: sort once, then scatter the positions back"
+          assert any({"scatter", "scatter_"} & set(co.co_names) for co in _cos), "ranks must use scatter"
+
+          def _ref(x):
+              out = []
+              for row in x.tolist():
+                  order = sorted(range(len(row)), key=lambda j: row[j])   # Python's sort is stable
+                  r = [0] * len(row)
+                  for k, j in enumerate(order):
+                      r[j] = k
+                  out.append(r)
+              return torch.tensor(out, dtype=torch.long).view(x.shape)
+
+          def _same(got, exp):
+              return torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype and torch.equal(got, exp)
+
+          def _show(x):
+              return f"(x = {x.tolist()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, N = r.randint(1, 4), r.randint(1, 8)
+              if r.random() < 0.5:
+                  return (torch.randint(0, 3, (B, N), generator=g).float(),)      # many ties
+              return (torch.randn(B, N, generator=g),)
+
+          T = torch.tensor
+          cases = [
+              (T([[0.3, -1.0, 2.0]]),),                       # B = 1
+              (T([[5.0], [2.0]]),),                           # N = 1
+              (T([[1.0, 0.0, 1.0, 0.0, 1.0]]),),              # ties
+              (T([[1.0, 2.0, 3.0, 4.0], [4.0, 3.0, 2.0, 1.0]]),),   # sorted, reversed
+              (T([[2.0, 2.0, 2.0], [0.5, -0.5, 0.5]]),),
+          ]
+          against(ranks, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: idx-gather.scatter-add
+    name: scatter_add_, accumulate repeated positions
+    teach: |
+      ```python
+      # t.scatter_add_(dim, index, src) -> t, in place: t[i][index[i][j]] += src[i][j], repeats add up
+      # t.scatter_add(...): same, out of place.  torch.ones_like(tok): ones, tok's shape and dtype
+      tok = torch.tensor([[1, 1, 3], [0, 3, 3]])           # (2, 3) ids in [0, 4)
+      torch.zeros(2, 4, dtype=torch.long).scatter_add_(1, tok, torch.ones_like(tok))   # (2, 4): [[0, 2, 0, 1], [1, 0, 0, 2]]
+      ```
+      Pitfall: `src` must have `t`'s dtype (int64 ones into float zeros raises).
+    cards:
+      - id: a
+        prompt: |
+          Use `scatter_add_` to count and sum values per row.
+          - `hist` (2, 5) int64: `hist[i][v]` = number of times `v` appears in `tok[i]`
+          - `gsum` (2, 3) float: `gsum[i][g]` = sum of the `vals[i][j]` with `gid[i][j] == g`
+        setup: |
+          import torch
+          tok = torch.tensor([[4, 1, 4, 4, 0, 1], [2, 2, 3, 0, 2, 3]])
+          gid = torch.tensor([[0, 2, 0, 0], [1, 1, 1, 2]])
+          vals = torch.tensor([[1.0, 2.0, 3.0, 4.0], [0.5, 0.5, 1.0, 2.0]])
+        solution: |
+          hist = torch.zeros(2, 5, dtype=torch.long).scatter_add_(1, tok, torch.ones_like(tok))
+          gsum = torch.zeros(2, 3).scatter_add_(1, gid, vals)
+        check: |
+          def _eq(name, got, exp):
+              assert torch.is_tensor(got), f"{name} is {type(got).__name__}, expected a tensor"
+              assert got.shape == exp.shape, f"{name}.shape = {tuple(got.shape)}, expected {tuple(exp.shape)}"
+              assert got.dtype == exp.dtype, f"{name}.dtype = {got.dtype}, expected {exp.dtype}"
+              assert torch.allclose(got.double(), exp.double()), f"{name} = {got}, expected {exp}"
+
+          _eq("hist", hist, torch.tensor([[row.count(v) for v in range(5)] for row in tok.tolist()]))
+          _eq("gsum", gsum, torch.tensor([[sum(v for v, g in zip(vr, gr) if g == k) for k in range(3)]
+                                          for vr, gr in zip(vals.tolist(), gid.tolist())], dtype=torch.float32))
+      - id: b
+        prompt: |
+          Write `freq_penalty(logits, prev, alpha)`: lower each token's logit by `alpha` per previous occurrence of that token.
+          - `logits` (B, V) float; `prev` (B, T) int64 in `[0, V)`: tokens generated so far (`T` may be 0); `alpha` (float)
+          - returns a new (B, V) tensor: `out[b][v] = logits[b][v] - alpha * (count of v in prev[b])`
+          - use `scatter_add_`; no Python loops, `one_hot` or `bincount`; don't modify `logits`
+        setup: |
+          import torch
+        starter: |
+          def freq_penalty(logits, prev, alpha):
+              raise NotImplementedError
+        solution: |
+          def freq_penalty(logits, prev, alpha):
+              ones = torch.ones_like(prev, dtype=logits.dtype)                  # (B, T)
+              counts = torch.zeros_like(logits).scatter_add_(1, prev, ones)     # (B, V), counts[b][prev[b][t]] += 1
+              return logits - alpha * counts
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _walk(co):
+              yield co
+              for c in co.co_consts:
+                  if hasattr(c, "co_code"):
+                      yield from _walk(c)
+
+          _cos = list(_walk(freq_penalty.__code__))
+          assert not any(i.opname in ("FOR_ITER", "JUMP_BACKWARD") for co in _cos for i in dis.get_instructions(co)), \
+              "freq_penalty contains a Python loop: use scatter_add_"
+          _names = set().union(*(co.co_names for co in _cos))
+          assert {"scatter_add_", "scatter_add"} & _names, "freq_penalty must use scatter_add_"
+          assert not {"one_hot", "bincount"} & _names, "freq_penalty uses one_hot / bincount: use scatter_add_"
+
+          def _ref(logits, prev, alpha):
+              out = logits.clone()
+              for b in range(prev.shape[0]):
+                  for t in range(prev.shape[1]):
+                      out[b, int(prev[b, t])] -= alpha
+              return out
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, atol=1e-5))
+
+          def _show(l, p, a):
+              return f"(logits {tuple(l.shape)} = {l.tolist()}, prev = {p.tolist()}, alpha = {a})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2**31))
+              B, V, T = r.randint(1, 4), r.randint(1, 6), r.randint(0, 10)
+              return (torch.randn(B, V, generator=g), torch.randint(0, V, (B, T), generator=g), r.choice([0.5, 1.0, 1.5]))
+
+          _l0 = torch.tensor([[1.0, 2.0, 3.0], [0.0, 0.0, 0.0]])
+          _l = _l0.clone()
+          freq_penalty(_l, torch.tensor([[0, 0], [2, 1]]), 1.0)
+          assert torch.equal(_l, _l0), f"freq_penalty modified logits: {_l} (return a new tensor)"
+
+          T = torch.tensor
+          cases = [
+              (T([[1.0, 2.0, 3.0]]), T([[2, 0]]), 1.0),                       # B = 1
+              (T([[1.0, 2.0], [3.0, 4.0]]), torch.zeros(2, 0, dtype=torch.long), 0.7),   # T = 0
+              (T([[0.0, 0.0, 0.0, 0.0]]), T([[1, 1, 1, 1, 1]]), 0.5),         # one token repeated
+              (T([[2.0, 1.0, 0.0], [5.0, 5.0, 5.0]]), T([[0, 0, 2], [1, 1, 1]]), 1.5),
+          ]
+          against(freq_penalty, _ref, cases + rand_cases(_gen, 200), same=_same, show=_show)

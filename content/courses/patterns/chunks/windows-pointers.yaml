@@ -1,0 +1,455 @@
+id: windows-pointers
+title: Windows & pointers
+intro: |
+  Five linear-time templates for arrays and strings: move indices instead of re-scanning.
+problems:
+  - Longest Substring Without Repeating Characters
+  - Minimum Size Subarray Sum
+  - Container With Most Water
+  - Subarray Sum Equals K
+  - Search Insert Position
+  - Koko Eating Bananas
+atoms: []
+skills:
+  - id: windows-pointers.sliding-window
+    name: sliding window (variable size)
+    teach: |
+      ```python
+      l = 0
+
+      for r in range(len(s)):
+          # add s[r]
+
+          while window_is_invalid:
+              # remove s[l]
+              l += 1
+
+          update_answer()           # window [l, r] is valid
+      ```
+      Use when: "longest / shortest contiguous substring or subarray such that ...".
+      Cost: O(n), each index enters and leaves the window once.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s: str`, possibly empty.
+          - **Write** `length_of_longest_substring(s)`.
+          - **Returns**: `int`, the length of the longest contiguous substring whose characters are all different; `0` for `""`.
+          - **Checked on**: `"abba"`, `"dvdf"`, `"bbbbb"`, `""`, a space used as a character, plus 300 random strings with many repeats.
+        starter: |
+          def length_of_longest_substring(s):
+              pass
+        solution: |
+          def length_of_longest_substring(s):
+              count = {}
+              l = best = 0
+              for r in range(len(s)):
+                  count[s[r]] = count.get(s[r], 0) + 1
+                  while count[s[r]] > 1:
+                      count[s[l]] -= 1
+                      l += 1
+                  best = max(best, r - l + 1)
+              return best
+        check: |
+          f = length_of_longest_substring
+          assert f("abcabcbb") == 3, f"f('abcabcbb') = {f('abcabcbb')!r}"
+          assert f("bbbbb") == 1, f"f('bbbbb') = {f('bbbbb')!r}"
+          assert f("pwwkew") == 3, f"f('pwwkew') = {f('pwwkew')!r}"
+          assert f("") == 0, f"f('') = {f('')!r}"
+          assert f("abba") == 2, f"f('abba') = {f('abba')!r}"
+          from cardtest import against, rand_cases
+          def _ref(s):  # brute force: every substring, keep those with no repeat
+              return max((j - i for i in range(len(s)) for j in range(i + 1, len(s) + 1) if len(set(s[i:j])) == j - i), default=0)
+          def _gen(r):
+              return ("".join(r.choice("abcd"[:r.randint(1, 4)]) for _ in range(r.randint(0, 12))),)
+          edge = [("",), ("a",), ("au",), ("dvdf",), ("tmmzuxt",), ("abcdef",), ("ab ab",), ("aab",), ("abcb",)]
+          against(f, _ref, edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          - **Given**: `target: int` (≥ 1), `nums: list[int]` of positive ints, possibly empty.
+          - **Write** `min_subarray_len(target, nums)`.
+          - **Returns**: `int`, the length of the shortest contiguous subarray with sum `>= target` (equal counts); `0` if none reaches it.
+          - **Checked on**: a sum exactly equal to `target`, one element enough, the whole array needed, no answer, `[]`, plus 300 random cases.
+        starter: |
+          def min_subarray_len(target, nums):
+              pass
+        solution: |
+          def min_subarray_len(target, nums):
+              l = total = 0
+              best = float("inf")
+              for r in range(len(nums)):
+                  total += nums[r]
+                  while total >= target:
+                      best = min(best, r - l + 1)
+                      total -= nums[l]
+                      l += 1
+              return 0 if best == float("inf") else best
+        check: |
+          f = min_subarray_len
+          assert f(7, [2, 3, 1, 2, 4, 3]) == 2, f"f(7, [2,3,1,2,4,3]) = {f(7, [2, 3, 1, 2, 4, 3])!r}"
+          assert f(4, [1, 4, 4]) == 1, f"f(4, [1,4,4]) = {f(4, [1, 4, 4])!r}"
+          assert f(11, [1, 1, 1, 1, 1]) == 0, f"f(11, [1]*5) = {f(11, [1, 1, 1, 1, 1])!r}"
+          assert f(5, []) == 0, f"f(5, []) = {f(5, [])!r}"
+          assert f(15, [1, 2, 3, 4, 5]) == 5, f"f(15, [1,2,3,4,5]) = {f(15, [1, 2, 3, 4, 5])!r}"
+          from cardtest import against, rand_cases
+          def _ref(target, nums):  # brute force over all subarrays nums[i:j]
+              n = len(nums)
+              return min((j - i for i in range(n) for j in range(i + 1, n + 1) if sum(nums[i:j]) >= target), default=0)
+          def _gen(r):
+              return (r.randint(1, 30), [r.randint(1, 6) for _ in range(r.randint(0, 10))])
+          edge = [(1, [1]), (2, [1]), (3, [1, 1, 1]), (3, [1, 1, 1, 1]), (6, [1, 2, 3]), (100, [50, 50]), (5, [1, 5, 1]), (4, [2, 2, 1, 4])]
+          against(f, _ref, edge + rand_cases(_gen, 300))
+
+  - id: windows-pointers.fixed-window
+    name: sliding window (fixed size k)
+    teach: |
+      ```python
+      for i in range(len(a)):
+          # add a[i]
+
+          if i >= k:
+              # remove a[i - k]
+
+          if i >= k - 1:              # window a[i-k+1 .. i] is full
+              update_answer()
+      ```
+      Use when: "every subarray / substring of length k", "max / min / count over windows of size k".
+      Cost: O(n).
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums: list[int]` (length ≥ 1, negatives allowed), `k: int` with `1 <= k <= len(nums)`.
+          - **Write** `max_sum_k(nums, k)`.
+          - **Returns**: `int`, the largest sum of a contiguous window of exactly `k` items.
+          - **Checked on**: all-negative values, `k = 1`, `k = len(nums)`, best window first / last, plus 300 random cases.
+        starter: |
+          def max_sum_k(nums, k):
+              pass
+        solution: |
+          def max_sum_k(nums, k):
+              window = 0
+              best = float("-inf")
+              for i in range(len(nums)):
+                  window += nums[i]
+                  if i >= k:
+                      window -= nums[i - k]
+                  if i >= k - 1:
+                      best = max(best, window)
+              return best
+        check: |
+          f = max_sum_k
+          assert f([1, 4, 2, 10, 23, 3, 1, 0, 20], 4) == 39, f"f([1,4,2,10,23,3,1,0,20], 4) = {f([1, 4, 2, 10, 23, 3, 1, 0, 20], 4)!r}"
+          assert f([5], 1) == 5, f"f([5], 1) = {f([5], 1)!r}"
+          assert f([-1, -2, -3], 2) == -3, f"f([-1,-2,-3], 2) = {f([-1, -2, -3], 2)!r}"
+          assert f([3, 1, 2], 3) == 6, f"f([3,1,2], 3) = {f([3, 1, 2], 3)!r}"
+          assert f([1, 2, 3], 1) == 3, f"f([1,2,3], 1) = {f([1, 2, 3], 1)!r}"
+          from cardtest import against, rand_cases
+          def _ref(nums, k):  # brute force: sum every window of size k
+              return max(sum(nums[i:i + k]) for i in range(len(nums) - k + 1))
+          def _gen(r):
+              nums = [r.randint(-10, 10) for _ in range(r.randint(1, 10))]
+              return (nums, r.randint(1, len(nums)))
+          edge = [([-5], 1), ([0, 0], 2), ([-3, -1, -2], 1), ([-3, -1, -2], 3), ([1, 2, 3, 9], 2), ([9, 1, 2, 3], 2), ([-1, -1, 5], 1)]
+          against(f, _ref, edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          - **Given**: `s: str` of lowercase letters (length ≥ 1), `k: int` with `1 <= k <= len(s)`.
+          - **Write** `max_vowels(s, k)`.
+          - **Returns**: `int`, the most vowels (`a e i o u`) in any substring of exactly `k` characters (`0` if there are none).
+          - **Checked on**: no vowels, `k = 1`, `k = len(s)`, vowels only at the start / end, plus 300 random cases.
+        starter: |
+          def max_vowels(s, k):
+              pass
+        solution: |
+          def max_vowels(s, k):
+              count = best = 0
+              for i in range(len(s)):
+                  count += s[i] in "aeiou"
+                  if i >= k:
+                      count -= s[i - k] in "aeiou"
+                  if i >= k - 1:
+                      best = max(best, count)
+              return best
+        check: |
+          f = max_vowels
+          assert f("abciiidef", 3) == 3, f"f('abciiidef', 3) = {f('abciiidef', 3)!r}"
+          assert f("aeiou", 2) == 2, f"f('aeiou', 2) = {f('aeiou', 2)!r}"
+          assert f("leetcode", 3) == 2, f"f('leetcode', 3) = {f('leetcode', 3)!r}"
+          assert f("xyz", 1) == 0, f"f('xyz', 1) = {f('xyz', 1)!r}"
+          assert f("a", 1) == 1, f"f('a', 1) = {f('a', 1)!r}"
+          from cardtest import against, rand_cases
+          def _ref(s, k):  # brute force: count vowels in every window of length k
+              return max(sum(c in "aeiou" for c in s[i:i + k]) for i in range(len(s) - k + 1))
+          def _gen(r):
+              s = "".join(r.choice("aeioubcx") for _ in range(r.randint(1, 12)))
+              return (s, r.randint(1, len(s)))
+          edge = [("b", 1), ("u", 1), ("bbbaa", 2), ("aabbb", 2), ("tryhard", 4), ("ou", 2), ("xxuxx", 5)]
+          against(f, _ref, edge + rand_cases(_gen, 300))
+
+  - id: windows-pointers.two-pointers
+    name: two pointers (opposite ends)
+    teach: |
+      ```python
+      l, r = 0, len(a) - 1
+
+      while l < r:
+          update_answer()           # from a[l], a[r]
+
+          if left_side_is_worse:
+              l += 1
+          else:
+              r -= 1
+      ```
+      Use when: sorted array + pair / target sum, palindromes, "two lines / two ends" maximization.
+      Cost: O(n).
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums: list[int]` sorted ascending (duplicates and negatives possible), `target: int`; exactly one pair of positions sums to `target`.
+          - **Write** `two_sum_sorted(nums, target)` with two pointers.
+          - **Returns**: a `list` `[i, j]` of 0-based indices with `i < j` and `nums[i] + nums[j] == target`.
+          - **Checked on**: equal values (`[2, 2]`, target 4), the pair at both ends, negatives, plus 300 random cases.
+        starter: |
+          def two_sum_sorted(nums, target):
+              pass
+        solution: |
+          def two_sum_sorted(nums, target):
+              l, r = 0, len(nums) - 1
+              while l < r:
+                  s = nums[l] + nums[r]
+                  if s == target:
+                      return [l, r]
+                  if s < target:
+                      l += 1
+                  else:
+                      r -= 1
+        check: |
+          f = two_sum_sorted
+          assert f([2, 7, 11, 15], 9) == [0, 1], f"f([2,7,11,15], 9) = {f([2, 7, 11, 15], 9)!r}"
+          assert f([2, 3, 4], 6) == [0, 2], f"f([2,3,4], 6) = {f([2, 3, 4], 6)!r}"
+          assert f([-1, 0], -1) == [0, 1], f"f([-1,0], -1) = {f([-1, 0], -1)!r}"
+          assert f([1, 2, 3, 4, 4, 9], 8) == [3, 4], f"f([1,2,3,4,4,9], 8) = {f([1, 2, 3, 4, 4, 9], 8)!r}"
+          from cardtest import against, rand_cases
+          def _ref(nums, target):  # brute force: the one pair i < j that sums to target
+              n = len(nums)
+              return next([i, j] for i in range(n) for j in range(i + 1, n) if nums[i] + nums[j] == target)
+          def _gen(r):  # sorted, with duplicates and negatives, and exactly one valid pair
+              while True:
+                  nums = sorted(r.randint(-8, 8) for _ in range(r.randint(2, 9)))
+                  i, j = sorted(r.sample(range(len(nums)), 2))
+                  t = nums[i] + nums[j]
+                  if sum(nums[a] + nums[b] == t for a in range(len(nums)) for b in range(a + 1, len(nums))) == 1:
+                      return (nums, t)
+          edge = [([1, 2], 3), ([2, 2], 4), ([0, 0, 3, 4], 0), ([1, 2, 2], 4), ([-3, -1, 0, 2], -4), ([-5, -1, 3, 8], 2)]
+          against(f, _ref, edge + rand_cases(_gen, 300), same=lambda got, want: isinstance(got, (list, tuple)) and list(got) == want)
+      - id: b
+        prompt: |
+          - **Given**: `height: list[int]` of non-negative ints, possibly empty; line `i` stands at x = `i`.
+          - **Write** `max_area(height)`.
+          - **Returns**: `int`, the largest `(j - i) * min(height[i], height[j])` over pairs `i < j`; `0` if there are fewer than 2 lines.
+          - **Checked on**: `[]`, one line, zero heights, a best pair not at the ends, plus 300 random cases.
+        starter: |
+          def max_area(height):
+              pass
+        solution: |
+          def max_area(height):
+              l, r = 0, len(height) - 1
+              best = 0
+              while l < r:
+                  best = max(best, (r - l) * min(height[l], height[r]))
+                  if height[l] < height[r]:
+                      l += 1
+                  else:
+                      r -= 1
+              return best
+        check: |
+          f = max_area
+          assert f([1, 8, 6, 2, 5, 4, 8, 3, 7]) == 49, f"f([1,8,6,2,5,4,8,3,7]) = {f([1, 8, 6, 2, 5, 4, 8, 3, 7])!r}"
+          assert f([1, 1]) == 1, f"f([1,1]) = {f([1, 1])!r}"
+          assert f([4, 3, 2, 1, 4]) == 16, f"f([4,3,2,1,4]) = {f([4, 3, 2, 1, 4])!r}"
+          assert f([5]) == 0, f"f([5]) = {f([5])!r}"
+          assert f([]) == 0, f"f([]) = {f([])!r}"
+          from cardtest import against, rand_cases
+          def _ref(height):  # brute force over every pair of lines
+              n = len(height)
+              return max(((j - i) * min(height[i], height[j]) for i in range(n) for j in range(i + 1, n)), default=0)
+          def _gen(r):
+              return ([r.randint(0, 10) for _ in range(r.randint(0, 10))],)
+          edge = [([0, 0],), ([0, 5],), ([1, 2, 1],), ([2, 3, 4, 5, 18, 17, 6],), ([1, 2, 4, 3],), ([3, 9, 3, 4, 7, 2, 12, 6],)]
+          against(f, _ref, edge + rand_cases(_gen, 300))
+
+  - id: windows-pointers.prefix-hashmap
+    name: prefix sum + hashmap
+    teach: |
+      ```python
+      seen = {0: 1}       # prefix -> count (or -> first index)
+      prefix = 0
+
+      for x in a:
+          prefix += x
+          use(seen.get(prefix - target, 0))   # subarrays ending here with sum target
+          seen[prefix] = seen.get(prefix, 0) + 1
+      ```
+      Use when: "count / longest subarray with sum k", negatives allowed (so no sliding window), "equal number of A and B".
+      Cost: O(n) time, O(n) memory.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums: list[int]` (negatives and zeros allowed, possibly empty), `k: int` (may be `0` or negative).
+          - **Write** `subarray_sum(nums, k)`.
+          - **Returns**: `int`, how many non-empty contiguous subarrays sum to `k` (counted by position: `[0, 0, 0]`, `k = 0` → `6`).
+          - **Checked on**: `k = 0` with zeros, negatives, `[]`, plus 300 random cases.
+        starter: |
+          def subarray_sum(nums, k):
+              pass
+        solution: |
+          def subarray_sum(nums, k):
+              seen = {0: 1}
+              prefix = count = 0
+              for x in nums:
+                  prefix += x
+                  count += seen.get(prefix - k, 0)
+                  seen[prefix] = seen.get(prefix, 0) + 1
+              return count
+        check: |
+          f = subarray_sum
+          assert f([1, 1, 1], 2) == 2, f"f([1,1,1], 2) = {f([1, 1, 1], 2)!r}"
+          assert f([1, 2, 3], 3) == 2, f"f([1,2,3], 3) = {f([1, 2, 3], 3)!r}"
+          assert f([1, -1, 0], 0) == 3, f"f([1,-1,0], 0) = {f([1, -1, 0], 0)!r}"
+          assert f([3], 3) == 1, f"f([3], 3) = {f([3], 3)!r}"
+          assert f([], 0) == 0, f"f([], 0) = {f([], 0)!r}"
+          from cardtest import against, rand_cases
+          def _ref(nums, k):  # brute force: count every non-empty subarray nums[i:j]
+              n = len(nums)
+              return sum(sum(nums[i:j]) == k for i in range(n) for j in range(i + 1, n + 1))
+          def _gen(r):
+              return ([r.randint(-3, 3) for _ in range(r.randint(0, 10))], r.randint(-4, 4))
+          edge = [([0], 0), ([0, 0, 0], 0), ([1], 0), ([-1, -1, 1], 0), ([1, -1, 1, -1], 0), ([3, 4, 7, 2, -3, 1, 4, 2], 7), ([-2], -2)]
+          against(f, _ref, edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          - **Given**: `nums: list[int]` of only `0`s and `1`s, possibly empty.
+          - **Write** `find_max_length(nums)` (hint: count a `0` as `-1`).
+          - **Returns**: `int`, the length of the longest contiguous subarray with as many `0`s as `1`s; `0` if there is none.
+          - **Checked on**: `[]`, all one value, a balanced run starting at index 0, plus 300 random cases.
+        starter: |
+          def find_max_length(nums):
+              pass
+        solution: |
+          def find_max_length(nums):
+              first = {0: -1}
+              prefix = best = 0
+              for i, x in enumerate(nums):
+                  prefix += 1 if x == 1 else -1
+                  if prefix in first:
+                      best = max(best, i - first[prefix])
+                  else:
+                      first[prefix] = i
+              return best
+        check: |
+          f = find_max_length
+          assert f([0, 1]) == 2, f"f([0,1]) = {f([0, 1])!r}"
+          assert f([0, 1, 0]) == 2, f"f([0,1,0]) = {f([0, 1, 0])!r}"
+          assert f([0, 0, 1, 0, 0, 0, 1, 1]) == 6, f"f([0,0,1,0,0,0,1,1]) = {f([0, 0, 1, 0, 0, 0, 1, 1])!r}"
+          assert f([0, 0, 0]) == 0, f"f([0,0,0]) = {f([0, 0, 0])!r}"
+          assert f([]) == 0, f"f([]) = {f([])!r}"
+          from cardtest import against, rand_cases
+          def _ref(nums):  # brute force: every subarray with as many 0s as 1s
+              n = len(nums)
+              return max((j - i for i in range(n) for j in range(i + 1, n + 1) if 2 * sum(nums[i:j]) == j - i), default=0)
+          def _gen(r):
+              p = r.random()
+              return ([int(r.random() < p) for _ in range(r.randint(0, 12))],)
+          edge = [([1],), ([1, 1],), ([1, 0],), ([1, 1, 0],), ([0, 1, 1, 0, 1],), ([1, 1, 1, 0, 0, 0],), ([0, 0, 1, 1, 0, 0],)]
+          against(f, _ref, edge + rand_cases(_gen, 300))
+
+  - id: windows-pointers.binary-search
+    name: binary search (first true)
+    teach: |
+      ```python
+      lo, hi = 0, len(a)        # [lo, hi): hi = one past the last candidate
+
+      while lo < hi:
+          mid = (lo + hi) // 2
+          if ok(mid):           # ok: False ... False True ... True
+              hi = mid
+          else:
+              lo = mid + 1
+
+      # lo = first value where ok is true
+      ```
+      Use when: sorted input, or "minimum X such that ..." where a bigger X only makes it easier.
+      Cost: O(log n) calls to ok.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums: list[int]` sorted ascending, distinct, possibly empty; `target: int`.
+          - **Write** `search_insert(nums, target)` with binary search.
+          - **Returns**: `int`, the index of `target` if present, else the index where inserting it keeps `nums` sorted (`0` … `len(nums)`).
+          - **Checked on**: `[]`, target before all / after all / equal to the last, negatives, plus 300 random cases.
+        starter: |
+          def search_insert(nums, target):
+              pass
+        solution: |
+          def search_insert(nums, target):
+              lo, hi = 0, len(nums)
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if nums[mid] >= target:
+                      hi = mid
+                  else:
+                      lo = mid + 1
+              return lo
+        check: |
+          f = search_insert
+          assert f([1, 3, 5, 6], 5) == 2, f"f([1,3,5,6], 5) = {f([1, 3, 5, 6], 5)!r}"
+          assert f([1, 3, 5, 6], 2) == 1, f"f([1,3,5,6], 2) = {f([1, 3, 5, 6], 2)!r}"
+          assert f([1, 3, 5, 6], 7) == 4, f"f([1,3,5,6], 7) = {f([1, 3, 5, 6], 7)!r}"
+          assert f([1, 3, 5, 6], 0) == 0, f"f([1,3,5,6], 0) = {f([1, 3, 5, 6], 0)!r}"
+          assert f([], 3) == 0, f"f([], 3) = {f([], 3)!r}"
+          from cardtest import against, rand_cases
+          def _ref(nums, target):  # linear scan: how many values are smaller than target
+              return sum(x < target for x in nums)
+          def _gen(r):
+              nums = sorted(r.sample(range(-10, 11), r.randint(0, 8)))
+              return (nums, r.choice(nums + [r.randint(-12, 12)]))
+          edge = [([1], 0), ([1], 1), ([1], 2), ([-5, -2], -3), ([-5, -2], -2), ([1, 3], 3), ([1, 3], 4), ([1, 3, 5, 6, 8], 8)]
+          against(f, _ref, edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          Koko eats at speed `v` bananas/hour, one pile at a time: a pile of `p` takes `ceil(p / v)` hours.
+
+          - **Given**: `piles: list[int]` (length ≥ 1, each ≥ 1), `h: int` with `h >= len(piles)`.
+          - **Write** `min_eating_speed(piles, h)` with binary search on `v`.
+          - **Returns**: `int`, the smallest `v >= 1` whose total hours is `<= h`.
+          - **Checked on**: `h == len(piles)` (answer `max(piles)`), many spare hours (answer `1`), `[10**9]` with `h = 2` (must be fast), plus 300 random cases.
+        starter: |
+          def min_eating_speed(piles, h):
+              pass
+        solution: |
+          def min_eating_speed(piles, h):
+              lo, hi = 1, max(piles) + 1
+              while lo < hi:
+                  mid = (lo + hi) // 2
+                  if sum((p + mid - 1) // mid for p in piles) <= h:
+                      hi = mid
+                  else:
+                      lo = mid + 1
+              return lo
+        check: |
+          f = min_eating_speed
+          assert f([3, 6, 7, 11], 8) == 4, f"f([3,6,7,11], 8) = {f([3, 6, 7, 11], 8)!r}"
+          assert f([30, 11, 23, 4, 20], 5) == 30, f"f([30,11,23,4,20], 5) = {f([30, 11, 23, 4, 20], 5)!r}"
+          assert f([30, 11, 23, 4, 20], 6) == 23, f"f([30,11,23,4,20], 6) = {f([30, 11, 23, 4, 20], 6)!r}"
+          assert f([1], 1) == 1, f"f([1], 1) = {f([1], 1)!r}"
+          assert f([10**9], 2) == 5 * 10**8, f"f([10**9], 2) = {f([10**9], 2)!r}"
+          from cardtest import against, rand_cases
+          def _ref(piles, h):  # try every speed 1, 2, 3, ... until all piles fit in h hours
+              v = 1
+              while sum(-(-p // v) for p in piles) > h:
+                  v += 1
+              return v
+          def _gen(r):
+              piles = [r.randint(1, 30) for _ in range(r.randint(1, 6))]
+              return (piles, r.randint(len(piles), len(piles) + 15))
+          edge = [([1], 5), ([7], 1), ([7], 7), ([7], 2), ([2, 2], 2), ([2, 2], 3), ([9, 9, 9], 3), ([1, 1, 1, 30], 4), ([5, 5], 5)]
+          against(f, _ref, edge + rand_cases(_gen, 300))

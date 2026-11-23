@@ -1,0 +1,292 @@
+id: transformer
+title: Transformer blocks
+intro: |
+  Put it together. PyTorch ships an encoder layer you can configure in one line, but interviews
+  usually want a small pre-norm block written from `LayerNorm`, `MultiheadAttention` and an MLP,
+  plus the LM head and its loss.
+problems:
+  - Write a GPT-style decoder block
+  - Build a small transformer encoder for classification
+  - Compute the next-token loss of a language model
+  - Count the parameters of a transformer block
+atoms: []
+skills:
+  - id: transformer.encoder-layer
+    name: nn.TransformerEncoderLayer / nn.TransformerEncoder
+    teach: |
+      ```python
+      # nn.TransformerEncoderLayer(d_model, nhead, ...) -> one attention + MLP block; activation is "relu" or "gelu"
+      layer = nn.TransformerEncoderLayer(d_model=8, nhead=2, dim_feedforward=32, dropout=0.1,
+                                         activation="gelu", batch_first=True, norm_first=True)
+      # nn.TransformerEncoder(layer, num_layers) -> stack of num_layers deep copies of layer
+      enc = nn.TransformerEncoder(layer, num_layers=2, enable_nested_tensor=False)
+      enc(torch.randn(2, 5, 8)).shape              # (2, 5, 8)
+      # mask=(T, T) bool, True = blocked (e.g. causal, as for MHA attn_mask); src_key_padding_mask=(B, T) bool, True = padding
+      y = enc(x, mask=causal, src_key_padding_mask=pad)
+      ```
+      Pitfall: the defaults are `batch_first=False` and `norm_first=False` (post-norm). With
+      `norm_first=True`, pass `enable_nested_tensor=False` to avoid a warning.
+    cards:
+      - id: a
+        prompt: |
+          Set: `layer` = a pre-norm, batch-first encoder layer with `d_model=8`, 2 heads, `dim_feedforward=32`, `dropout=0.0`, GELU ·
+          `y` = `layer` applied to `x` · `enc` = 2 copies of `layer` stacked (no nested tensors) ·
+          `y2` = `enc` on `x`, blocked by the bool `causal` mask and ignoring the padded positions `pad` (True = padding).
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8)
+          pad = torch.tensor([[False] * 5, [False] * 3 + [True] * 2])
+          causal = torch.triu(torch.ones(5, 5, dtype=torch.bool), diagonal=1)
+        solution: |
+          layer = nn.TransformerEncoderLayer(8, 2, dim_feedforward=32, dropout=0.0, activation="gelu",
+                                             batch_first=True, norm_first=True)
+          y = layer(x)
+          enc = nn.TransformerEncoder(layer, num_layers=2, enable_nested_tensor=False)
+          y2 = enc(x, mask=causal, src_key_padding_mask=pad)
+        check: |
+          assert isinstance(layer, nn.TransformerEncoderLayer), f"layer = {type(layer)}"
+          assert layer.activation is F.gelu, f"activation = {layer.activation}"
+          assert layer.norm_first and layer.self_attn.batch_first, f"norm_first={layer.norm_first}, batch_first={layer.self_attn.batch_first}"
+          assert layer.linear1.out_features == 32 and layer.self_attn.num_heads == 2, "wrong dim_feedforward or nhead"
+          assert y.shape == (2, 5, 8), f"y.shape = {tuple(y.shape)}"
+          assert isinstance(enc, nn.TransformerEncoder) and len(enc.layers) == 2, f"enc = {type(enc).__name__}"
+          blocked = torch.ones(5, 5).triu(1).bool()
+          ref2 = enc(x, mask=blocked, src_key_padding_mask=pad)
+          assert y2.shape == (2, 5, 8), f"y2.shape = {tuple(y2.shape)}"
+          assert not torch.allclose(y2, enc(x, src_key_padding_mask=pad), atol=1e-5), "y2: the causal mask is missing (mask=causal)"
+          assert not torch.allclose(y2, enc(x, mask=blocked), atol=1e-5), "y2: the padding mask is missing (src_key_padding_mask=pad)"
+          assert torch.allclose(y2, ref2, atol=1e-5), "y2 is not enc with both masks"
+      - id: b
+        prompt: |
+          Sentence classifier. Run `enc` on `x` ignoring the padded positions `pad` (True = padding), average its output over the
+          **real** tokens only into `pooled` `(2, 8)`, and set `logits = fc(pooled)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          layer = nn.TransformerEncoderLayer(8, 2, 32, dropout=0.0, batch_first=True, norm_first=True)
+          enc = nn.TransformerEncoder(layer, 2, enable_nested_tensor=False)
+          fc = nn.Linear(8, 3)
+          x = torch.randn(2, 5, 8)
+          pad = torch.tensor([[False] * 5, [False] * 3 + [True] * 2])
+        solution: |
+          h = enc(x, src_key_padding_mask=pad)
+          keep = (~pad).unsqueeze(-1).float()
+          pooled = (h * keep).sum(dim=1) / keep.sum(dim=1)
+          logits = fc(pooled)
+        check: |
+          h = enc(x, src_key_padding_mask=pad)
+          ref = torch.stack([h[0].mean(0), h[1, :3].mean(0)])
+          assert pooled.shape == (2, 8), f"pooled.shape = {tuple(pooled.shape)}"
+          assert torch.allclose(pooled, ref, atol=1e-5), f"pooled[1] = {pooled[1]}\nexpected {ref[1]} (mean over real tokens only)"
+          assert logits.shape == (2, 3) and torch.allclose(logits, fc(ref), atol=1e-5), f"logits = {logits}"
+
+  - id: transformer.block
+    name: a minimal pre-norm block
+    teach: |
+      ```python
+      class Block(nn.Module):
+          def __init__(self, D, H):
+              super().__init__()
+              self.ln1 = nn.LayerNorm(D)
+              self.attn = nn.MultiheadAttention(D, H, batch_first=True)
+              self.ln2 = nn.LayerNorm(D)
+              self.mlp = nn.Sequential(nn.Linear(D, 4 * D), nn.GELU(), nn.Linear(4 * D, D))
+
+          def forward(self, x, mask=None):
+              h = self.ln1(x)
+              x = x + self.attn(h, h, h, attn_mask=mask, need_weights=False)[0]
+              return x + self.mlp(self.ln2(x))
+      ```
+      Pitfall: `MultiheadAttention` returns a tuple. Forgetting `[0]` fails at the add.
+    cards:
+      - id: a
+        prompt: Complete the pre-norm `Block(D, H)` with submodules `ln1`, `attn`, `ln2`, `mlp` (hidden `4 * D`, GELU); `forward(x, mask)` passes `mask` to the attention as `attn_mask`.
+        starter: |
+          class Block(nn.Module):
+              def __init__(self, D, H):
+                  super().__init__()
+
+              def forward(self, x, mask=None):
+                  pass
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+        solution: |
+          class Block(nn.Module):
+              def __init__(self, D, H):
+                  super().__init__()
+                  self.ln1 = nn.LayerNorm(D)
+                  self.attn = nn.MultiheadAttention(D, H, batch_first=True)
+                  self.ln2 = nn.LayerNorm(D)
+                  self.mlp = nn.Sequential(nn.Linear(D, 4 * D), nn.GELU(), nn.Linear(4 * D, D))
+
+              def forward(self, x, mask=None):
+                  h = self.ln1(x)
+                  x = x + self.attn(h, h, h, attn_mask=mask, need_weights=False)[0]
+                  return x + self.mlp(self.ln2(x))
+        check: |
+          b = Block(8, 2)
+          x = torch.randn(2, 5, 8)
+          out = b(x)
+          assert out is not None and out.shape == (2, 5, 8), f"out = {out}"
+          assert b.mlp[0].out_features == 32, f"mlp hidden = {b.mlp[0].out_features}"
+          h = b.ln1(x)
+          ref = x + b.attn(h, h, h)[0]
+          ref = ref + b.mlp(b.ln2(ref))
+          assert torch.allclose(out, ref, atol=1e-5), "out != pre-norm attention + MLP residuals"
+          m = torch.ones(5, 5).triu(1).bool()
+          outm = b(x, m)
+          refm = x + b.attn(h, h, h, attn_mask=m)[0]
+          refm = refm + b.mlp(b.ln2(refm))
+          assert torch.allclose(outm, refm, atol=1e-5), "b(x, mask) ignores the mask (pass attn_mask=mask)"
+      - id: b
+        prompt: Make `Block.forward` causal by building a bool `attn_mask` (True = blocked) of size `T` inside `forward`.
+        starter: |
+          class Block(nn.Module):
+              def __init__(self, D, H):
+                  super().__init__()
+                  self.ln1 = nn.LayerNorm(D)
+                  self.attn = nn.MultiheadAttention(D, H, batch_first=True)
+                  self.ln2 = nn.LayerNorm(D)
+                  self.mlp = nn.Sequential(nn.Linear(D, 4 * D), nn.GELU(), nn.Linear(4 * D, D))
+
+              def forward(self, x):
+                  h = self.ln1(x)
+                  x = x + self.attn(h, h, h, need_weights=False)[0]
+                  return x + self.mlp(self.ln2(x))
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+        solution: |
+          class Block(nn.Module):
+              def __init__(self, D, H):
+                  super().__init__()
+                  self.ln1 = nn.LayerNorm(D)
+                  self.attn = nn.MultiheadAttention(D, H, batch_first=True)
+                  self.ln2 = nn.LayerNorm(D)
+                  self.mlp = nn.Sequential(nn.Linear(D, 4 * D), nn.GELU(), nn.Linear(4 * D, D))
+
+              def forward(self, x):
+                  T = x.shape[1]
+                  mask = torch.triu(torch.ones(T, T, dtype=torch.bool, device=x.device), diagonal=1)
+                  h = self.ln1(x)
+                  x = x + self.attn(h, h, h, attn_mask=mask, need_weights=False)[0]
+                  return x + self.mlp(self.ln2(x))
+        check: |
+          b = Block(8, 2)
+          x = torch.randn(2, 5, 8)
+          x2 = x.clone()
+          x2[:, -1] = 100.0
+          y, y2 = b(x), b(x2)
+          assert y.shape == (2, 5, 8), f"y.shape = {tuple(y.shape)}"
+          assert torch.allclose(y[:, :-1], y2[:, :-1], atol=1e-5), "earlier tokens see the last one"
+
+  - id: transformer.mlp
+    name: the feed-forward MLP
+    teach: |
+      ```python
+      # per-token MLP: nn.Linear acts on the last dim, so (B, T, D) needs no reshape
+      mlp = nn.Sequential(nn.Linear(D, 4 * D), nn.GELU(), nn.Linear(4 * D, D), nn.Dropout(p))  # (B, T, D) -> (B, T, D)
+      ```
+      Pitfall: it holds about `8 * D**2` parameters, twice the attention's `4 * D**2`.
+    cards:
+      - id: a
+        prompt: Build `mlp` for `D = 8` (hidden `4 * D`, GELU, final `Dropout(0.1)`), put it in eval mode, and compute `y = mlp(x)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8)
+        solution: |
+          mlp = nn.Sequential(nn.Linear(8, 32), nn.GELU(), nn.Linear(32, 8), nn.Dropout(0.1))
+          mlp.eval()
+          y = mlp(x)
+        check: |
+          kinds = [type(m).__name__ for m in mlp]
+          assert kinds == ["Linear", "GELU", "Linear", "Dropout"], f"mlp = {kinds}"
+          assert mlp[0].out_features == 32 and mlp[3].p == 0.1, "wrong hidden size or dropout p"
+          assert not mlp.training, "mlp is not in eval mode"
+          assert torch.allclose(y, mlp[2](F.gelu(mlp[0](x))), atol=1e-6), f"y.shape = {tuple(y.shape)}"
+      - id: c
+        prompt: Build the same `mlp` for `D = 64` (hidden `4 * D`, GELU, `Dropout(0.1)`), then set `n_params` to its total number of parameters, counted from the module.
+        setup: |
+          import torch.nn as nn
+          D = 64
+        solution: |
+          mlp = nn.Sequential(nn.Linear(D, 4 * D), nn.GELU(), nn.Linear(4 * D, D), nn.Dropout(0.1))
+          n_params = sum(p.numel() for p in mlp.parameters())
+        check: |
+          kinds = [type(m).__name__ for m in mlp]
+          assert kinds == ["Linear", "GELU", "Linear", "Dropout"], f"mlp = {kinds}"
+          assert mlp[0].out_features == 256, f"hidden = {mlp[0].out_features}"
+          assert n_params == 64 * 256 + 256 + 256 * 64 + 64, f"n_params = {n_params}"
+
+  - id: transformer.lm-head
+    name: LM head and next-token loss
+    teach: |
+      ```python
+      # F.cross_entropy(logits (N, V), targets (N,) long) -> mean loss; logits = head(x) is (B, T, V), so flatten
+      loss = F.cross_entropy(logits.view(-1, V), targets.view(-1))
+      # ignore_index=id: positions whose target == id are skipped (default -100)
+      loss = F.cross_entropy(logits.view(-1, V), targets.view(-1), ignore_index=pad_id)
+      # next-token pairs: predict idx[:, 1:] from idx[:, :-1]
+      inputs, targets = idx[:, :-1], idx[:, 1:]          # (B, T) -> two (B, T - 1)
+      ```
+      Pitfall: `cross_entropy` wants classes in **dim 1**, so `(B, T, V)` must be flattened or transposed.
+    cards:
+      - id: a
+        prompt: |
+          Set: `logits` = `head(x)` (`(2, 5, 10)`) · `loss` = mean cross-entropy against `targets` (`(2, 5)`), flattening both ·
+          `loss_p` = the same but skipping positions whose target is the pad id `0` ·
+          `inputs, nxt` = the next-token input / target pair cut from `idx` (`(2, 6)`).
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          V = 10
+          head = nn.Linear(8, V, bias=False)
+          x = torch.randn(2, 5, 8)
+          targets = torch.randint(1, V, (2, 5))
+          targets[1, 3:] = 0
+          idx = torch.randint(0, V, (2, 6))
+        solution: |
+          logits = head(x)
+          loss = F.cross_entropy(logits.view(-1, V), targets.view(-1))
+          loss_p = F.cross_entropy(logits.view(-1, V), targets.view(-1), ignore_index=0)
+          inputs, nxt = idx[:, :-1], idx[:, 1:]
+        check: |
+          assert logits.shape == (2, 5, 10), f"logits.shape = {tuple(logits.shape)}"
+          lp = torch.log_softmax(head(x), -1)
+          ref = -lp.gather(-1, targets[..., None]).mean()
+          assert loss.dim() == 0 and torch.allclose(loss, ref, atol=1e-5), f"loss = {loss}, expected {ref.item():.4f}"
+          keep = targets != 0
+          ref_p = -lp[keep].gather(-1, targets[keep][:, None]).mean()
+          assert torch.allclose(loss_p, ref_p, atol=1e-5), f"loss_p = {loss_p}, expected {ref_p.item():.4f}"
+          assert torch.equal(inputs, idx[:, :-1]) and torch.equal(nxt, idx[:, 1:]), f"inputs = {inputs}\nnxt = {nxt}"
+      - id: d
+        prompt: "Next-token loss: from `idx` (`(2, 6)`) make `inputs` and `targets`, compute `logits = head(emb(inputs))` and the mean `loss`. Sliced tensors need `.reshape(-1)`, not `.view(-1)`."
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          emb, head = nn.Embedding(10, 8), nn.Linear(8, 10)
+          idx = torch.randint(0, 10, (2, 6))
+        solution: |
+          inputs, targets = idx[:, :-1], idx[:, 1:]
+          logits = head(emb(inputs))
+          loss = F.cross_entropy(logits.reshape(-1, 10), targets.reshape(-1))
+        check: |
+          assert inputs.shape == (2, 5) and torch.equal(inputs, idx[:, :-1]), f"inputs = {inputs}"
+          assert torch.equal(targets, idx[:, 1:]), f"targets = {targets}"
+          lp = torch.log_softmax(head(emb(idx[:, :-1])), -1)
+          ref = -lp.gather(-1, idx[:, 1:, None]).mean()
+          assert loss.dim() == 0 and torch.allclose(loss, ref, atol=1e-5), f"loss = {loss}, expected {ref.item():.4f}"

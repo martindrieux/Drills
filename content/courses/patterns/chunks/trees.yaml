@@ -1,0 +1,1064 @@
+id: trees
+title: Binary trees
+intro: |
+  A binary tree is a graph where every node has at most two children (`left`, `right`) and there are no
+  cycles. So tree searches are graph searches **without the `seen` set**, and you always know which
+  child comes first. Everything here is one question: *what do I do at a node, and when, relative to its children?*
+problems:
+  - Binary Tree Inorder Traversal
+  - Maximum Depth of Binary Tree
+  - Binary Tree Level Order Traversal
+  - Validate Binary Search Tree
+  - Diameter of Binary Tree
+  - Path Sum
+atoms: []
+skills:
+  - id: trees.orders
+    name: pre-order, in-order, post-order (recursive)
+    teach: |
+      ```python
+      # The node type LeetCode gives you. left / right are TreeNode or None (no child).
+      class TreeNode:
+          def __init__(self, val=0, left=None, right=None):
+              self.val, self.left, self.right = val, left, right
+
+      # A recursive walk visits every node once. The three orders differ ONLY in when you record the node.
+      def walk(node):
+          if node is None:        # empty subtree: nothing to visit (the base case that stops the recursion)
+              return
+          # PRE-order:  record node.val here  -> the node comes BEFORE its children
+          walk(node.left)
+          # IN-order:   record node.val here  -> the node comes BETWEEN its left and right subtrees
+          walk(node.right)
+          # POST-order: record node.val here  -> the node comes AFTER both children
+
+      #        1
+      #       / \          preorder  [1, 2, 4, 5, 3]   root first, then the whole left subtree, then the right
+      #      2   3         inorder   [4, 2, 5, 1, 3]   whole left subtree, root, whole right subtree
+      #     / \            postorder [4, 5, 2, 3, 1]   both subtrees first, root last
+      #    4   5
+      ```
+      Use when: pre-order to copy or serialize (a parent before its children) · in-order on a binary
+      **search** tree gives the values **sorted** · post-order when a node needs its children's results first.
+      Cost: O(n) time, O(h) recursion depth (h = height of the tree).
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `TreeNode` and `build(vals)`, which makes a tree from a LeetCode level-order list
+          (`None` = no node), e.g. `build([1, 2, 3, 4, 5])` is the tree drawn in the lesson.
+
+          - **Write** `preorder(root)`, `inorder(root)` and `postorder(root)`, recursively.
+          - **Returns**: each a `list` of the node values in that order; `[]` for an empty tree (`root is None`).
+          - **Checked on**: the lesson's tree, an empty tree, a single node, a lopsided tree with a missing child,
+            and 300 random trees (chains, zigzags, full and random shapes).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              """LeetCode level-order list -> tree (None = no node)."""
+              if not vals:
+                  return None
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for n in nodes:
+                  if n is not None:
+                      n.left, n.right = next(kids, None), next(kids, None)
+              return nodes[0]
+        starter: |
+          def preorder(root):
+              pass
+
+          def inorder(root):
+              pass
+
+          def postorder(root):
+              pass
+        solution: |
+          def preorder(root):
+              out = []
+              def walk(node):
+                  if node is None:
+                      return
+                  out.append(node.val)
+                  walk(node.left)
+                  walk(node.right)
+              walk(root)
+              return out
+
+          def inorder(root):
+              out = []
+              def walk(node):
+                  if node is None:
+                      return
+                  walk(node.left)
+                  out.append(node.val)
+                  walk(node.right)
+              walk(root)
+              return out
+
+          def postorder(root):
+              out = []
+              def walk(node):
+                  if node is None:
+                      return
+                  walk(node.left)
+                  walk(node.right)
+                  out.append(node.val)
+              walk(root)
+              return out
+        check: |
+          t = build([1, 2, 3, 4, 5])
+          for f, want in [(preorder, [1, 2, 4, 5, 3]), (inorder, [4, 2, 5, 1, 3]), (postorder, [4, 5, 2, 3, 1])]:
+              got = f(t)
+              assert got == want, f"{f.__name__}(lesson tree) = {got!r}, expected {want!r}"
+              assert f(None) == [], f"{f.__name__}(None) = {f(None)!r}, expected []"
+              assert f(build([7])) == [7], f"{f.__name__}(single node) = {f(build([7]))!r}"
+          lop = build([1, None, 2, 3])      # 1 -> right child 2 -> left child 3
+          assert preorder(lop) == [1, 2, 3], f"preorder = {preorder(lop)!r}, expected [1, 2, 3]"
+          assert inorder(lop) == [1, 3, 2], f"inorder = {inorder(lop)!r}, expected [1, 3, 2]"
+          assert postorder(lop) == [3, 2, 1], f"postorder = {postorder(lop)!r}, expected [3, 2, 1]"
+
+          from cardtest import against, rand_cases
+
+          def _shape(r, nmax=12):
+              """Random tree shape: kids[i] = [left id, right id] (node 0 = root); empty, chains, zigzags, full, random."""
+              n = r.choice([0, 1, 2, 3] + [r.randint(4, nmax)] * 4)
+              mode = r.choice(["random", "random", "random", "left", "right", "zigzag", "full"])
+              kids = [[None, None] for _ in range(n)]
+              for i in range(1, n):
+                  if mode == "random":
+                      p, s = r.choice([(p, s) for p in range(i) for s in (0, 1) if kids[p][s] is None])
+                  elif mode == "full":
+                      p, s = (i - 1) // 2, (i - 1) % 2
+                  else:
+                      p, s = i - 1, {"left": 0, "right": 1}.get(mode, r.randint(0, 1))
+                  kids[p][s] = i
+              return kids
+
+          def _level(kids, vals):
+              """Shape + values -> LeetCode level-order list, the input of build()."""
+              out, q = [], ([0] if kids else [])
+              for x in q:
+                  out.append(None if x is None else vals[x])
+                  if x is not None:
+                      q += kids[x]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          _show = lambda v: f"(build({v!r}))"
+
+          # references written straight from the definitions
+          def _pre(v):
+              f = lambda n: [] if n is None else [n.val] + f(n.left) + f(n.right)
+              return f(build(v))
+
+          def _in(v):
+              f = lambda n: [] if n is None else f(n.left) + [n.val] + f(n.right)
+              return f(build(v))
+
+          def _post(v):
+              f = lambda n: [] if n is None else f(n.left) + f(n.right) + [n.val]
+              return f(build(v))
+
+          def _gen(r):
+              kids = _shape(r)
+              return (_level(kids, r.sample(range(1, 100), len(kids))),)
+
+          _cases = [([],), ([7],), ([1, 2],), ([1, None, 2],), ([1, 2, 3, 4, 5, 6, 7],),
+                    ([1, 2, None, 3, None, 4],), ([1, None, 2, 3, 4, None, 5],)] + rand_cases(_gen, 300)
+          for _f, _r in [(preorder, _pre), (inorder, _in), (postorder, _post)]:
+              against(lambda v, f=_f: f(build(v)), _r, _cases, show=_show, name=_f.__name__)
+      - id: b
+        prompt: |
+          A **binary search tree** (BST) is valid when, for every node, all values in its left subtree are
+          smaller and all values in its right subtree are larger. Equivalently: its **in-order** list is strictly increasing.
+
+          - **Given**: `TreeNode`, `build` (see setup).
+          - **Write** `is_valid_bst(root)` using an in-order traversal.
+          - **Returns**: a `bool`, `True` / `False` (an empty tree is valid; duplicates make it invalid).
+          - **Checked on**: a valid BST, a tree where a deep node breaks the rule (each parent-child pair looks fine), duplicates, empty,
+            and 300 random trees (valid BSTs, and BSTs with one value swapped, repeated or replaced).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              if not vals:
+                  return None
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for n in nodes:
+                  if n is not None:
+                      n.left, n.right = next(kids, None), next(kids, None)
+              return nodes[0]
+        starter: |
+          def is_valid_bst(root):
+              pass
+        solution: |
+          def is_valid_bst(root):
+              vals = []
+              def walk(node):
+                  if node is None:
+                      return
+                  walk(node.left)
+                  vals.append(node.val)
+                  walk(node.right)
+              walk(root)
+              return all(a < b for a, b in zip(vals, vals[1:]))
+        check: |
+          cases = [([5, 3, 8, 1, 4, 7, 9], True), ([5, 3, 8, 1, 6, 7, 9], False), ([2, 2, 2], False), ([], True), ([1], True)]
+          for vals, want in cases:
+              got = is_valid_bst(build(vals))
+              assert got is want, f"is_valid_bst(build({vals})) = {got!r}, expected {want}"
+
+          from cardtest import against, rand_cases
+
+          def _shape(r, nmax=12):
+              """Random tree shape: kids[i] = [left id, right id] (node 0 = root); empty, chains, zigzags, full, random."""
+              n = r.choice([0, 1, 2, 3] + [r.randint(4, nmax)] * 4)
+              mode = r.choice(["random", "random", "random", "left", "right", "zigzag", "full"])
+              kids = [[None, None] for _ in range(n)]
+              for i in range(1, n):
+                  if mode == "random":
+                      p, s = r.choice([(p, s) for p in range(i) for s in (0, 1) if kids[p][s] is None])
+                  elif mode == "full":
+                      p, s = (i - 1) // 2, (i - 1) % 2
+                  else:
+                      p, s = i - 1, {"left": 0, "right": 1}.get(mode, r.randint(0, 1))
+                  kids[p][s] = i
+              return kids
+
+          def _level(kids, vals):
+              """Shape + values -> LeetCode level-order list, the input of build()."""
+              out, q = [], ([0] if kids else [])
+              for x in q:
+                  out.append(None if x is None else vals[x])
+                  if x is not None:
+                      q += kids[x]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _ref(v):
+              # different method: every node must lie strictly inside the (low, high) range set by its ancestors
+              def ok(n, lo, hi):
+                  return n is None or (lo < n.val < hi and ok(n.left, lo, n.val) and ok(n.right, n.val, hi))
+              return ok(build(v), float("-inf"), float("inf"))
+
+          def _gen(r):
+              # a valid BST on a random shape, then (often) one value swapped, duplicated or replaced
+              kids = _shape(r)
+              order = []
+              def walk(i):
+                  if i is not None:
+                      walk(kids[i][0])
+                      order.append(i)
+                      walk(kids[i][1])
+              walk(0 if kids else None)
+              vals = [0] * len(kids)
+              for rank, i in enumerate(order):
+                  vals[i] = 3 * rank + r.randint(0, 2)
+              if len(kids) >= 2 and r.random() < 0.6:
+                  a, b = r.sample(range(len(kids)), 2)
+                  k = r.random()
+                  if k < 0.4:
+                      vals[a], vals[b] = vals[b], vals[a]
+                  elif k < 0.7:
+                      vals[a] = vals[b]
+                  else:
+                      vals[a] = r.randint(-2, 3 * len(kids) + 2)
+              return (_level(kids, vals),)
+
+          _edge = [([5, 4, 6, None, None, 3, 7],), ([5, 1, 8, None, 6],), ([1, 1],), ([1, None, 1],), ([2, 1, 3],),
+                   ([3, 1, 5, 0, 2, 4, 6],), ([3, None, 30, 10, None, None, 15, None, 45],)]
+          against(lambda v: is_valid_bst(build(v)), _ref, _edge + rand_cases(_gen, 300),
+                  same=lambda got, exp: got is exp, show=lambda v: f"(build({v!r}))", name="is_valid_bst")
+
+  - id: trees.dfs-stack
+    name: the same orders with an explicit stack (iterative DFS)
+    teach: |
+      Recursion secretly keeps a **stack** of the nodes you are in the middle of. Managing that stack yourself
+      gives the same orders without recursion (Python stops recursing at about 1000 levels: `RecursionError`).
+      ```python
+      # A Python list as a stack: stack.append(x) puts x on top; stack.pop() removes and returns the top (last pushed).
+
+      # PRE-order: pop a node, record it, push its children. Push RIGHT first so LEFT is on top -> handled first.
+      def preorder(root):
+          out, stack = [], ([root] if root else [])
+          while stack:
+              node = stack.pop()
+              out.append(node.val)
+              if node.right: stack.append(node.right)
+              if node.left:  stack.append(node.left)
+          return out                          # lesson tree -> [1, 2, 4, 5, 3]
+
+      # IN-order: dive left as far as possible (stacking the path); when stuck, pop a node, record it, go right.
+      def inorder(root):
+          out, stack, node = [], [], root
+          while stack or node:
+              while node:                     # go down-left, remembering every node on the way
+                  stack.append(node)
+                  node = node.left
+              node = stack.pop()              # the leftmost node not yet recorded
+              out.append(node.val)
+              node = node.right               # now visit its right subtree the same way
+          return out                          # -> [4, 2, 5, 1, 3]
+
+      # POST-order: a pre-order that pushes LEFT first records node, right, left. Reversed: left, right, node.
+      def postorder(root):
+          out, stack = [], ([root] if root else [])
+          while stack:
+              node = stack.pop()
+              out.append(node.val)
+              if node.left:  stack.append(node.left)
+              if node.right: stack.append(node.right)
+          return out[::-1]                    # -> [4, 5, 2, 3, 1]
+      ```
+      Use when: the tree may be deeper than ~1000 levels, or the interviewer asks for the iterative version.
+      Pitfall: in pre-order, pushing `left` before `right` gives root, right, left (wrong order).
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `TreeNode`, `build(vals)`, and `chain(n)`, a tree of depth `n` where each node
+          only has a left child (values 1, 2, …, n from the top).
+
+          - **Write** `preorder(root)`, `inorder(root)`, `postorder(root)` **without recursion** (explicit stack).
+          - **Returns**: each a `list` of values in that order, `[]` for `None`.
+          - **Checked on**: the lesson's tree, an empty tree, 300 random small trees (chains, zigzags, full and random shapes),
+            and `chain(3000)` (a recursive version crashes there).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              if not vals:
+                  return None
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for n in nodes:
+                  if n is not None:
+                      n.left, n.right = next(kids, None), next(kids, None)
+              return nodes[0]
+
+          def chain(n):
+              """1 -> 2 -> ... -> n, each the LEFT child of the previous one."""
+              root = None
+              for v in range(n, 0, -1):
+                  root = TreeNode(v, left=root)
+              return root
+        starter: |
+          def preorder(root):
+              pass
+
+          def inorder(root):
+              pass
+
+          def postorder(root):
+              pass
+        solution: |
+          def preorder(root):
+              out, stack = [], ([root] if root else [])
+              while stack:
+                  node = stack.pop()
+                  out.append(node.val)
+                  if node.right:
+                      stack.append(node.right)
+                  if node.left:
+                      stack.append(node.left)
+              return out
+
+          def inorder(root):
+              out, stack, node = [], [], root
+              while stack or node:
+                  while node:
+                      stack.append(node)
+                      node = node.left
+                  node = stack.pop()
+                  out.append(node.val)
+                  node = node.right
+              return out
+
+          def postorder(root):
+              out, stack = [], ([root] if root else [])
+              while stack:
+                  node = stack.pop()
+                  out.append(node.val)
+                  if node.left:
+                      stack.append(node.left)
+                  if node.right:
+                      stack.append(node.right)
+              return out[::-1]
+        check: |
+          t = build([1, 2, 3, 4, 5])
+          for f, want in [(preorder, [1, 2, 4, 5, 3]), (inorder, [4, 2, 5, 1, 3]), (postorder, [4, 5, 2, 3, 1])]:
+              got = f(t)
+              assert got == want, f"{f.__name__}(lesson tree) = {got!r}, expected {want!r}"
+              assert f(None) == [], f"{f.__name__}(None) = {f(None)!r}, expected []"
+          deep = chain(3000)
+          try:
+              p, i, q = preorder(deep), inorder(deep), postorder(deep)
+          except RecursionError:
+              raise AssertionError("RecursionError on a 3000-deep tree: use an explicit stack, not recursion")
+          assert p == list(range(1, 3001)), f"preorder(chain(3000)) starts {p[:5]!r}..., expected [1, 2, 3, ...]"
+          assert i == list(range(3000, 0, -1)), f"inorder(chain(3000)) starts {i[:5]!r}..., expected [3000, 2999, ...]"
+          assert q == list(range(3000, 0, -1)), f"postorder(chain(3000)) starts {q[:5]!r}..., expected [3000, 2999, ...]"
+
+          from cardtest import against, rand_cases
+
+          def _shape(r, nmax=12):
+              """Random tree shape: kids[i] = [left id, right id] (node 0 = root); empty, chains, zigzags, full, random."""
+              n = r.choice([0, 1, 2, 3] + [r.randint(4, nmax)] * 4)
+              mode = r.choice(["random", "random", "random", "left", "right", "zigzag", "full"])
+              kids = [[None, None] for _ in range(n)]
+              for i in range(1, n):
+                  if mode == "random":
+                      p, s = r.choice([(p, s) for p in range(i) for s in (0, 1) if kids[p][s] is None])
+                  elif mode == "full":
+                      p, s = (i - 1) // 2, (i - 1) % 2
+                  else:
+                      p, s = i - 1, {"left": 0, "right": 1}.get(mode, r.randint(0, 1))
+                  kids[p][s] = i
+              return kids
+
+          def _level(kids, vals):
+              """Shape + values -> LeetCode level-order list, the input of build()."""
+              out, q = [], ([0] if kids else [])
+              for x in q:
+                  out.append(None if x is None else vals[x])
+                  if x is not None:
+                      q += kids[x]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          _show = lambda v: f"(build({v!r}))"
+
+          # references written straight from the definitions (small trees only)
+          def _pre(v):
+              f = lambda n: [] if n is None else [n.val] + f(n.left) + f(n.right)
+              return f(build(v))
+
+          def _in(v):
+              f = lambda n: [] if n is None else f(n.left) + [n.val] + f(n.right)
+              return f(build(v))
+
+          def _post(v):
+              f = lambda n: [] if n is None else f(n.left) + f(n.right) + [n.val]
+              return f(build(v))
+
+          def _gen(r):
+              kids = _shape(r)
+              return (_level(kids, r.sample(range(1, 100), len(kids))),)
+
+          _cases = [([7],), ([1, 2],), ([1, None, 2],), ([1, 2, 3, 4, 5, 6, 7],),
+                    ([1, 2, None, 3, None, 4],), ([1, None, 2, 3, 4, None, 5],)] + rand_cases(_gen, 300)
+          for _f, _r in [(preorder, _pre), (inorder, _in), (postorder, _post)]:
+              against(lambda v, f=_f: f(build(v)), _r, _cases, show=_show, name=_f.__name__)
+      - id: b
+        prompt: |
+          The stack can hold more than nodes: push `(node, depth)` pairs to carry information down.
+
+          - **Given**: `TreeNode`, `build`, `chain` (see setup).
+          - **Write** `max_depth(root)` iteratively, with a stack of `(node, depth)` pairs.
+          - **Returns**: the number of nodes on the longest root-to-leaf path (`0` for an empty tree).
+          - **Checked on**: the lesson's tree (3), empty (0), a lopsided tree, 300 random small trees, and `chain(3000)` (3000).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              if not vals:
+                  return None
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for n in nodes:
+                  if n is not None:
+                      n.left, n.right = next(kids, None), next(kids, None)
+              return nodes[0]
+
+          def chain(n):
+              root = None
+              for v in range(n, 0, -1):
+                  root = TreeNode(v, left=root)
+              return root
+        starter: |
+          def max_depth(root):
+              pass
+        solution: |
+          def max_depth(root):
+              best, stack = 0, ([(root, 1)] if root else [])
+              while stack:
+                  node, depth = stack.pop()
+                  best = max(best, depth)
+                  if node.left:
+                      stack.append((node.left, depth + 1))
+                  if node.right:
+                      stack.append((node.right, depth + 1))
+              return best
+        check: |
+          for vals, want in [([1, 2, 3, 4, 5], 3), ([], 0), ([1], 1), ([1, None, 2, None, 3, None, 4], 4)]:
+              got = max_depth(build(vals))
+              assert got == want, f"max_depth(build({vals})) = {got!r}, expected {want}"
+          try:
+              got = max_depth(chain(3000))
+          except RecursionError:
+              raise AssertionError("RecursionError: use a stack of (node, depth) pairs, not recursion")
+          assert got == 3000, f"max_depth(chain(3000)) = {got!r}, expected 3000"
+
+          from cardtest import against, rand_cases
+
+          def _shape(r, nmax=12):
+              """Random tree shape: kids[i] = [left id, right id] (node 0 = root); empty, chains, zigzags, full, random."""
+              n = r.choice([0, 1, 2, 3] + [r.randint(4, nmax)] * 4)
+              mode = r.choice(["random", "random", "random", "left", "right", "zigzag", "full"])
+              kids = [[None, None] for _ in range(n)]
+              for i in range(1, n):
+                  if mode == "random":
+                      p, s = r.choice([(p, s) for p in range(i) for s in (0, 1) if kids[p][s] is None])
+                  elif mode == "full":
+                      p, s = (i - 1) // 2, (i - 1) % 2
+                  else:
+                      p, s = i - 1, {"left": 0, "right": 1}.get(mode, r.randint(0, 1))
+                  kids[p][s] = i
+              return kids
+
+          def _level(kids, vals):
+              """Shape + values -> LeetCode level-order list, the input of build()."""
+              out, q = [], ([0] if kids else [])
+              for x in q:
+                  out.append(None if x is None else vals[x])
+                  if x is not None:
+                      q += kids[x]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _ref(v):
+              # different method: count levels, replacing each level by the list of its children
+              level, depth = [n for n in [build(v)] if n], 0
+              while level:
+                  depth += 1
+                  level = [c for n in level for c in (n.left, n.right) if c]
+              return depth
+
+          def _gen(r):
+              kids = _shape(r)
+              return (_level(kids, r.sample(range(1, 100), len(kids))),)
+
+          _edge = [([1, 2],), ([1, None, 2],), ([1, 2, 3, None, None, 4, None, 5],), ([1, 2, 3, None, 4, None, None, 5],)]
+          against(lambda v: max_depth(build(v)), _ref, _edge + rand_cases(_gen, 300),
+                  show=lambda v: f"(build({v!r}))", name="max_depth")
+
+  - id: trees.bfs
+    name: level by level (BFS) - queue version and recursive version
+    teach: |
+      BFS visits the tree **level by level**: the root (depth 0), then all depth-1 nodes, then depth 2…
+      A **queue** serves nodes in the order they arrived, which is exactly that order.
+      ```python
+      from collections import deque
+      # deque([items]) -> a queue. q.append(x) adds x at the back; q.popleft() removes and returns the front. Both O(1).
+
+      def level_order(root):                  # -> list of levels, each a list of values, top to bottom, left to right
+          levels, q = [], deque([root] if root else [])
+          while q:
+              level = []
+              for _ in range(len(q)):         # right now the queue holds exactly one full level
+                  node = q.popleft()
+                  level.append(node.val)
+                  if node.left:  q.append(node.left)
+                  if node.right: q.append(node.right)
+              levels.append(level)
+          return levels                       # lesson tree -> [[1], [2, 3], [4, 5]]
+
+      # Recursive version: a DFS that knows each node's depth drops the node into levels[depth].
+      # Visiting left before right keeps every level in left-to-right order.
+      def level_order_rec(root):
+          levels = []
+          def dfs(node, depth):
+              if node is None:
+                  return
+              if depth == len(levels):        # first node ever seen at this depth: open a new level
+                  levels.append([])
+              levels[depth].append(node.val)
+              dfs(node.left, depth + 1)
+              dfs(node.right, depth + 1)
+          dfs(root, 0)
+          return levels                       # same result: [[1], [2, 3], [4, 5]]
+      ```
+      Use when: anything "per level" (level averages, right side view) · "closest / minimum depth": with the queue,
+      the **first leaf** you pop is the closest one, so you can stop there.
+      Pitfall: use `deque.popleft()`, not `list.pop(0)` (which shifts the whole list: O(n) per pop).
+    cards:
+      - id: a
+        prompt: |
+          **Given**: `TreeNode`, `build` (see setup).
+
+          - **Write** `level_order(root)` with a queue (`collections.deque`), and `level_order_rec(root)` recursively
+            (a DFS that passes the depth).
+          - **Returns**: both a `list` of levels, each level a `list` of values left to right, top level first;
+            `[]` for an empty tree.
+          - **Checked on**: the lesson's tree, an empty tree, a lopsided tree with missing children, and 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              if not vals:
+                  return None
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for n in nodes:
+                  if n is not None:
+                      n.left, n.right = next(kids, None), next(kids, None)
+              return nodes[0]
+        starter: |
+          from collections import deque
+
+          def level_order(root):
+              pass
+
+          def level_order_rec(root):
+              pass
+        solution: |
+          from collections import deque
+
+          def level_order(root):
+              levels, q = [], deque([root] if root else [])
+              while q:
+                  level = []
+                  for _ in range(len(q)):
+                      node = q.popleft()
+                      level.append(node.val)
+                      if node.left:
+                          q.append(node.left)
+                      if node.right:
+                          q.append(node.right)
+                  levels.append(level)
+              return levels
+
+          def level_order_rec(root):
+              levels = []
+              def dfs(node, depth):
+                  if node is None:
+                      return
+                  if depth == len(levels):
+                      levels.append([])
+                  levels[depth].append(node.val)
+                  dfs(node.left, depth + 1)
+                  dfs(node.right, depth + 1)
+              dfs(root, 0)
+              return levels
+        check: |
+          cases = [([1, 2, 3, 4, 5], [[1], [2, 3], [4, 5]]), ([], []),
+                   ([3, 9, 20, None, None, 15, 7], [[3], [9, 20], [15, 7]]), ([1, None, 2, 3], [[1], [2], [3]])]
+          for f in (level_order, level_order_rec):
+              for vals, want in cases:
+                  got = f(build(vals))
+                  assert got == want, f"{f.__name__}(build({vals})) = {got!r}, expected {want!r}"
+
+          from cardtest import against, rand_cases
+
+          def _shape(r, nmax=12):
+              """Random tree shape: kids[i] = [left id, right id] (node 0 = root); empty, chains, zigzags, full, random."""
+              n = r.choice([0, 1, 2, 3] + [r.randint(4, nmax)] * 4)
+              mode = r.choice(["random", "random", "random", "left", "right", "zigzag", "full"])
+              kids = [[None, None] for _ in range(n)]
+              for i in range(1, n):
+                  if mode == "random":
+                      p, s = r.choice([(p, s) for p in range(i) for s in (0, 1) if kids[p][s] is None])
+                  elif mode == "full":
+                      p, s = (i - 1) // 2, (i - 1) % 2
+                  else:
+                      p, s = i - 1, {"left": 0, "right": 1}.get(mode, r.randint(0, 1))
+                  kids[p][s] = i
+              return kids
+
+          def _level(kids, vals):
+              """Shape + values -> LeetCode level-order list, the input of build()."""
+              out, q = [], ([0] if kids else [])
+              for x in q:
+                  out.append(None if x is None else vals[x])
+                  if x is not None:
+                      q += kids[x]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _ref(v):
+              # different method: replace each level by the list of its children
+              out, level = [], [n for n in [build(v)] if n]
+              while level:
+                  out.append([n.val for n in level])
+                  level = [c for n in level for c in (n.left, n.right) if c]
+              return out
+
+          def _gen(r):
+              kids = _shape(r)
+              return (_level(kids, r.sample(range(1, 100), len(kids))),)
+
+          _edge = [([7],), ([1, 2],), ([1, None, 2],), ([1, 2, 3, 4, 5, 6, 7],), ([1, 2, 3, None, 4, 5],),
+                   ([1, 2, 3, 4, None, None, 5, 6, None, None, 7],)]
+          for _f in (level_order, level_order_rec):
+              against(lambda v, f=_f: f(build(v)), _ref, _edge + rand_cases(_gen, 300),
+                      show=lambda v: f"(build({v!r}))", name=_f.__name__)
+      - id: b
+        prompt: |
+          - **Given**: `TreeNode`, `build` (see setup).
+          - **Write** `min_depth(root)` with a BFS queue: the number of nodes on the path from the root down to
+            the **closest leaf** (a leaf has no children). Stop as soon as you pop the first leaf.
+          - **Returns**: an `int`, `0` for an empty tree.
+          - **Checked on**: a balanced tree, a tree where the root has only one child (its side is the only path), empty, single node,
+            and 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              if not vals:
+                  return None
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for n in nodes:
+                  if n is not None:
+                      n.left, n.right = next(kids, None), next(kids, None)
+              return nodes[0]
+        starter: |
+          from collections import deque
+
+          def min_depth(root):
+              pass
+        solution: |
+          from collections import deque
+
+          def min_depth(root):
+              if root is None:
+                  return 0
+              q = deque([(root, 1)])
+              while q:
+                  node, depth = q.popleft()
+                  if node.left is None and node.right is None:
+                      return depth
+                  if node.left:
+                      q.append((node.left, depth + 1))
+                  if node.right:
+                      q.append((node.right, depth + 1))
+        check: |
+          for vals, want in [([3, 9, 20, None, None, 15, 7], 2), ([2, None, 3, None, 4, None, 5], 4), ([], 0), ([1], 1), ([1, 2, 3, 4, 5], 2)]:
+              got = min_depth(build(vals))
+              assert got == want, f"min_depth(build({vals})) = {got!r}, expected {want}"
+
+          from cardtest import against, rand_cases
+
+          def _shape(r, nmax=12):
+              """Random tree shape: kids[i] = [left id, right id] (node 0 = root); empty, chains, zigzags, full, random."""
+              n = r.choice([0, 1, 2, 3] + [r.randint(4, nmax)] * 4)
+              mode = r.choice(["random", "random", "random", "left", "right", "zigzag", "full"])
+              kids = [[None, None] for _ in range(n)]
+              for i in range(1, n):
+                  if mode == "random":
+                      p, s = r.choice([(p, s) for p in range(i) for s in (0, 1) if kids[p][s] is None])
+                  elif mode == "full":
+                      p, s = (i - 1) // 2, (i - 1) % 2
+                  else:
+                      p, s = i - 1, {"left": 0, "right": 1}.get(mode, r.randint(0, 1))
+                  kids[p][s] = i
+              return kids
+
+          def _level(kids, vals):
+              """Shape + values -> LeetCode level-order list, the input of build()."""
+              out, q = [], ([0] if kids else [])
+              for x in q:
+                  out.append(None if x is None else vals[x])
+                  if x is not None:
+                      q += kids[x]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _ref(v):
+              # brute force: the depth of every leaf, take the smallest
+              depths, todo = [], [(build(v), 1)]
+              while todo:
+                  n, d = todo.pop()
+                  if n is None:
+                      continue
+                  if n.left is None and n.right is None:
+                      depths.append(d)
+                  todo += [(n.left, d + 1), (n.right, d + 1)]
+              return min(depths, default=0)
+
+          def _gen(r):
+              kids = _shape(r)
+              return (_level(kids, r.sample(range(1, 100), len(kids))),)
+
+          _edge = [([1, 2],), ([1, None, 2],), ([1, 2, 3, 4],), ([1, 2, 3, None, None, 4, 5],),
+                   ([1, 2, 3, 4, None, None, 5, 6, None, None, 7],), ([1, 2, None, 3, 4],)]
+          against(lambda v: min_depth(build(v)), _ref, _edge + rand_cases(_gen, 300),
+                  show=lambda v: f"(build({v!r}))", name="min_depth")
+
+  - id: trees.recursion-results
+    name: returning results up vs passing information down
+    teach: |
+      Most tree problems are one of two recursions:
+      ```python
+      # BOTTOM-UP (post-order): the function returns a fact about a subtree, built from its children's answers.
+      def height(node):                 # number of nodes on the longest path from node down to a leaf
+          if node is None:
+              return 0                  # an empty subtree has height 0
+          return 1 + max(height(node.left), height(node.right))
+      # lesson tree: height(4) = 1, height(2) = 1 + max(1, 1) = 2, height(1) = 1 + max(2, 1) = 3
+
+      # TOP-DOWN (pre-order): pass what you know so far as an argument; decide when you reach a leaf.
+      def has_path_sum(node, target):   # is there a root-to-leaf path whose values add up to target?
+          if node is None:
+              return False
+          target -= node.val            # the amount still needed below this node
+          if node.left is None and node.right is None:     # a leaf: the path ends here
+              return target == 0
+          return has_path_sum(node.left, target) or has_path_sum(node.right, target)
+      # lesson tree: has_path_sum(root, 8) -> True (1 + 2 + 5), has_path_sum(root, 3) -> False (1 + 2 stops at a non-leaf)
+      ```
+      Use when: bottom-up for sizes, heights, "is it balanced", diameter · top-down for root-to-leaf paths
+      and constraints that come from above.
+      Pitfall: a "path to a leaf" must end at a node with **no** children, not at a node with one missing child.
+    cards:
+      - id: a
+        prompt: |
+          **Given**: `TreeNode`, `build` (see setup).
+
+          - **Write** `height(root)`: bottom-up recursion. **Returns** the number of nodes on the longest root-to-leaf path (`0` if empty).
+          - **Write** `has_path_sum(root, target)`: top-down recursion. **Returns** a `bool`: `True` if some root-to-**leaf**
+            path's values sum to `target`, else `False` (`False` for an empty tree).
+          - **Checked on**: the lesson's tree, an empty tree, a node with a single child, negative values, and 300 random
+            trees (targets that match a root-to-leaf sum, a sum that stops at a non-leaf, or neither).
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              if not vals:
+                  return None
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for n in nodes:
+                  if n is not None:
+                      n.left, n.right = next(kids, None), next(kids, None)
+              return nodes[0]
+        starter: |
+          def height(root):
+              pass
+
+          def has_path_sum(root, target):
+              pass
+        solution: |
+          def height(root):
+              if root is None:
+                  return 0
+              return 1 + max(height(root.left), height(root.right))
+
+          def has_path_sum(root, target):
+              if root is None:
+                  return False
+              target -= root.val
+              if root.left is None and root.right is None:
+                  return target == 0
+              return has_path_sum(root.left, target) or has_path_sum(root.right, target)
+        check: |
+          t = build([1, 2, 3, 4, 5])
+          for vals, want in [([1, 2, 3, 4, 5], 3), ([], 0), ([1, None, 2, None, 3], 3)]:
+              assert height(build(vals)) == want, f"height(build({vals})) = {height(build(vals))!r}, expected {want}"
+          for target, want in [(8, True), (7, True), (4, True), (3, False), (1, False)]:
+              got = has_path_sum(t, target)
+              assert got is want, f"has_path_sum(lesson tree, {target}) = {got!r}, expected {want}"
+          assert has_path_sum(None, 0) is False, "an empty tree has no path: expected False"
+          one_child = build([1, 2])          # 1 has only a left child: the only leaf path is 1 -> 2
+          assert has_path_sum(one_child, 1) is False, "1 alone is not a root-to-LEAF path (1 has a child)"
+          assert has_path_sum(build([-2, None, -3]), -5) is True, "negative values: -2 + -3 = -5 expected True"
+
+          from cardtest import against, rand_cases
+
+          def _shape(r, nmax=12):
+              """Random tree shape: kids[i] = [left id, right id] (node 0 = root); empty, chains, zigzags, full, random."""
+              n = r.choice([0, 1, 2, 3] + [r.randint(4, nmax)] * 4)
+              mode = r.choice(["random", "random", "random", "left", "right", "zigzag", "full"])
+              kids = [[None, None] for _ in range(n)]
+              for i in range(1, n):
+                  if mode == "random":
+                      p, s = r.choice([(p, s) for p in range(i) for s in (0, 1) if kids[p][s] is None])
+                  elif mode == "full":
+                      p, s = (i - 1) // 2, (i - 1) % 2
+                  else:
+                      p, s = i - 1, {"left": 0, "right": 1}.get(mode, r.randint(0, 1))
+                  kids[p][s] = i
+              return kids
+
+          def _level(kids, vals):
+              """Shape + values -> LeetCode level-order list, the input of build()."""
+              out, q = [], ([0] if kids else [])
+              for x in q:
+                  out.append(None if x is None else vals[x])
+                  if x is not None:
+                      q += kids[x]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _sums(v):
+              """(sum of the values from the root down to node, node is a leaf) for every node."""
+              out, todo = [], [(build(v), 0)]
+              while todo:
+                  n, s = todo.pop()
+                  if n is not None:
+                      out.append((s + n.val, n.left is None and n.right is None))
+                      todo += [(n.left, s + n.val), (n.right, s + n.val)]
+              return out
+
+          def _ref_height(v):
+              # different method: count levels, replacing each level by the list of its children
+              level, h = [n for n in [build(v)] if n], 0
+              while level:
+                  h += 1
+                  level = [c for n in level for c in (n.left, n.right) if c]
+              return h
+
+          def _ref_path(v, target):
+              # brute force: list every root-to-leaf sum
+              return any(s == target for s, leaf in _sums(v) if leaf)
+
+          def _gen_tree(r):
+              kids = _shape(r)
+              return (_level(kids, [r.randint(-5, 5) for _ in kids]),)
+
+          def _gen_path(r):
+              (v,) = _gen_tree(r)
+              sums, k = _sums(v), r.random()
+              if sums and k < 0.4:
+                  t = r.choice([s for s, leaf in sums if leaf])        # a real root-to-leaf sum
+              elif sums and k < 0.75:
+                  t = r.choice(sums)[0]                                # often a path that stops at a non-leaf
+              else:
+                  t = r.randint(-10, 10)
+              return (v, t)
+
+          _show = lambda v, t=None: f"(build({v!r})" + ("" if t is None else f", {t}") + ")"
+          against(lambda v: height(build(v)), _ref_height,
+                  [([1, 2],), ([1, None, 2],), ([1, 2, 3, None, 4, None, None, 5],)] + rand_cases(_gen_tree, 300),
+                  show=_show, name="height")
+          _edge = [([1, 2], 3), ([1, 2], 1), ([1, None, 2], 1), ([1, 2, 3], 4), ([0, 1, -1], 0), ([5, -5], 0),
+                   ([1, -2, 3, None, 1], 0), ([1, 2, 3, None, 4], 3), ([], 0)]
+          against(lambda v, t: has_path_sum(build(v), t), _ref_path, _edge + rand_cases(_gen_path, 300),
+                  same=lambda got, exp: got is exp, show=_show, name="has_path_sum")
+      - id: b
+        prompt: |
+          The **diameter** of a tree is the number of **edges** on the longest path between any two nodes
+          (the path may skip the root). At each node, the longest path through it uses the heights of its two subtrees.
+
+          - **Given**: `TreeNode`, `build` (see setup).
+          - **Write** `diameter(root)` with ONE bottom-up recursion that returns heights and updates a best-so-far
+            (`nonlocal`).
+          - **Returns**: an `int`, `0` for an empty tree or a single node.
+          - **Checked on**: the lesson's tree (3: 4 -> 2 -> 1 -> 3), a tree whose longest path avoids the root, empty, single node,
+            and 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val, self.left, self.right = val, left, right
+
+          def build(vals):
+              if not vals:
+                  return None
+              nodes = [None if v is None else TreeNode(v) for v in vals]
+              kids = iter(nodes[1:])
+              for n in nodes:
+                  if n is not None:
+                      n.left, n.right = next(kids, None), next(kids, None)
+              return nodes[0]
+        starter: |
+          def diameter(root):
+              pass
+        solution: |
+          def diameter(root):
+              best = 0
+              def height(node):
+                  nonlocal best
+                  if node is None:
+                      return 0
+                  left, right = height(node.left), height(node.right)
+                  best = max(best, left + right)
+                  return 1 + max(left, right)
+              height(root)
+              return best
+        check: |
+          avoid_root = build([1, 2, None, 3, 4, 5, None, None, 6])   # longest path 5 - 3 - 2 - 4 - 6 stays below the root
+          for tree, want, name in [(build([1, 2, 3, 4, 5]), 3, "lesson tree"), (avoid_root, 4, "path avoiding the root"),
+                                   (None, 0, "empty"), (build([1]), 0, "single node")]:
+              got = diameter(tree)
+              assert got == want, f"diameter({name}) = {got!r}, expected {want}"
+
+          from cardtest import against, rand_cases
+
+          def _shape(r, nmax=12):
+              """Random tree shape: kids[i] = [left id, right id] (node 0 = root); empty, chains, zigzags, full, random."""
+              n = r.choice([0, 1, 2, 3] + [r.randint(4, nmax)] * 4)
+              mode = r.choice(["random", "random", "random", "left", "right", "zigzag", "full"])
+              kids = [[None, None] for _ in range(n)]
+              for i in range(1, n):
+                  if mode == "random":
+                      p, s = r.choice([(p, s) for p in range(i) for s in (0, 1) if kids[p][s] is None])
+                  elif mode == "full":
+                      p, s = (i - 1) // 2, (i - 1) % 2
+                  else:
+                      p, s = i - 1, {"left": 0, "right": 1}.get(mode, r.randint(0, 1))
+                  kids[p][s] = i
+              return kids
+
+          def _level(kids, vals):
+              """Shape + values -> LeetCode level-order list, the input of build()."""
+              out, q = [], ([0] if kids else [])
+              for x in q:
+                  out.append(None if x is None else vals[x])
+                  if x is not None:
+                      q += kids[x]
+              while out and out[-1] is None:
+                  out.pop()
+              return out
+
+          def _ref(v):
+              # brute force: BFS from every node over the undirected edges, longest distance found
+              adj, todo = {}, [build(v)]
+              while todo:
+                  n = todo.pop()
+                  if n is not None:
+                      adj.setdefault(n, [])
+                      for c in (n.left, n.right):
+                          if c is not None:
+                              adj[n].append(c)
+                              adj.setdefault(c, []).append(n)
+                              todo.append(c)
+              best = 0
+              for s in adj:
+                  seen, level, d = {s}, [s], 0
+                  while level:
+                      best = max(best, d)
+                      level = [y for x in level for y in adj[x] if y not in seen]
+                      seen.update(level)
+                      d += 1
+              return best
+
+          def _gen(r):
+              kids = _shape(r)
+              return (_level(kids, r.sample(range(1, 100), len(kids))),)
+
+          _edge = [([1, 2],), ([1, None, 2],), ([1, 2, 3],), ([1, 2, None, 3, 4, 5, None, None, 6],),
+                   ([1, 2, 3, 4, 5, None, None, 6, None, None, 7],), ([1, 2, None, 3, None, 4],)]
+          against(lambda v: diameter(build(v)), _ref, _edge + rand_cases(_gen, 300),
+                  show=lambda v: f"(build({v!r}))", name="diameter")

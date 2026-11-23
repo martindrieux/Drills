@@ -1,0 +1,246 @@
+id: dp-framing
+title: Framing a DP problem
+summary: Spot a DP problem, then answer five questions (state, transition, base case, order, answer) before writing code.
+links:
+  - to: py-cache
+    kind: uses
+    note: "Top-down DP is just a recursive function wrapped in @cache: the decorator is the memo table."
+lesson: |
+  **DP = recursion over choices + remembering answers to subproblems.**
+  It applies when two things are true:
+
+  - **Optimal substructure**: the best/count/yes-no answer for a problem is built from the answers
+    to *smaller versions of the same problem*.
+  - **Overlapping subproblems**: a naive recursion would solve the *same* smaller problem many times.
+    (If subproblems never repeat, it is plain divide and conquer, not DP.)
+
+  **Recognition signals**
+
+  | You see... | Think |
+  |---|---|
+  | "number of ways", "how many distinct..." | counting DP: **sum** over choices |
+  | "minimum cost", "maximum profit", "fewest", "longest" | optimisation DP: **min/max** over choices |
+  | "is it possible", "can you reach/partition/form" | feasibility DP: **or** over choices |
+  | at each step you *choose* (take/skip, step 1 or 2, go right/down) | the choices are the transition |
+  | n ≤ ~1000-5000, or a target sum ≤ ~10^4 | O(n²) or O(n·target) table fits |
+  | "return all solutions / the actual list" | usually backtracking, not DP |
+  | greedy "obviously works"... but a counterexample exists | DP |
+
+  **The 5 questions** (write them as comments before any code):
+
+  1. **State**: what does `dp[i]` (or `dp[i][j]`) *mean*, in one English sentence?
+     e.g. "`dp[i]` = min cost to stand on step `i`". Most bugs come from a vague state.
+  2. **Transition**: how is `dp[i]` built from smaller states? Enumerate the *last choice*.
+     e.g. "I arrived at `i` from `i-1` or `i-2`" → `dp[i] = min(dp[i-1] + cost[i-1], dp[i-2] + cost[i-2])`.
+  3. **Base cases**: the smallest states the transition can't compute (`dp[0]`, `dp[1]`, empty prefix...).
+     Counting: the empty way counts as **1**. Min: unreachable is `inf`. Feasibility: `dp[0] = True`.
+  4. **Order**: fill so every state you read is already computed (usually increasing `i`).
+  5. **Answer**: where is it? `dp[n]`, `dp[-1]`, `max(dp)`, `dp[n][m]`...
+
+  **Same recurrence, four ways** (Fibonacci: `F(n) = F(n-1) + F(n-2)`):
+
+  ```python
+  # 1. Plain recursion: correct, O(2^n). Overlapping subproblems kill it.
+  def fib(n):
+      return n if n < 2 else fib(n - 1) + fib(n - 2)
+
+  # 2. Top-down (memoised): add @cache, now O(n).
+  from functools import cache
+
+  @cache
+  def fib(n):
+      return n if n < 2 else fib(n - 1) + fib(n - 2)
+
+  # 3. Bottom-up table: explicit order, no recursion.
+  def fib(n):
+      if n < 2:
+          return n
+      dp = [0] * (n + 1)
+      dp[1] = 1
+      for i in range(2, n + 1):
+          dp[i] = dp[i - 1] + dp[i - 2]
+      return dp[n]
+
+  # 4. Rolling variables: dp[i] only reads the last 2 states -> O(1) space.
+  def fib(n):
+      a, b = 0, 1                  # F(i), F(i+1)
+      for _ in range(n):
+          a, b = b, a + b          # tuple assignment: right side is evaluated first
+      return a
+  ```
+
+  **Top-down vs bottom-up**
+
+  | | Top-down (`@cache`) | Bottom-up (table) |
+  |---|---|---|
+  | Writing it | fastest: just the recurrence + base case | must pick an order and index carefully |
+  | States computed | only reachable ones | all of them |
+  | Recursion limit | Python's ~1000 frames: deep `n` crashes | none |
+  | Space optimisation | no | yes (rolling rows/variables) |
+  | Speed | function-call overhead | usually 2-5x faster |
+
+  Workflow that rarely fails: **write it top-down first** (it forces you to state the recurrence),
+  then convert to a table if `n` is large or you need to save space.
+
+  **Pitfalls**
+  - Off-by-one between "`dp[i]` = first `i` items" (size `n+1`) and "`dp[i]` = ending at index `i`" (size `n`). Pick one, write it down.
+  - `@cache` on a function taking a **list** fails (`unhashable type`): pass indices, or a tuple.
+  - In rolling updates, `a = b; b = a + b` is wrong (uses the new `a`). Use `a, b = b, a + b`.
+  - `sys.setrecursionlimit` helps top-down a bit, but for n ≈ 10^5 go bottom-up.
+
+  **Complexity** = (number of states) × (work per transition). Fibonacci: n states × O(1) = O(n).
+drills:
+  - id: fib-table
+    prompt: |
+      State: `dp[i]` = the i-th Fibonacci number. Base cases are filled.
+      Write the **transition line** inside the loop. The skeleton puts `F(n)` in `res`.
+    setup: |
+      n = 10
+    starter: |
+      dp = [0] * (n + 1)
+      dp[1] = 1
+      for i in range(2, n + 1):
+          pass  # transition
+      res = dp[n]
+    solution: |
+      dp = [0] * (n + 1)
+      dp[1] = 1
+      for i in range(2, n + 1):
+          dp[i] = dp[i - 1] + dp[i - 2]
+      res = dp[n]
+    check: |
+      assert res == 55, f"res = {res!r}"
+      assert dp[:6] == [0, 1, 1, 2, 3, 5], f"dp[:6] = {dp[:6]!r}"
+  - id: memo-steps
+    prompt: |
+      You climb a staircase taking 1, 2 or 3 steps at a time. Write the top-down `ways(i)` =
+      number of ways to climb exactly `i` steps. Base cases: `ways(0) = 1` (the empty climb), `ways(<0) = 0`.
+      The skeleton puts `ways(n)` in `res`.
+    setup: |
+      n = 5
+    starter: |
+      from functools import cache
+
+      @cache
+      def ways(i):
+          pass
+
+      res = ways(n)
+    solution: |
+      from functools import cache
+
+      @cache
+      def ways(i):
+          if i < 0:
+              return 0
+          if i == 0:
+              return 1
+          return ways(i - 1) + ways(i - 2) + ways(i - 3)
+
+      res = ways(n)
+    check: |
+      assert res == 13, f"res = {res!r}"
+      assert ways(4) == 7, f"ways(4) = {ways(4)!r}"
+  - id: rolling-tribonacci
+    prompt: |
+      Tribonacci: `T(0)=0, T(1)=1, T(2)=1, T(i) = T(i-1) + T(i-2) + T(i-3)`.
+      Using only the three rolling variables (no list), write the **one line** inside the loop
+      so that after `n` iterations `a == T(n)`. The skeleton puts it in `res`.
+    setup: |
+      n = 25
+    starter: |
+      a, b, c = 0, 1, 1   # T(i), T(i+1), T(i+2)
+      for _ in range(n):
+          pass
+      res = a
+    solution: |
+      a, b, c = 0, 1, 1
+      for _ in range(n):
+          a, b, c = b, c, a + b + c
+      res = a
+    check: |
+      assert res == 1389537, f"res = {res!r}"
+  - id: broken-steps
+    prompt: |
+      Climb `n` steps taking 1 or 2 at a time, but you may **never land** on a step in `broken`.
+      State: `dp[i]` = number of ways to stand on step `i`. Write the transition (one `if`/`else`).
+      The skeleton puts `dp[n]` in `res`.
+    setup: |
+      n = 6
+      broken = {3}
+    starter: |
+      dp = [0] * (n + 1)
+      dp[0] = dp[1] = 1
+      for i in range(2, n + 1):
+          pass  # transition
+      res = dp[n]
+    solution: |
+      dp = [0] * (n + 1)
+      dp[0] = dp[1] = 1
+      for i in range(2, n + 1):
+          if i in broken:
+              dp[i] = 0
+          else:
+              dp[i] = dp[i - 1] + dp[i - 2]
+      res = dp[n]
+    check: |
+      assert res == 4, f"res = {res!r}"
+      assert dp[3] == 0, f"dp = {dp!r}"
+classics:
+  - id: fibonacci-number
+    title: Fibonacci Number
+    url: https://leetcode.com/problems/fibonacci-number/
+    difficulty: Easy
+    prompt: |
+      Return `F(n)` where `F(0) = 0`, `F(1) = 1`, `F(n) = F(n-1) + F(n-2)`.
+      Write it bottom-up with **O(1) space** (rolling variables).
+    starter: |
+      def fib(n):
+          pass
+    hints:
+      - "State: F(i). Transition: F(i-1) + F(i-2). Base: F(0), F(1). Answer: F(n)."
+      - Each value only needs the previous two, so keep two variables and shift them with a tuple assignment.
+    solution: |
+      def fib(n):
+          a, b = 0, 1
+          for _ in range(n):
+              a, b = b, a + b
+          return a
+    check: |
+      assert fib(0) == 0, f"fib(0) = {fib(0)!r}"
+      assert fib(1) == 1, f"fib(1) = {fib(1)!r}"
+      assert fib(2) == 1, f"fib(2) = {fib(2)!r}"
+      assert fib(4) == 3, f"fib(4) = {fib(4)!r}"
+      assert fib(30) == 832040, f"fib(30) = {fib(30)!r}"
+    takeaway: Recursion → @cache → table → rolling variables; each step keeps the same recurrence.
+  - id: min-cost-climbing-stairs
+    title: Min Cost Climbing Stairs
+    url: https://leetcode.com/problems/min-cost-climbing-stairs/
+    difficulty: Easy
+    prompt: |
+      `cost[i]` is what you pay to step **off** stair `i`; then you climb 1 or 2 stairs.
+      You may start on stair 0 or 1. Return the minimum cost to reach the top (index `len(cost)`, past the last stair).
+    starter: |
+      def minCostClimbingStairs(cost):
+          pass
+    hints:
+      - "State: dp[i] = min cost to stand on stair i. Starting is free, so dp[0] = dp[1] = 0."
+      - "Last choice: you came from i-1 (paying cost[i-1]) or from i-2 (paying cost[i-2])."
+      - The answer is dp[n], the top. Only two previous values are read, so two variables suffice.
+    solution: |
+      def minCostClimbingStairs(cost):
+          n = len(cost)
+          a, b = 0, 0                      # dp[i-2], dp[i-1]
+          for i in range(2, n + 1):
+              a, b = b, min(b + cost[i - 1], a + cost[i - 2])
+          return b
+    check: |
+      r = minCostClimbingStairs([10, 15, 20])
+      assert r == 15, f"[10,15,20] -> {r!r}"
+      r = minCostClimbingStairs([1, 100, 1, 1, 1, 100, 1, 1, 100, 1])
+      assert r == 6, f"long case -> {r!r}"
+      r = minCostClimbingStairs([0, 0])
+      assert r == 0, f"[0,0] -> {r!r}"
+      r = minCostClimbingStairs([5, 3])
+      assert r == 3, f"[5,3] -> {r!r}"
+    takeaway: Define dp[i] precisely ("cost to stand on i"), then the transition is just "where did I come from?".

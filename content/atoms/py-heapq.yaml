@@ -1,0 +1,167 @@
+id: py-heapq
+title: heapq — priority queue
+summary: A min-heap on a plain list. Get the smallest item repeatedly in O(log n).
+links:
+  - to: py-sorting
+    kind: contrast
+    note: Sort once if you need everything in order; use a heap when items keep arriving or you only need the top k.
+  - to: py-deque
+    kind: contrast
+    note: deque pops in arrival order (FIFO); heapq pops in priority order.
+lesson: |
+  `heapq` turns a **plain list** into a binary **min-heap**: `h[0]` is always the smallest item.
+  There is no heap class. You call functions on a list.
+
+  ```python
+  import heapq
+
+  h = []
+  heapq.heappush(h, 5)         # O(log n)
+  heapq.heappush(h, 1)
+  smallest = h[0]              # peek, O(1)  -> 1
+  x = heapq.heappop(h)         # pop smallest, O(log n) -> 1
+
+  nums = [5, 1, 4, 2]
+  heapq.heapify(nums)          # in place, O(n). Returns None!
+  ```
+
+  **Max-heap: negate.** Python only has a min-heap.
+
+  ```python
+  h = []
+  for x in [3, 9, 4]:
+      heapq.heappush(h, -x)
+  biggest = -heapq.heappop(h)  # 9
+  ```
+
+  **Priorities: push tuples.** Tuples compare element by element, so `(priority, item)` works.
+  Add a tie-breaker if items themselves can't be compared (e.g. nodes, dicts):
+
+  ```python
+  heapq.heappush(h, (dist, node))
+  heapq.heappush(h, (dist, counter, obj))   # counter breaks ties
+  ```
+
+  **Shortcuts**
+
+  | Call | Does |
+  |---|---|
+  | `heapq.nsmallest(k, xs, key=...)` | k smallest, sorted |
+  | `heapq.nlargest(k, xs, key=...)` | k largest, sorted |
+  | `heapq.heappushpop(h, x)` | push then pop (faster than both) |
+  | `heapq.heapreplace(h, x)` | pop then push |
+
+  **Top-k pattern:** keep a min-heap of size k. When it grows past k, pop. The root is the k-th largest.
+
+  **Pitfalls**
+  - `heapify` returns `None`: write `heapq.heapify(nums)`, not `nums = heapq.heapify(nums)`.
+  - The list is **not sorted**. Only `h[0]` is guaranteed to be the smallest.
+  - Don't forget the minus sign when you pop from a negated max-heap.
+drills:
+  - id: heapify-pop
+    prompt: Turn `nums` into a heap in place, then pop the smallest value into `res`.
+    setup: |
+      import heapq
+      nums = [7, 3, 9, 1, 5]
+    solution: |
+      heapq.heapify(nums)
+      res = heapq.heappop(nums)
+    check: |
+      assert res == 1, f"res = {res!r}"
+      assert nums[0] == 3, f"nums is not a valid heap anymore: {nums!r}"
+  - id: max-heap
+    prompt: Using a heap of **negated** values, put the largest value of `nums` into `res` (don't use `max`).
+    setup: |
+      import heapq
+      nums = [4, 11, 2, 8]
+    solution: |
+      h = [-x for x in nums]
+      heapq.heapify(h)
+      res = -heapq.heappop(h)
+    check: |
+      assert res == 11, f"res = {res!r}"
+  - id: tuples
+    prompt: Push each `(priority, name)` from `tasks` onto heap `h`, then pop them all into list `order` (names only).
+    setup: |
+      import heapq
+      tasks = [(3, "c"), (1, "a"), (2, "b")]
+      h = []
+    solution: |
+      for t in tasks:
+          heapq.heappush(h, t)
+      order = [heapq.heappop(h)[1] for _ in range(len(h))]
+    check: |
+      assert order == ["a", "b", "c"], f"order = {order!r}"
+  - id: nlargest
+    prompt: In one line, put the 2 longest words of `words` into `res` (longest first).
+    setup: |
+      import heapq
+      words = ["hi", "banana", "kiwi", "cherry!"]
+    solution: |
+      res = heapq.nlargest(2, words, key=len)
+    check: |
+      assert res == ["cherry!", "banana"], f"res = {res!r}"
+classics:
+  - id: kth-largest
+    title: Kth Largest Element in an Array
+    url: https://leetcode.com/problems/kth-largest-element-in-an-array/
+    difficulty: Medium
+    prompt: |
+      Return the k-th largest element of `nums` (k-th in sorted order, not k-th distinct).
+      Aim for O(n log k).
+    starter: |
+      import heapq
+
+      def findKthLargest(nums, k):
+          pass
+    hints:
+      - Keep a min-heap of the k largest items seen so far.
+      - Once its size passes k, pop. What is the root at the end?
+    solution: |
+      import heapq
+
+      def findKthLargest(nums, k):
+          h = []
+          for x in nums:
+              heapq.heappush(h, x)
+              if len(h) > k:
+                  heapq.heappop(h)
+          return h[0]
+    check: |
+      assert findKthLargest([3, 2, 1, 5, 6, 4], 2) == 5
+      assert findKthLargest([3, 2, 3, 1, 2, 4, 5, 5, 6], 4) == 4
+      assert findKthLargest([1], 1) == 1
+    takeaway: Top-k largest → min-heap of size k; its root is the answer.
+  - id: merge-k-lists
+    title: Merge k Sorted Lists (array version)
+    url: https://leetcode.com/problems/merge-k-sorted-lists/
+    difficulty: Hard
+    prompt: |
+      Given `lists`, a list of sorted Python lists, return one merged sorted list.
+      (Same idea as the linked-list version on LeetCode.)
+    starter: |
+      import heapq
+
+      def mergeK(lists):
+          pass
+    hints:
+      - Put the first element of each list in a heap as `(value, list_index, element_index)`.
+      - Pop the smallest, then push the next element from the same list.
+    solution: |
+      import heapq
+
+      def mergeK(lists):
+          h = [(l[0], i, 0) for i, l in enumerate(lists) if l]
+          heapq.heapify(h)
+          out = []
+          while h:
+              v, i, j = heapq.heappop(h)
+              out.append(v)
+              if j + 1 < len(lists[i]):
+                  heapq.heappush(h, (lists[i][j + 1], i, j + 1))
+          return out
+    check: |
+      assert mergeK([[1, 4, 5], [1, 3, 4], [2, 6]]) == [1, 1, 2, 3, 4, 4, 5, 6]
+      assert mergeK([]) == []
+      assert mergeK([[], [0]]) == [0]
+    takeaway: k-way merge → heap of one "cursor" per list; the index in the tuple is the tie-breaker.

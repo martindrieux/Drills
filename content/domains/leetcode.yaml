@@ -1,0 +1,4 @@
+id: leetcode
+title: LeetCode
+summary: Coding-interview problem solving in Python — the syntax you need, then the canonical patterns.
+blobs: [python-toolkit, graphs, dynamic-programming]

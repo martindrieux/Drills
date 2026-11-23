@@ -1,0 +1,338 @@
+id: tricks-shapes
+title: "Tricks: shapes & batched linear algebra"
+intro: |
+  Interview problems where the whole answer is moving dimensions around: cutting images into patch tokens and back,
+  and mixing value vectors with attention weights without a loop. (Splitting / merging heads and the CLS token
+  are drilled in Tensor ops, Attention and Interview tricks.)
+problems:
+  - Patchify an image batch for a Vision Transformer, and invert it
+  - Aggregate values with attention weights without matmul, then per head
+atoms: []
+skills:
+  - id: tricks-shapes.patchify
+    name: Patchify / unpatchify images (Medium)
+    teach: |
+      Cut each image into non-overlapping `P x P` patches and flatten each patch into a token (Vision Transformer input).
+      ```python
+      # x (B, C, H, W), H % P == W % P == 0  ->  (B, nh * nw, C * P * P),  nh = H / P, nw = W / P
+      # patch n = i * nw + j (row-major grid), features ordered (c, py, px):
+      # out[b, i*nw + j, c*P*P + py*P + px] = x[b, c, i*P + py, j*P + px]
+      x = torch.arange(16).view(1, 1, 4, 4);  P = 2      # (1, 1, 4, 4)
+      # -> (1, 4, 4): [[0, 1, 4, 5], [2, 3, 6, 7], [8, 9, 12, 13], [10, 11, 14, 15]]
+      ```
+      Constraints: no Python loops, no `unfold`.
+    cards:
+      - id: a
+        prompt: |
+          Implement `patchify(x, P)`: cut each image into non-overlapping `P x P` patches and flatten each patch into a token.
+          - `x` (B, C, H, W), any dtype, maybe non-contiguous; `P` (int): patch side, divides `H` and `W`
+          - returns (B, nh * nw, C * P * P), dtype of `x`, with `nh = H / P`, `nw = W / P`:
+            `out[b, i*nw + j, c*P*P + py*P + px] = x[b, c, i*P + py, j*P + px]`
+          - no Python loops, no `F.unfold` / `Tensor.unfold` / `nn.Unfold`
+
+          <details><summary>Hint 1</summary>Row <code>h = i * P + py</code>: one dim of size <code>H</code> holds two indices (patch row, row inside the patch).</details>
+          <details><summary>Hint 2</summary>A reshape splits <code>H</code> into <code>(nh, P)</code> and <code>W</code> into <code>(nw, P)</code>; then permute patch dims first, in-patch dims last.</details>
+          <details><summary>Hint 3</summary><code>x.reshape(B, C, nh, P, nw, P).permute(0, 2, 4, 1, 3, 5).reshape(B, nh * nw, C * P * P)</code></details>
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def patchify(x, P):
+              raise NotImplementedError
+        solution: |
+          def patchify(x, P):
+              B, C, H, W = x.shape
+              nh, nw = H // P, W // P
+              x = x.reshape(B, C, nh, P, nw, P)       # h = i*P + py, w = j*P + px
+              x = x.permute(0, 2, 4, 1, 3, 5)         # (B, nh, nw, C, P, P)
+              return x.reshape(B, nh * nw, C * P * P)  # copies (permuted memory is not contiguous)
+
+          # Trick: h = i*P + py, so reshape splits H into (nh, P) for free; permute puts (i, j) first, (c, py, px) last.
+          # Cost: one copy, O(B*C*H*W). Same as F.unfold(x, P, stride=P).transpose(1, 2).
+          # NumPy: x.reshape(...).transpose(0, 2, 4, 1, 3, 5).reshape(...) (np transpose takes the full order).
+          # Mistakes: reshape(B, C, P, nh, P, nw) picks strided pixels, not squares; .view after permute raises.
+          # Follow-up: patch embedding = this + Linear(C*P*P, D), equal to Conv2d(C, D, P, stride=P).
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _ops(fn):
+              found, stack = set(), [fn.__code__]
+              while stack:
+                  c = stack.pop()
+                  found |= set(c.co_names)
+                  found |= {i.opname for i in dis.get_instructions(c)}
+                  stack += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return found
+          _bad = _ops(patchify) & {"FOR_ITER", "JUMP_BACKWARD", "unfold", "Unfold"}
+          assert not _bad, f"patchify uses {sorted(_bad)}: no Python loops and no unfold"
+
+          def _ref(x, P):
+              B, C, H, W = x.shape
+              nh, nw, xl = H // P, W // P, x.tolist()
+              out = [[[xl[b][c][i * P + py][j * P + px] for c in range(C) for py in range(P) for px in range(P)]
+                      for i in range(nh) for j in range(nw)] for b in range(B)]
+              return torch.tensor(out, dtype=x.dtype).reshape(B, nh * nw, C * P * P)
+
+          def _x(g, B, C, H, W, dtype, nc):
+              if nc:                                  # channels-last memory, viewed as (B, C, H, W)
+                  t = torch.randn(B, H, W, C, generator=g, dtype=torch.float64).permute(0, 3, 1, 2)
+              else:
+                  t = torch.randn(B, C, H, W, generator=g, dtype=torch.float64)
+              return (t * 10).round().to(dtype) if dtype == torch.int64 else t.to(dtype)
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2 ** 31))
+              P = r.randint(1, 3)
+              return (_x(g, r.randint(1, 3), r.randint(1, 3), P * r.randint(1, 3), P * r.randint(1, 3),
+                         r.choice([torch.float32, torch.float64, torch.int64]), r.random() < 0.4), P)
+
+          _g = torch.Generator().manual_seed(1)
+          _cases = [(torch.arange(16).view(1, 1, 4, 4), 2),
+                    (_x(_g, 2, 3, 2, 3, torch.float32, False), 1),
+                    (_x(_g, 2, 3, 4, 4, torch.float64, False), 4),
+                    (_x(_g, 1, 2, 4, 6, torch.float32, False), 2),
+                    (_x(_g, 2, 3, 6, 4, torch.float64, True), 2),
+                    (_x(_g, 3, 1, 3, 6, torch.int64, True), 3)]
+          _same = lambda got, exp: (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                                    and torch.allclose(got.double(), exp.double()))
+          _show = lambda x, P: f"(x of shape {tuple(x.shape)}, {x.dtype}, contiguous={x.is_contiguous()}, P={P})"
+          against(patchify, _ref, _cases + rand_cases(_gen, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Follow-up: implement `unpatchify(patches, H, W, P)`, the inverse of `patchify` (e.g. in a masked autoencoder's decoder).
+          - `patches` (B, (H/P) * (W/P), C * P * P), any dtype, maybe non-contiguous; `C` is not passed: deduce it from the last dim
+          - `H`, `W` (int): image size; `P` (int): patch side
+          - returns `x` (B, C, H, W), dtype of `patches`, such that `patchify(x, P) == patches`:
+            `x[b, c, i*P + py, j*P + px] = patches[b, i*nw + j, c*P*P + py*P + px]`, `nw = W / P`
+          - no Python loops, no `F.fold` / `nn.Fold`
+
+          <details><summary>Hint 1</summary>Undo the forward steps in reverse order: unflatten, un-permute, merge.</details>
+          <details><summary>Hint 2</summary>Split tokens into <code>(nh, nw)</code> and features into <code>(C, P, P)</code>; the inverse permutation puts each dim back.</details>
+          <details><summary>Hint 3</summary><code>reshape(B, nh, nw, C, P, P).permute(0, 3, 1, 4, 2, 5).reshape(B, C, H, W)</code></details>
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def unpatchify(patches, H, W, P):
+              raise NotImplementedError
+        solution: |
+          def unpatchify(patches, H, W, P):
+              B, N, F_ = patches.shape
+              C, nh, nw = F_ // (P * P), H // P, W // P
+              x = patches.reshape(B, nh, nw, C, P, P)
+              x = x.permute(0, 3, 1, 4, 2, 5)          # (B, C, nh, P, nw, P)
+              return x.reshape(B, C, H, W)
+
+          # Trick: the inverse of permute(0, 2, 4, 1, 3, 5) is permute(0, 3, 1, 4, 2, 5) (it is not its own inverse).
+          # Cost: one copy, O(B*C*H*W). Same as F.fold(patches.transpose(1, 2), (H, W), P, stride=P).
+          # NumPy: .reshape(...).transpose(0, 3, 1, 4, 2, 5).reshape(B, C, H, W).
+          # Mistakes: C = F_ // P (forgot P*P); swapping nh and nw when H != W.
+          # Follow-up: MAE computes its loss per patch, so it patchifies the target instead.
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _ops(fn):
+              found, stack = set(), [fn.__code__]
+              while stack:
+                  c = stack.pop()
+                  found |= set(c.co_names)
+                  found |= {i.opname for i in dis.get_instructions(c)}
+                  stack += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return found
+          _bad = _ops(unpatchify) & {"FOR_ITER", "JUMP_BACKWARD", "fold", "Fold"}
+          assert not _bad, f"unpatchify uses {sorted(_bad)}: no Python loops and no fold"
+
+          def _ref(p, H, W, P):
+              B, N, Fd = p.shape
+              C, nw, pl = Fd // (P * P), W // P, p.tolist()
+              out = [[[pl[b][(h // P) * nw + w // P][c * P * P + (h % P) * P + w % P] for w in range(W)]
+                      for h in range(H)] for b in range(B) for c in range(C)]
+              return torch.tensor(out, dtype=p.dtype).reshape(B, C, H, W)
+
+          def _p(g, B, C, H, W, P, dtype, nc):
+              N, Fd = (H // P) * (W // P), C * P * P
+              if nc:
+                  t = torch.randn(B, Fd, N, generator=g, dtype=torch.float64).transpose(1, 2)
+              else:
+                  t = torch.randn(B, N, Fd, generator=g, dtype=torch.float64)
+              t = (t * 10).round().to(dtype) if dtype == torch.int64 else t.to(dtype)
+              return (t, H, W, P)
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2 ** 31))
+              P = r.randint(1, 3)
+              return _p(g, r.randint(1, 3), r.randint(1, 3), P * r.randint(1, 3), P * r.randint(1, 3), P,
+                        r.choice([torch.float32, torch.float64, torch.int64]), r.random() < 0.4)
+
+          _g = torch.Generator().manual_seed(2)
+          _cases = [(torch.tensor([[[0, 1, 4, 5], [2, 3, 6, 7], [8, 9, 12, 13], [10, 11, 14, 15]]]), 4, 4, 2),
+                    _p(_g, 2, 3, 2, 3, 1, torch.float32, False),
+                    _p(_g, 2, 3, 4, 4, 4, torch.float64, False),
+                    _p(_g, 1, 2, 4, 6, 2, torch.float32, False),
+                    _p(_g, 2, 3, 6, 4, 2, torch.float64, True),
+                    _p(_g, 3, 1, 3, 6, 3, torch.int64, True)]
+          _same = lambda got, exp: (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                                    and torch.allclose(got.double(), exp.double()))
+          _show = lambda p, H, W, P: f"(patches of shape {tuple(p.shape)}, {p.dtype}, contiguous={p.is_contiguous()}, H={H}, W={W}, P={P})"
+          against(unpatchify, _ref, _cases + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: tricks-shapes.weighted-sum
+    name: Batched weighted sum of values (Easy)
+    teach: |
+      The last step of attention: each query `t` mixes the `S` value vectors with its own weights.
+      ```python
+      # weights (B, T, S), values (B, S, D), same float dtype  ->  out (B, T, D)
+      # out[b, t, :] = sum over s of weights[b, t, s] * values[b, s, :]    (S = 0 gives zeros)
+      weights = [[[1, 0], [0.5, 0.5]]];  values = [[[2, 4], [6, 8]]]    # (1, 2, 2), (1, 2, 2)
+      # -> [[[2, 4], [4, 6]]]                                           # (1, 2, 2)
+      ```
+      Constraints: no Python loops. Be ready to compare the memory of two vectorized ways.
+    cards:
+      - id: a
+        prompt: |
+          Implement `aggregate(weights, values)`: each query mixes the value vectors with its own weights (attention's last step).
+          - `weights` (B, T, S) float: weight of value `s` for query `t`
+          - `values` (B, S, D), same dtype, maybe non-contiguous; `T`, `S`, `D` may be 0
+          - returns (B, T, D), same dtype: `out[b, t, d] = Σ_s weights[b, t, s] * values[b, s, d]` (zeros if `S = 0`)
+          - no Python loops, no matmul (`@`, `mm`, `bmm`, `einsum`, `tensordot`, `linear`...): elementwise ops + a reduction
+
+          <details><summary>Hint 1</summary>Make every product <code>weights[b, t, s] * values[b, s, d]</code> one element of a tensor, then sum away <code>s</code>.</details>
+          <details><summary>Hint 2</summary>Insert size-1 dims: <code>weights</code> to <code>(B, T, S, 1)</code>, <code>values</code> to <code>(B, 1, S, D)</code>.</details>
+          <details><summary>Hint 3</summary><code>(weights[..., None] * values[:, None]).sum(dim=2)</code></details>
+        setup: |
+          import torch
+        starter: |
+          def aggregate(weights, values):
+              raise NotImplementedError
+        solution: |
+          def aggregate(weights, values):
+              return (weights[:, :, :, None] * values[:, None, :, :]).sum(dim=2)   # (B,T,S,1)*(B,1,S,D) -> (B,T,S,D) -> (B,T,D)
+
+          # Trick: broadcast-and-reduce: align dims with None, multiply, sum the shared dim (what a matmul computes).
+          # Cost: same 2*B*T*S*D flops as weights @ values, but it materializes (B, T, S, D): O(B*T*S*D) memory
+          #   (8 GB at B=32, T=S=1024, D=64, float32) vs O(B*T*D) for bmm. Use it only when the product is tiny.
+          # NumPy: (w[..., None] * v[:, None]).sum(axis=2), or w @ v.
+          # Follow-up: product too big -> bmm, or chunk over T; einsum("bts,bsd->btd", ...) dispatches to bmm.
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _ops(fn):
+              found, stack = set(), [fn.__code__]
+              while stack:
+                  c = stack.pop()
+                  found |= set(c.co_names)
+                  found |= {i.opname for i in dis.get_instructions(c)} | {i.argrepr for i in dis.get_instructions(c) if i.opname == "BINARY_OP"}
+                  stack += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return found
+          _bad = _ops(aggregate) & {"FOR_ITER", "JUMP_BACKWARD", "@", "@=", "matmul", "bmm", "mm", "einsum", "tensordot", "baddbmm", "addbmm", "linear"}
+          assert not _bad, f"aggregate uses {sorted(_bad)}: this card asks for broadcasting + a reduction, no matmul and no loops"
+
+          def _ref(w, v):
+              B, T, S = w.shape
+              D = v.shape[2]
+              wl, vl = w.tolist(), v.tolist()
+              out = [[[sum(wl[b][t][s] * vl[b][s][d] for s in range(S)) for d in range(D)] for t in range(T)] for b in range(B)]
+              return torch.tensor(out, dtype=w.dtype).reshape(B, T, D)
+
+          def _wv(g, B, T, S, D, dtype, nc):
+              w = torch.rand(B, T, S, generator=g, dtype=torch.float64).to(dtype)
+              if nc:
+                  v = torch.randn(B, D, S, generator=g, dtype=torch.float64).to(dtype).transpose(1, 2)
+              else:
+                  v = torch.randn(B, S, D, generator=g, dtype=torch.float64).to(dtype)
+              return (w, v)
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2 ** 31))
+              return _wv(g, r.randint(1, 4), r.randint(0, 5), r.randint(0, 5), r.randint(0, 4),
+                         r.choice([torch.float32, torch.float64]), r.random() < 0.4)
+
+          _g = torch.Generator().manual_seed(3)
+          _cases = [(torch.tensor([[[1.0, 0.0], [0.5, 0.5]]]), torch.tensor([[[2.0, 4.0], [6.0, 8.0]]])),
+                    _wv(_g, 2, 3, 0, 4, torch.float32, False),
+                    _wv(_g, 2, 0, 3, 4, torch.float64, False),
+                    _wv(_g, 1, 1, 1, 1, torch.float64, False),
+                    _wv(_g, 2, 4, 4, 3, torch.float64, False),
+                    _wv(_g, 3, 2, 5, 4, torch.float32, True)]
+          _same = lambda got, exp: (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                                    and torch.allclose(got, exp, rtol=1e-5, atol=1e-5))
+          _show = lambda w, v: f"(weights {tuple(w.shape)}, values {tuple(v.shape)} contiguous={v.is_contiguous()}, {w.dtype})"
+          against(aggregate, _ref, _cases + rand_cases(_gen, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Follow-up: implement `multihead_aggregate(weights, values)`, the same weighted sum with `H` heads, each reading its own slice of the value features.
+          - `weights` (B, H, T, S) float: the weights of head `h`
+          - `values` (B, S, D), same dtype, maybe non-contiguous, `D = H * Dh`: head `h` reads features `h*Dh .. (h+1)*Dh - 1`
+          - returns (B, T, D), same dtype: `out[b, t, h*Dh + e] = Σ_s weights[b, h, t, s] * values[b, s, h*Dh + e]`
+          - no Python loops (any matmul form is fine)
+
+          <details><summary>Hint 1</summary>Give the values a head dim so both inputs have batch dims <code>(B, H)</code>.</details>
+          <details><summary>Hint 2</summary><code>(B, S, D)</code> -> <code>(B, S, H, Dh)</code> -> <code>.transpose(1, 2)</code>; then <code>weights @ v</code> is <code>(B, H, T, Dh)</code>.</details>
+          <details><summary>Hint 3</summary>Merge back with <code>.transpose(1, 2).reshape(B, T, D)</code> (<code>view</code> fails: not contiguous).</details>
+        setup: |
+          import torch
+        starter: |
+          def multihead_aggregate(weights, values):
+              raise NotImplementedError
+        solution: |
+          def multihead_aggregate(weights, values):
+              B, H, T, S = weights.shape
+              D = values.shape[-1]
+              v = values.reshape(B, S, H, D // H).transpose(1, 2)    # (B, H, S, Dh)
+              out = weights @ v                                      # (B, H, T, S) @ (B, H, S, Dh) -> (B, H, T, Dh)
+              return out.transpose(1, 2).reshape(B, T, D)            # (B, T, H, Dh) -> (B, T, D)
+
+          # Trick: split features into (H, Dh), head index first; move H next to B so @ batches over (B, H); undo.
+          # Cost: O(B*T*S*D) flops, O(B*T*D) memory. einsum("bhts,bshe->bthe", ...) needs no transposes.
+          # NumPy: values.reshape(B, S, H, Dh).transpose(0, 2, 1, 3), then @.
+          # Mistakes: reshape(B, S, Dh, H) interleaves heads; .view after transpose raises.
+          # Follow-up: grouped-query attention, values with fewer heads (expand / repeat_interleave).
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _ops(fn):
+              found, stack = set(), [fn.__code__]
+              while stack:
+                  c = stack.pop()
+                  found |= {i.opname for i in dis.get_instructions(c)}
+                  stack += [k for k in c.co_consts if hasattr(k, "co_code")]
+              return found
+          _bad = _ops(multihead_aggregate) & {"FOR_ITER", "JUMP_BACKWARD"}
+          assert not _bad, "multihead_aggregate uses a Python loop: batch the heads instead"
+
+          def _ref(w, v):
+              B, H, T, S = w.shape
+              D = v.shape[2]
+              Dh = D // H
+              wl, vl = w.tolist(), v.tolist()
+              out = [[[sum(wl[b][d // Dh][t][s] * vl[b][s][d] for s in range(S)) for d in range(D)] for t in range(T)] for b in range(B)]
+              return torch.tensor(out, dtype=w.dtype).reshape(B, T, D)
+
+          def _wv(g, B, H, T, S, Dh, dtype, nc):
+              w = torch.rand(B, H, T, S, generator=g, dtype=torch.float64).to(dtype)
+              if nc:
+                  v = torch.randn(B, H * Dh, S, generator=g, dtype=torch.float64).to(dtype).transpose(1, 2)
+              else:
+                  v = torch.randn(B, S, H * Dh, generator=g, dtype=torch.float64).to(dtype)
+              return (w, v)
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(2 ** 31))
+              return _wv(g, r.randint(1, 3), r.randint(1, 3), r.randint(0, 4), r.randint(0, 4), r.randint(1, 3),
+                         r.choice([torch.float32, torch.float64]), r.random() < 0.4)
+
+          _g = torch.Generator().manual_seed(4)
+          _cases = [_wv(_g, 1, 1, 2, 3, 2, torch.float64, False),
+                    _wv(_g, 2, 3, 2, 4, 1, torch.float64, False),
+                    _wv(_g, 2, 2, 3, 0, 2, torch.float32, False),
+                    _wv(_g, 2, 2, 0, 3, 2, torch.float64, False),
+                    _wv(_g, 1, 2, 3, 3, 2, torch.float64, True),
+                    _wv(_g, 2, 3, 4, 4, 2, torch.float32, True)]
+          _same = lambda got, exp: (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                                    and torch.allclose(got, exp, rtol=1e-5, atol=1e-5))
+          _show = lambda w, v: f"(weights {tuple(w.shape)}, values {tuple(v.shape)} contiguous={v.is_contiguous()}, {w.dtype})"
+          against(multihead_aggregate, _ref, _cases + rand_cases(_gen, 200), same=_same, show=_show)

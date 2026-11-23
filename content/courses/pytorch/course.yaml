@@ -1,0 +1,19 @@
+id: pytorch
+title: PyTorch for interviews
+blob: python-toolkit
+summary: The PyTorch you must be able to write from memory, from tensors and a clean training loop with the standard tricks to attention, norms and transformer blocks built from existing modules.
+parts:
+  - title: Core
+    chunks: [tensors, tensor-ops, autograd, modules, init, data, losses-optim, training-loop, training-tricks, save-load-device]
+  - title: Advanced
+    chunks: [normalization, embeddings, attention, transformer, conv-rnn, mixed-precision, finetuning, sampling]
+  - title: Interview
+    chunks: [interview-tricks, scratch-core, scratch-attention, ml-problems]
+  - title: Tensor tricks
+    chunks: [tricks-indexing, tricks-masks, tricks-shapes, tricks-grouping, tricks-pairwise, tricks-stability, tricks-sequences, tricks-memory]
+  - title: Indexing drills
+    chunks: [idx-fancy, idx-gather, idx-topk]
+  - title: One go
+    chunks: [one-go]
+  - title: RL in one go
+    chunks: [rl-value-iteration, rl-reinforce, rl-gae, rl-ppo]

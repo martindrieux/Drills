@@ -1,0 +1,380 @@
+id: conv-variants
+title: Pooling, dilation, groups
+intro: |
+  The conv-layer variants interviews ask about: pooling with its routed gradient, dilated kernels and receptive
+  fields, and grouped / depthwise-separable convs (MobileNet). NumPy, NCHW, checked against PyTorch.
+problems:
+  - Implement max pooling forward and backward
+  - Implement a dilated convolution
+  - Compute the receptive field of a CNN
+  - Depthwise-separable conv (MobileNet) and its parameter savings
+atoms: []
+skills:
+  - id: conv-variants.maxpool
+    name: max-pool forward / backward, avg-pool backward
+    teach: |
+      Each K×K window (stride `s`, no pad) keeps its max; backward sends each `dout` to the input that was the max.
+      ```
+      out[b, c, p, q] = max over i, j < K of x[b, c, p·s + i, q·s + j]      H_out = (H − K) // s + 1
+      dx[b, c, p·s + i*, q·s + j*] += dout[b, c, p, q]      (i*, j*) = argmax of that window
+      avg pool: dx[b, c, p·s + i, q·s + j] += dout[b, c, p, q] / K²   for every i, j < K
+      # K = 2, s = 1, x = [[1, 3, 2],  -> out = [[3, 3]];  dout = [[1, 1]] -> dx = [[0, 2, 0],
+      #                    [0, 3, 1]]                                           [0, 0, 0]]
+      ```
+      Pitfall: ties go to the FIRST max in row-major order (PyTorch), and windows overlap when `s < K`: `+=`, not `=`.
+    cards:
+      - id: a
+        prompt: |
+          Implement max pooling, forward and backward, with loops.
+          - `x` (B, C, H, W); `dout` (B, C, H_out, W_out): gradient of the loss with respect to the pooled output
+          - `K`: window size (K × K); `stride`; no padding (windows may overlap when `stride < K`)
+          - returns `maxpool_forward_backward(x, dout, K, stride)` = `(out, dx)`:
+            `out` (B, C, H_out, W_out): max of each window; `dx` (B, C, H, W): gradient of the loss with respect to `x`
+            (a tied window sends its gradient to the first max in row-major order)
+        setup: |
+          import numpy as np
+        starter: |
+          def maxpool_forward_backward(x, dout, K, stride):
+              raise NotImplementedError
+        solution: |
+          def maxpool_forward_backward(x, dout, K, stride):
+              B, C, H, W = x.shape
+              Ho, Wo = (H - K) // stride + 1, (W - K) // stride + 1
+              out = np.empty((B, C, Ho, Wo))
+              dx = np.zeros_like(x)
+              bb, cc = np.meshgrid(np.arange(B), np.arange(C), indexing="ij")          # (B, C) each
+              for p in range(Ho):
+                  for q in range(Wo):
+                      win = x[:, :, p*stride:p*stride + K, q*stride:q*stride + K].reshape(B, C, K * K)
+                      k = win.argmax(axis=2)                                           # (B, C), first max
+                      out[:, :, p, q] = win.max(axis=2)
+                      dx[bb, cc, p*stride + k // K, q*stride + k % K] += dout[:, :, p, q]  # accumulate overlaps
+              return out, dx
+          # Key idea: d max / d input = 1 at the argmax, 0 elsewhere -> route dout, summing overlaps.
+          # Cost: O(B·C·H_out·W_out·K²). Frameworks store the argmax indices in forward instead of recomputing.
+          # Follow-up: why is += safe here? Within one (p, q) each (b, c) hits one distinct cell.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _close(got, exp):
+              return (isinstance(got, tuple) and len(got) == 2
+                      and all(isinstance(g, np.ndarray) and g.shape == e.shape and np.allclose(g, e, atol=1e-9)
+                              for g, e in zip(got, exp)))
+
+          def _ref(x, dout, K, stride):
+              xt = torch.from_numpy(x).requires_grad_()
+              out = F.max_pool2d(xt, K, stride)
+              out.backward(torch.from_numpy(dout))
+              return out.detach().numpy(), xt.grad.numpy()
+
+          def _case(r, B, C, H, W, K, s, ties=True):
+              x = np.array([float(r.randint(0, 2)) if ties else r.gauss(0, 1) for _ in range(B * C * H * W)]).reshape(B, C, H, W)
+              Ho, Wo = (H - K) // s + 1, (W - K) // s + 1
+              dout = np.array([r.gauss(0, 1) for _ in range(B * C * Ho * Wo)]).reshape(B, C, Ho, Wo)
+              return (x, dout, K, s)
+
+          def _gen(r):
+              H, W = r.randint(1, 7), r.randint(1, 7)
+              return _case(r, r.randint(1, 2), r.randint(1, 3), H, W, r.randint(1, min(H, W)), r.randint(1, 3), r.random() < 0.6)
+
+          _r = __import__("random").Random(1)
+          _edge = [_case(_r, 1, 1, 2, 3, 2, 1), _case(_r, 1, 1, 4, 4, 1, 1), _case(_r, 1, 1, 4, 4, 4, 1),
+                   _case(_r, 2, 2, 5, 5, 2, 2), _case(_r, 1, 3, 7, 5, 3, 2), _case(_r, 1, 1, 6, 7, 2, 3),
+                   _case(_r, 1, 1, 5, 6, 3, 1, ties=False), (np.zeros((1, 1, 3, 3)), np.ones((1, 1, 2, 2)), 2, 1)]
+          against(maxpool_forward_backward, _ref, _edge + rand_cases(_gen, 300), same=_close,
+                  show=lambda x, d, K, s: f"(x {x.shape}, dout {d.shape}, K={K}, stride={s})")
+      - id: b
+        prompt: |
+          Implement the backward pass of average pooling.
+          - `dout` (B, C, H_out, W_out): gradient of the loss with respect to the pooled output
+          - `x_shape` = (B, C, H, W); `K`: window size (K × K); `stride`; no padding
+          - the forward is `out[n, c, r, s] = mean of x[n, c, r·stride : r·stride + K, s·stride : s·stride + K]`
+          - returns `avgpool_backward(dout, x_shape, K, stride)` (B, C, H, W): gradient of the loss with respect to `x`
+        setup: |
+          import numpy as np
+        starter: |
+          def avgpool_backward(dout, x_shape, K, stride):
+              raise NotImplementedError
+        solution: |
+          def avgpool_backward(dout, x_shape, K, stride):
+              dx = np.zeros(x_shape)
+              Ho, Wo = dout.shape[2:]
+              for p in range(Ho):
+                  for q in range(Wo):
+                      dx[:, :, p*stride:p*stride + K, q*stride:q*stride + K] += dout[:, :, p, q, None, None] / (K * K)
+              return dx
+          # Key idea: each output is a mean of K² inputs, so each input gets dout / K² from every window covering it.
+          # Cost: O(B·C·H_out·W_out·K²). Follow-up: with padding, count_include_pad changes the divisor at borders.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _close(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp, atol=1e-9)
+
+          def _ref(dout, x_shape, K, stride):
+              xt = torch.zeros(x_shape, dtype=torch.float64, requires_grad=True)
+              F.avg_pool2d(xt, K, stride).backward(torch.from_numpy(dout))
+              return xt.grad.numpy()
+
+          def _case(r, B, C, H, W, K, s):
+              Ho, Wo = (H - K) // s + 1, (W - K) // s + 1
+              return (np.array([r.gauss(0, 1) for _ in range(B * C * Ho * Wo)]).reshape(B, C, Ho, Wo), (B, C, H, W), K, s)
+
+          def _gen(r):
+              H, W = r.randint(1, 7), r.randint(1, 7)
+              return _case(r, r.randint(1, 2), r.randint(1, 3), H, W, r.randint(1, min(H, W)), r.randint(1, 3))
+
+          _r = __import__("random").Random(1)
+          _edge = [_case(_r, 1, 1, 3, 3, 1, 1), _case(_r, 1, 1, 4, 4, 4, 1), _case(_r, 1, 1, 3, 4, 2, 1),
+                   _case(_r, 2, 3, 6, 6, 2, 2), _case(_r, 1, 2, 7, 5, 3, 2), _case(_r, 1, 1, 7, 6, 2, 3)]
+          against(avgpool_backward, _ref, _edge + rand_cases(_gen, 300), same=_close,
+                  show=lambda d, xs, K, s: f"(dout {d.shape}, x_shape={xs}, K={K}, stride={s})")
+
+  - id: conv-variants.dilation
+    name: dilated conv, receptive field
+    teach: |
+      Dilation spreads the K kernel taps `dil` apart: K weights cover `dil·(K − 1) + 1` inputs.
+      ```
+      out[b, co, p, q] = Σ_{ci, i, j} w[co, ci, i, j] · xp[b, ci, p·s + i·dil, q·s + j·dil]   xp = x zero-padded by pad
+      H_out = (H + 2·pad − dil·(Kh − 1) − 1) // s + 1          (same for W)
+      # 1D: x = [1, 2, 3, 4, 5], w = [1, 1], dil = 2 -> taps (0, 2), (1, 3), (2, 4) -> out = [4, 6, 8]
+      # receptive field = span of inputs one output sees: two stacked 3×3 stride-1 convs -> 5
+      ```
+      Pitfall: the tap offset `i·dil` is not multiplied by the stride; only the window start `p·s` is.
+    cards:
+      - id: a
+        prompt: |
+          Implement a dilated 2D convolution (cross-correlation, no bias) with loops.
+          - `x` (B, Cin, H, W), `w` (Cout, Cin, Kh, Kw); `stride`, `pad` (zeros on each side, giving `xp`), `dil`: ints, same for H and W
+          - returns `conv2d_dilated(x, w, stride, pad, dil)` (B, Cout, H_out, W_out):
+            `out[n, co, r, c] = Σ_{ci, i, j} w[co, ci, i, j] · xp[n, ci, r·stride + i·dil, c·stride + j·dil]`
+        setup: |
+          import numpy as np
+        starter: |
+          def conv2d_dilated(x, w, stride, pad, dil):
+              raise NotImplementedError
+        solution: |
+          def conv2d_dilated(x, w, stride, pad, dil):
+              B, Cin, H, W = x.shape
+              Cout, _, Kh, Kw = w.shape
+              xp = np.pad(x, ((0, 0), (0, 0), (pad, pad), (pad, pad)))           # (B, Cin, H+2p, W+2p)
+              Ho = (H + 2*pad - dil*(Kh - 1) - 1) // stride + 1
+              Wo = (W + 2*pad - dil*(Kw - 1) - 1) // stride + 1
+              out = np.zeros((B, Cout, Ho, Wo))
+              for i in range(Kh):
+                  for j in range(Kw):
+                      tap = xp[:, :, i*dil:i*dil + stride*(Ho - 1) + 1:stride,
+                                     j*dil:j*dil + stride*(Wo - 1) + 1:stride]          # (B, Cin, Ho, Wo)
+                      out += np.einsum("oc,bchw->bohw", w[:, :, i, j], tap)             # (B, Cout, Ho, Wo)
+              return out
+          # Key idea: loop over the Kh·Kw taps; each tap is a strided slice of xp starting at (i·dil, j·dil).
+          # Cost: same FLOPs as an undilated K×K conv, but a larger receptive field.
+          # Follow-up: dilation 2^l per layer (WaveNet) grows the receptive field exponentially with depth.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _close(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp, atol=1e-9)
+
+          def _ref(x, w, stride, pad, dil):
+              return F.conv2d(torch.from_numpy(x), torch.from_numpy(w), stride=stride, padding=pad, dilation=dil).numpy()
+
+          def _arr(r, *shape):
+              return np.array([r.gauss(0, 1) for _ in range(int(np.prod(shape)))]).reshape(shape)
+
+          def _case(r, B, Cin, Cout, H, W, Kh, Kw, s, pad, dil):
+              return (_arr(r, B, Cin, H, W), _arr(r, Cout, Cin, Kh, Kw), s, pad, dil)
+
+          def _gen(r):
+              while True:
+                  H, W, Kh, Kw = r.randint(1, 7), r.randint(1, 7), r.randint(1, 3), r.randint(1, 3)
+                  s, pad, dil = r.randint(1, 3), r.randint(0, 2), r.randint(1, 3)
+                  if H + 2*pad >= dil*(Kh - 1) + 1 and W + 2*pad >= dil*(Kw - 1) + 1:
+                      return _case(r, r.randint(1, 2), r.randint(1, 3), r.randint(1, 3), H, W, Kh, Kw, s, pad, dil)
+
+          _r = __import__("random").Random(1)
+          _edge = [_case(_r, 1, 1, 1, 5, 5, 1, 1, 1, 0, 2), _case(_r, 1, 1, 1, 5, 5, 3, 3, 1, 0, 2),
+                   _case(_r, 1, 1, 2, 7, 7, 3, 3, 2, 0, 2), _case(_r, 2, 2, 3, 6, 5, 2, 3, 1, 1, 2),
+                   _case(_r, 1, 2, 1, 7, 6, 3, 2, 3, 2, 3), _case(_r, 1, 1, 1, 4, 4, 2, 2, 2, 1, 1),
+                   _case(_r, 1, 3, 2, 5, 7, 3, 1, 2, 2, 2)]
+          against(conv2d_dilated, _ref, _edge + rand_cases(_gen, 300), same=_close,
+                  show=lambda x, w, s, p, d: f"(x {x.shape}, w {w.shape}, stride={s}, pad={p}, dil={d})")
+      - id: b
+        prompt: |
+          Compute the receptive field of a stack of 1D conv layers.
+          - `layers`: list of `(K, stride, dil)` tuples, the first one applied to the input first
+          - returns `receptive_field(layers)` (int): how many consecutive input positions one output position of the last
+            layer depends on (`[]` -> 1)
+        setup: |
+          import numpy as np
+        starter: |
+          def receptive_field(layers):
+              raise NotImplementedError
+        solution: |
+          def receptive_field(layers):
+              rf, jump = 1, 1                  # jump = input distance between adjacent positions of the current layer
+              for K, s, dil in layers:
+                  rf += dil * (K - 1) * jump   # this layer's extra span, in input units
+                  jump *= s
+              return rf
+          # Key idea: rf = 1 + Σ_l dil_l·(K_l − 1)·Π_{m<l} s_m (a layer's own stride does not widen its own window).
+          # Follow-up: (3,2,1) then (3,1,1) -> 7; strides early in the network multiply every later layer's span.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(layers):                    # brute force: gradient support of output 0 of stacked 1D convs
+              x = torch.ones(1, 1, 512, dtype=torch.float64, requires_grad=True)
+              h = x
+              for K, s, dil in layers:
+                  h = F.conv1d(h, torch.ones(1, 1, K, dtype=torch.float64), stride=s, dilation=dil)
+              h[0, 0, 0].backward()
+              nz = torch.nonzero(x.grad[0, 0]).flatten()
+              return int(nz.max() - nz.min() + 1)
+
+          def _gen(r):
+              return ([(r.randint(1, 4), r.randint(1, 3), r.randint(1, 3)) for _ in range(r.randint(1, 4))],)
+
+          _edge = [([],), ([(3, 1, 1)],), ([(1, 2, 1)],), ([(2, 1, 3)],), ([(3, 1, 1), (3, 1, 1)],),
+                   ([(3, 2, 1), (3, 1, 1)],), ([(3, 1, 1), (3, 2, 1)],), ([(2, 2, 1), (2, 2, 1), (2, 2, 1)],),
+                   ([(3, 1, 1), (3, 1, 2), (3, 1, 4)],), ([(1, 3, 1), (2, 1, 2)],), ([(4, 3, 2), (1, 1, 1), (3, 2, 3)],)]
+          against(receptive_field, _ref, _edge + rand_cases(_gen, 300))
+
+  - id: conv-variants.groups
+    name: grouped, depthwise and pointwise conv
+    teach: |
+      Grouped conv: split Cin and Cout into G contiguous blocks; output block g only sees input block g.
+      ```
+      w (Cout, Cin/G, Kh, Kw); out channels [g·Cout/G, (g+1)·Cout/G) use x channels [g·Cin/G, (g+1)·Cin/G)
+      weights: Cout · (Cin/G) · Kh · Kw  (+ Cout bias): G times fewer than a standard conv
+      depthwise: G = Cin, w (Cin, 1, Kh, Kw), each channel filtered alone
+      pointwise: 1×1 conv = matmul over channels: out[b, co, p, q] = Σ_ci w[co, ci, 0, 0] · x[b, ci, p, q]
+      # Cin = 4, Cout = 6, G = 2, 3×3 -> w (6, 2, 3, 3): 108 weights (standard conv: 216)
+      ```
+      Pitfall: a group is a contiguous block of channels, not every G-th channel.
+    cards:
+      - id: a
+        prompt: |
+          Implement a grouped convolution: split the channels into groups and convolve each group separately.
+          - `x` (B, Cin, H, W); `w` (Cout, Cin/G, Kh, Kw); `groups` = G divides Cin and Cout; stride 1, no padding, no bias
+          - group `g` maps input channels `[g·Cin/G, (g+1)·Cin/G)` to output channels `[g·Cout/G, (g+1)·Cout/G)`
+          - returns `grouped_conv2d(x, w, groups)` (B, Cout, H − Kh + 1, W − Kw + 1)
+          - use `conv2d(x, w)` from the setup (a plain conv) once per group
+        setup: |
+          import numpy as np
+
+          def conv2d(x, w):    # (B, Cin, H, W), (Cout, Cin, Kh, Kw) -> (B, Cout, H-Kh+1, W-Kw+1); stride 1, no pad
+              B, Cin, H, W = x.shape
+              Cout, _, Kh, Kw = w.shape
+              Ho, Wo = H - Kh + 1, W - Kw + 1
+              out = np.zeros((B, Cout, Ho, Wo))
+              for i in range(Kh):
+                  for j in range(Kw):
+                      out += np.einsum("oc,bchw->bohw", w[:, :, i, j], x[:, :, i:i + Ho, j:j + Wo])
+              return out
+        starter: |
+          def grouped_conv2d(x, w, groups):
+              raise NotImplementedError
+        solution: |
+          def grouped_conv2d(x, w, groups):
+              ci, co = x.shape[1] // groups, w.shape[0] // groups      # channels per group (in, out)
+              outs = [conv2d(x[:, g*ci:(g + 1)*ci], w[g*co:(g + 1)*co])  # (B, Cout/G, Ho, Wo) each
+                      for g in range(groups)]
+              return np.concatenate(outs, axis=1)                       # (B, Cout, Ho, Wo)
+          # Key idea: G independent small convs on channel blocks, outputs stacked in group order.
+          # Cost: FLOPs and weights / G. Follow-up: ResNeXt uses groups; ShuffleNet shuffles channels between groups.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _close(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp, atol=1e-9)
+
+          def _ref(x, w, groups):
+              return F.conv2d(torch.from_numpy(x), torch.from_numpy(w), groups=groups).numpy()
+
+          def _arr(r, *shape):
+              return np.array([r.gauss(0, 1) for _ in range(int(np.prod(shape)))]).reshape(shape)
+
+          def _case(r, B, G, ci, co, H, W, Kh, Kw):
+              return (_arr(r, B, G * ci, H, W), _arr(r, G * co, ci, Kh, Kw), G)
+
+          def _gen(r):
+              H, W = r.randint(1, 6), r.randint(1, 6)
+              return _case(r, r.randint(1, 2), r.randint(1, 4), r.randint(1, 2), r.randint(1, 3),
+                           H, W, r.randint(1, H), r.randint(1, W))
+
+          _r = __import__("random").Random(1)
+          _edge = [_case(_r, 1, 1, 1, 1, 3, 3, 1, 1), _case(_r, 1, 1, 3, 2, 4, 4, 2, 2), _case(_r, 1, 2, 1, 1, 3, 3, 3, 3),
+                   _case(_r, 2, 2, 2, 3, 5, 4, 2, 3), _case(_r, 1, 3, 1, 2, 4, 5, 3, 1), _case(_r, 1, 4, 2, 1, 6, 6, 2, 2),
+                   _case(_r, 1, 2, 3, 1, 4, 3, 1, 2)]
+          against(grouped_conv2d, _ref, _edge + rand_cases(_gen, 250), same=_close,
+                  show=lambda x, w, g: f"(x {x.shape}, w {w.shape}, groups={g})")
+      - id: b
+        prompt: |
+          Implement a depthwise-separable convolution and compute how many weights it saves.
+          - `x` (B, Cin, H, W); stride 1, no padding, no bias
+          - `w_dw` (Cin, 1, Kh, Kw): depthwise kernel, output channel `c` only sees input channel `c`
+          - `w_pw` (Cout, Cin, 1, 1): pointwise 1×1 kernel, applied to the depthwise output (a matmul over channels)
+          - returns `depthwise_separable(x, w_dw, w_pw)` = `(out, ratio)`: `out` (B, Cout, H − Kh + 1, W − Kw + 1);
+            `ratio` (float) = weights of `w_dw` and `w_pw` together / weights of a standard Kh×Kw conv from Cin to Cout
+        setup: |
+          import numpy as np
+        starter: |
+          def depthwise_separable(x, w_dw, w_pw):
+              raise NotImplementedError
+        solution: |
+          def depthwise_separable(x, w_dw, w_pw):
+              B, Cin, H, W = x.shape
+              Kh, Kw = w_dw.shape[2:]
+              Cout = w_pw.shape[0]
+              Ho, Wo = H - Kh + 1, W - Kw + 1
+              dw = np.zeros((B, Cin, Ho, Wo))
+              for i in range(Kh):
+                  for j in range(Kw):
+                      dw += w_dw[:, 0, i, j][:, None, None] * x[:, :, i:i + Ho, j:j + Wo]   # (Cin,1,1) * (B,Cin,Ho,Wo)
+              out = np.einsum("oc,bchw->bohw", w_pw[:, :, 0, 0], dw)                       # (B, Cout, Ho, Wo)
+              ratio = (Cin*Kh*Kw + Cout*Cin) / (Cout*Cin*Kh*Kw)                            # = 1/Cout + 1/(Kh·Kw)
+              return out, ratio
+          # Key idea: depthwise = spatial mixing per channel, pointwise = channel mixing per pixel.
+          # Cost: ratio ≈ 1/K² for large Cout (3×3 -> ~8-9× fewer weights and FLOPs). Used in MobileNet / Xception.
+        check: |
+          import math
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _close(got, exp):
+              return (isinstance(got, tuple) and len(got) == 2 and isinstance(got[0], np.ndarray)
+                      and got[0].shape == exp[0].shape and np.allclose(got[0], exp[0], atol=1e-9)
+                      and np.ndim(got[1]) == 0 and math.isclose(float(got[1]), exp[1], rel_tol=1e-9))
+
+          def _ref(x, w_dw, w_pw):
+              t = lambda a: torch.from_numpy(a)
+              out = F.conv2d(F.conv2d(t(x), t(w_dw), groups=x.shape[1]), t(w_pw)).numpy()
+              n_std = w_pw.shape[0] * x.shape[1] * w_dw.shape[2] * w_dw.shape[3]
+              return out, (w_dw.size + w_pw.size) / n_std
+
+          def _arr(r, *shape):
+              return np.array([r.gauss(0, 1) for _ in range(int(np.prod(shape)))]).reshape(shape)
+
+          def _case(r, B, Cin, Cout, H, W, Kh, Kw):
+              return (_arr(r, B, Cin, H, W), _arr(r, Cin, 1, Kh, Kw), _arr(r, Cout, Cin, 1, 1))
+
+          def _gen(r):
+              H, W = r.randint(1, 6), r.randint(1, 6)
+              return _case(r, r.randint(1, 2), r.randint(1, 4), r.randint(1, 4), H, W, r.randint(1, H), r.randint(1, W))
+
+          _r = __import__("random").Random(1)
+          _edge = [_case(_r, 1, 1, 1, 3, 3, 1, 1), _case(_r, 1, 1, 3, 4, 4, 3, 3), _case(_r, 1, 3, 1, 4, 4, 2, 2),
+                   _case(_r, 2, 2, 2, 5, 4, 2, 3), _case(_r, 1, 3, 3, 4, 4, 3, 3), _case(_r, 1, 2, 4, 6, 5, 3, 1)]
+          against(depthwise_separable, _ref, _edge + rand_cases(_gen, 250), same=_close,
+                  show=lambda x, a, b: f"(x {x.shape}, w_dw {a.shape}, w_pw {b.shape})")

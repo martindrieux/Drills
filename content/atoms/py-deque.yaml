@@ -1,0 +1,214 @@
+id: py-deque
+title: deque — queues, BFS, sliding window
+summary: collections.deque gives O(1) pushes and pops at both ends; the queue for BFS and sliding windows.
+links: []   # contrasts with py-lists/py-stack/py-heapq and graph-bfs's use are declared on those atoms
+lesson: |
+  `collections.deque` (double-ended queue) does O(1) appends and pops at **both** ends.
+
+  ```python
+  from collections import deque
+
+  q = deque([1, 2, 3])
+  q.append(4)          # right end     [1, 2, 3, 4]
+  q.appendleft(0)      # left end      [0, 1, 2, 3, 4]
+  q.popleft()          # -> 0          FIFO queue = append + popleft
+  q.pop()              # -> 4          right end, like a stack
+  q[0], q[-1]          # peek both ends, O(1)
+  q.extend([5, 6])     # append many
+  if q: ...            # non-empty check
+  ```
+
+  **Why not a list?** `lst.pop(0)` shifts every element left: O(n). A BFS with it is O(n²).
+  `deque.popleft()` is O(1).
+
+  **Other features**
+
+  | Call | Does |
+  |---|---|
+  | `deque(maxlen=k)` | keeps only the last k items; appending to a full deque drops from the other end |
+  | `q.rotate(k)` | rotate right by k (`rotate(-k)` = left), O(k) |
+  | `q[i]` | works, but O(n) towards the middle |
+  | `q[1:3]` | **TypeError**: no slicing. Use `list(q)[1:3]` or `itertools.islice` |
+
+  **BFS template (level by level).** `len(q)` is read once when `range` is built, so the inner
+  loop processes exactly the current level even though you keep appending.
+
+  ```python
+  q = deque([start])
+  seen = {start}
+  depth = 0
+  while q:
+      for _ in range(len(q)):          # one full level
+          node = q.popleft()
+          if node == target:
+              return depth
+          for nxt in graph[node]:
+              if nxt not in seen:
+                  seen.add(nxt)        # mark when PUSHING, not when popping
+                  q.append(nxt)
+      depth += 1
+  ```
+
+  **Monotonic deque (sliding window max).** Keep indices whose values are **decreasing**. The front
+  is the window's max. Pop from the back anything smaller than the newcomer (it can never be the max
+  again); pop from the front when it falls out of the window.
+
+  ```python
+  dq = deque()                          # indices, nums[dq] decreasing
+  for i, x in enumerate(nums):
+      while dq and nums[dq[-1]] <= x:
+          dq.pop()
+      dq.append(i)
+      if dq[0] <= i - k:                # front left the window
+          dq.popleft()
+      if i >= k - 1:
+          out.append(nums[dq[0]])
+  ```
+
+  Each index enters and leaves once → O(n) total.
+
+  **Pitfalls**
+  - `deque([1, 2])` takes an iterable; `deque(5)` is a TypeError. `deque("ab")` is `deque(['a', 'b'])`.
+  - Popping from an empty deque raises `IndexError`.
+  - BFS: mark nodes as seen when you push them; marking on pop lets duplicates into the queue.
+  - Mutating a deque while iterating over it raises `RuntimeError`.
+drills:
+  - id: fifo
+    prompt: Append `4` to the queue `q`, then pop from the **front** into `first`.
+    setup: |
+      from collections import deque
+      q = deque([1, 2, 3])
+    solution: |
+      q.append(4)
+      first = q.popleft()
+    check: |
+      assert first == 1, f"first = {first!r}"
+      assert list(q) == [2, 3, 4], f"q = {q!r}"
+  - id: both-ends
+    prompt: Push `1` onto the **left** end of `q`, then pop the **right** end into `last`.
+    setup: |
+      from collections import deque
+      q = deque([2, 3])
+    solution: |
+      q.appendleft(1)
+      last = q.pop()
+    check: |
+      assert last == 3, f"last = {last!r}"
+      assert list(q) == [1, 2], f"q = {q!r}"
+  - id: maxlen
+    prompt: Build `recent`, a deque that automatically keeps only the last 3 items, and feed it every value of `stream`.
+    setup: |
+      from collections import deque
+      stream = [1, 2, 3, 4, 5, 6, 7]
+    solution: |
+      recent = deque(stream, maxlen=3)
+    check: |
+      assert recent.maxlen == 3, f"recent.maxlen = {recent.maxlen!r}"
+      assert list(recent) == [5, 6, 7], f"recent = {recent!r}"
+  - id: rotate
+    prompt: Rotate `q` to the **right** by 2 in place (`[1, 2, 3, 4, 5]` → `[4, 5, 1, 2, 3]`).
+    setup: |
+      from collections import deque
+      q = deque([1, 2, 3, 4, 5])
+    solution: |
+      q.rotate(2)
+    check: |
+      assert list(q) == [4, 5, 1, 2, 3], f"q = {q!r}"
+  - id: one-level
+    prompt: Process exactly **one BFS level**. Pop every node currently in `q` into the list `level` and push each one's children (from `children`) onto `q`.
+    setup: |
+      from collections import deque
+      children = {1: [2, 3], 2: [4, 5], 3: [6], 4: [], 5: [], 6: []}
+      q = deque([2, 3])
+    solution: |
+      level = []
+      for _ in range(len(q)):
+          node = q.popleft(); level.append(node); q.extend(children[node])
+    check: |
+      assert level == [2, 3], f"level = {level!r}"
+      assert list(q) == [4, 5, 6], f"q = {q!r}"
+classics:
+  - id: sliding-window-max
+    title: Sliding Window Maximum
+    url: https://leetcode.com/problems/sliding-window-maximum/
+    difficulty: Hard
+    prompt: |
+      Given `nums` and a window size `k`, return the max of every contiguous window of size `k`,
+      left to right. O(n).
+    starter: |
+      from collections import deque
+
+      def maxSlidingWindow(nums, k):
+          pass
+    hints:
+      - A heap works in O(n log n). For O(n), keep a deque of indices with decreasing values.
+      - Before pushing `i`, pop from the back every index whose value is `<= nums[i]`; they can never be a max again.
+      - The front is the max. Drop it when it's out of the window (`dq[0] <= i - k`).
+    solution: |
+      from collections import deque
+
+      def maxSlidingWindow(nums, k):
+          dq, out = deque(), []
+          for i, x in enumerate(nums):
+              while dq and nums[dq[-1]] <= x:
+                  dq.pop()
+              dq.append(i)
+              if dq[0] <= i - k:
+                  dq.popleft()
+              if i >= k - 1:
+                  out.append(nums[dq[0]])
+          return out
+    check: |
+      res = maxSlidingWindow([1, 3, -1, -3, 5, 3, 6, 7], 3)
+      assert res == [3, 3, 5, 5, 6, 7], f"res = {res!r}"
+      res = maxSlidingWindow([1], 1)
+      assert res == [1], f"res = {res!r}"
+      res = maxSlidingWindow([9, 8, 7, 6], 2)
+      assert res == [9, 8, 7], f"res = {res!r}"
+      res = maxSlidingWindow([1, -1], 1)
+      assert res == [1, -1], f"res = {res!r}"
+      res = maxSlidingWindow([4, 4, 4], 2)
+      assert res == [4, 4], f"res = {res!r}"
+    takeaway: Window max/min in O(n) → monotonic deque of indices; back pops for dominance, front pops for expiry.
+  - id: recent-calls
+    title: Number of Recent Calls
+    url: https://leetcode.com/problems/number-of-recent-calls/
+    difficulty: Easy
+    prompt: |
+      Implement `RecentCounter`. `ping(t)` records a request at time `t` (strictly increasing) and
+      returns how many requests happened in `[t - 3000, t]`, including this one.
+    starter: |
+      from collections import deque
+
+      class RecentCounter:
+          def __init__(self):
+              pass
+
+          def ping(self, t):
+              pass
+    hints:
+      - Times arrive in order, so old ones expire from the front. That's a FIFO queue.
+      - Append `t`, then `popleft` while the front is `< t - 3000`. The answer is `len(q)`.
+    solution: |
+      from collections import deque
+
+      class RecentCounter:
+          def __init__(self):
+              self.q = deque()
+
+          def ping(self, t):
+              self.q.append(t)
+              while self.q[0] < t - 3000:
+                  self.q.popleft()
+              return len(self.q)
+    check: |
+      rc = RecentCounter()
+      res = [rc.ping(t) for t in [1, 100, 3001, 3002]]
+      assert res == [1, 2, 3, 3], f"res = {res!r}"
+      rc = RecentCounter()
+      res = [rc.ping(t) for t in [1, 3002]]
+      assert res == [1, 1], f"res = {res!r}"
+      rc = RecentCounter()
+      res = [rc.ping(t) for t in [5]]
+      assert res == [1], f"res = {res!r}"
+    takeaway: Events in time order + "how many in the last W" → deque, append right, expire from the left.

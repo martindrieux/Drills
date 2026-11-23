@@ -1,0 +1,219 @@
+id: py-bisect
+title: bisect — binary search on sorted lists
+summary: Find insertion points in a sorted list in O(log n), and write lower_bound by hand when bisect can't.
+links:
+  - to: py-sorting
+    kind: prereq
+    note: bisect only gives correct answers on a list that is already sorted (by the same key).
+lesson: |
+  `bisect` does binary search on a **sorted** list. Every function answers one question:
+  *at which index would `x` be inserted to keep the list sorted?*
+
+  ```python
+  from bisect import bisect_left, bisect_right, insort
+
+  a = [1, 3, 3, 3, 7]
+  bisect_left(a, 3)    # 1  -> first index i with a[i] >= x
+  bisect_right(a, 3)   # 4  -> first index i with a[i] >  x   (bisect.bisect is the same)
+  bisect_left(a, 4)    # 4  -> x absent: both give the same index
+  bisect_left(a, 99)   # 5  -> can be len(a)! check before indexing
+  ```
+
+  Picture it: `bisect_left` lands **before** the run of equal values, `bisect_right` **after** it.
+
+  **Recipes**
+
+  ```python
+  i = bisect_left(a, x)
+  found = i < len(a) and a[i] == x               # membership in O(log n)
+
+  n_less = bisect_left(a, x)                     # count of elements < x
+  n_le   = bisect_right(a, x)                    # count of elements <= x
+  n_in   = bisect_right(a, hi) - bisect_left(a, lo)   # count in [lo, hi]
+
+  insort(a, x)       # insert keeping a sorted: O(log n) search + O(n) shift
+  ```
+
+  **key= (Python 3.10+).** For a list sorted by some field:
+
+  ```python
+  events = [(1, "a"), (4, "b"), (9, "c")]        # sorted by time
+  i = bisect_left(events, 5, key=lambda e: e[0]) # 2
+  ```
+
+  Careful: `key` is applied to the **list elements only**; `x` is passed already as a key (`5`,
+  not `(5, ...)`). `insort(a, item, key=...)` is the exception: there `key` is applied to `item` too.
+  Both also accept `lo=` and `hi=` to search a slice without copying.
+
+  **Hand-written lower_bound.** Learn this one template; it's `bisect_left` written out, and it
+  generalises to "first index where a condition becomes true" (binary search on the answer).
+
+  ```python
+  def lower_bound(a, x):
+      lo, hi = 0, len(a)          # answer is in [lo, hi]; hi = len(a) means "none"
+      while lo < hi:
+          mid = (lo + hi) // 2
+          if a[mid] < x:          # condition still false -> answer is right of mid
+              lo = mid + 1
+          else:                   # condition true -> mid could be the answer
+              hi = mid
+      return lo                   # lo == hi
+  ```
+
+  Replace `a[mid] < x` with `not ok(mid)` for any monotonic predicate (false…false, true…true).
+  For `bisect_right` change `<` to `<=`.
+
+  **Complexity:** search O(log n). `insort` is O(n) because of the list shift, so n inserts cost
+  O(n²) worst case (fine for n ≲ 10⁵ in practice; otherwise use a heap or a sorted container).
+
+  **Pitfalls**
+  - The list must be sorted; bisect never checks.
+  - The result can be `len(a)`: guard `a[i]` with `i < len(a)`.
+  - `bisect_left` returns an insertion point, not "index or -1".
+  - Hand-written loops: `while lo < hi` with `hi = mid` (not `mid - 1`) and `lo = mid + 1`; mixing
+    templates is how infinite loops happen.
+drills:
+  - id: left-right
+    prompt: Set `left` and `right` to the `bisect_left` and `bisect_right` insertion points of `x` in `a`.
+    setup: |
+      from bisect import bisect_left, bisect_right
+      a = [1, 3, 3, 3, 7]
+      x = 3
+    solution: |
+      left, right = bisect_left(a, x), bisect_right(a, x)
+    check: |
+      assert (left, right) == (1, 4), f"left, right = {left!r}, {right!r}"
+  - id: membership
+    prompt: Using `bisect_left`, set `i` to the first index with `a[i] >= x` and `found` to whether `x` is in `a` (no `in`).
+    setup: |
+      from bisect import bisect_left
+      a = [2, 4, 6, 8]
+      x = 9
+    solution: |
+      i = bisect_left(a, x)
+      found = i < len(a) and a[i] == x
+    check: |
+      assert i == 4, f"i = {i!r}"
+      assert found is False, f"found = {found!r}"
+  - id: count-range
+    prompt: Set `count` to the number of values `v` in sorted `a` with `lo <= v <= hi`, using two bisects.
+    setup: |
+      from bisect import bisect_left, bisect_right
+      a = [1, 2, 2, 5, 5, 5, 8, 9]
+      lo, hi = 2, 5
+    solution: |
+      count = bisect_right(a, hi) - bisect_left(a, lo)
+    check: |
+      assert count == 5, f"count = {count!r}"
+  - id: insort
+    prompt: Insert `x` into `a` so that `a` stays sorted (one call).
+    setup: |
+      from bisect import insort
+      a = [1, 4, 9]
+      x = 5
+    solution: |
+      insort(a, x)
+    check: |
+      assert a == [1, 4, 5, 9], f"a = {a!r}"
+  - id: bisect-key
+    prompt: '`events` is sorted by time. Set `i` to the index of the first event with time `>= t`, using `key=`.'
+    setup: |
+      from bisect import bisect_left
+      events = [(1, "boot"), (4, "login"), (9, "logout")]
+      t = 5
+    solution: |
+      i = bisect_left(events, t, key=lambda e: e[0])
+    check: |
+      assert i == 2, f"i = {i!r}"
+  - id: lower-bound
+    prompt: Write the hand-written binary search so `lo` ends at the first index with `a[lo] >= x` (no `bisect`).
+    setup: |
+      a = [1, 3, 5, 5, 8, 13]
+      x = 5
+    starter: |
+      lo, hi = 0, len(a)
+    solution: |
+      lo, hi = 0, len(a)
+      while lo < hi:
+          mid = (lo + hi) // 2
+          if a[mid] < x:
+              lo = mid + 1
+          else:
+              hi = mid
+    check: |
+      assert lo == 2, f"lo = {lo!r}"
+classics:
+  - id: first-last-position
+    title: Find First and Last Position of Element in Sorted Array
+    url: https://leetcode.com/problems/find-first-and-last-position-of-element-in-sorted-array/
+    difficulty: Medium
+    prompt: |
+      Given a sorted list `nums` and a `target`, return `[first, last]` indices of `target`,
+      or `[-1, -1]` if it's absent. O(log n).
+    starter: |
+      from bisect import bisect_left, bisect_right
+
+      def searchRange(nums, target):
+          pass
+    hints:
+      - The first occurrence is `bisect_left`; the last is one before `bisect_right`.
+      - Target absent ⇔ the two bisects return the same index.
+    solution: |
+      from bisect import bisect_left, bisect_right
+
+      def searchRange(nums, target):
+          lo = bisect_left(nums, target)
+          hi = bisect_right(nums, target)
+          return [lo, hi - 1] if lo < hi else [-1, -1]
+    check: |
+      res = searchRange([5, 7, 7, 8, 8, 10], 8)
+      assert res == [3, 4], f"res = {res!r}"
+      res = searchRange([5, 7, 7, 8, 8, 10], 6)
+      assert res == [-1, -1], f"res = {res!r}"
+      res = searchRange([], 0)
+      assert res == [-1, -1], f"res = {res!r}"
+      res = searchRange([1], 1)
+      assert res == [0, 0], f"res = {res!r}"
+      res = searchRange([2, 2, 2], 2)
+      assert res == [0, 2], f"res = {res!r}"
+    takeaway: The run of x in a sorted list is exactly [bisect_left(x), bisect_right(x)).
+  - id: koko-bananas
+    title: Koko Eating Bananas
+    url: https://leetcode.com/problems/koko-eating-bananas/
+    difficulty: Medium
+    prompt: |
+      Koko eats at speed `k` bananas/hour: each hour she picks one pile and eats `k` from it
+      (or the whole pile if smaller). Return the minimum integer `k` that lets her finish all
+      `piles` within `h` hours (`h >= len(piles)`).
+    starter: |
+      def minEatingSpeed(piles, h):
+          pass
+    hints:
+      - Hours needed at speed k is `sum(ceil(p / k))`, which only goes down as k grows → monotonic.
+      - Binary search the answer k in `[1, max(piles)]` for the first k where hours `<= h` (the lower_bound template with a predicate).
+      - "Integer ceil without floats: `(p + k - 1) // k`."
+    solution: |
+      def minEatingSpeed(piles, h):
+          def ok(k):
+              return sum((p + k - 1) // k for p in piles) <= h
+
+          lo, hi = 1, max(piles)
+          while lo < hi:
+              mid = (lo + hi) // 2
+              if not ok(mid):
+                  lo = mid + 1
+              else:
+                  hi = mid
+          return lo
+    check: |
+      res = minEatingSpeed([3, 6, 7, 11], 8)
+      assert res == 4, f"res = {res!r}"
+      res = minEatingSpeed([30, 11, 23, 4, 20], 5)
+      assert res == 30, f"res = {res!r}"
+      res = minEatingSpeed([30, 11, 23, 4, 20], 6)
+      assert res == 23, f"res = {res!r}"
+      res = minEatingSpeed([1], 1)
+      assert res == 1, f"res = {res!r}"
+      res = minEatingSpeed([1000000000], 2)
+      assert res == 500000000, f"res = {res!r}"
+    takeaway: '"Minimum value that works" + monotonic check → lower_bound over the answer range, not over an array.'

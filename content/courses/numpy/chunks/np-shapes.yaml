@@ -1,0 +1,143 @@
+id: np-shapes
+title: Reshape, transpose and combine
+intro: |
+  Shape plumbing: flatten images into feature vectors, split a hidden vector into attention heads,
+  add the size-1 axis that makes broadcasting work, and glue or cut arrays (bias column, k folds).
+problems:
+  - Flatten a batch of images for a linear model
+  - Split hidden states into heads (B, T, H*Dh) -> (B, H, T, Dh)
+  - Add a bias column, build k cross-validation folds
+atoms: []
+skills:
+  - id: np-shapes.reshape
+    name: reshape(-1), ravel, .T, transpose, None / expand_dims, squeeze
+    teach: |
+      ```python
+      x = np.arange(6)                               # (6,)
+      x.reshape(2, 3)                                # same elements, row by row: [[0, 1, 2], [3, 4, 5]]
+      x.reshape(-1, 2).shape                         # -1 = inferred size: (3, 2)
+      np.array([[1, 2], [3, 4]]).ravel()             # 1-D, row by row: [1, 2, 3, 4]
+      x.reshape(2, 3).T.shape                        # .T reverses the axes: (3, 2)
+      np.zeros((2, 3, 4)).transpose(0, 2, 1).shape   # new axis i = old axis axes[i]: (2, 4, 3)
+      x[:, None].shape, x[None].shape                # None inserts a size-1 axis: (6, 1), (1, 6)
+      np.expand_dims(x, 0).shape                     # same as x[None]: (1, 6)
+      np.zeros((3, 1)).squeeze(1).shape              # drops size-1 axis 1 (all of them if no arg): (3,)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Reshape, transpose, and add or remove size-1 axes.
+          - `M` (4, 6): `x` reshaped; `R` (3, 8): `x` reshaped, with the 3 inferred via `-1`
+          - `flat` (24,): `t` flattened with `ravel`
+          - `mT` (5, 3): the transpose of `m`
+          - `tp` (2, 4, 3): `t` with its last two axes swapped
+          - `vcol` (5, 1): `v` as a column, using `None`; `vrow` (1, 5): `v` as a row, using `np.expand_dims`
+          - `cs` (4,): `c` without its size-1 axis
+        setup: |
+          import numpy as np
+          x = np.arange(24)
+          t = np.arange(24).reshape(2, 3, 4)
+          m = np.arange(15).reshape(3, 5)
+          v = np.arange(5)
+          c = np.arange(4).reshape(4, 1)
+        solution: |
+          M = x.reshape(4, 6)
+          R = x.reshape(-1, 8)
+          flat = t.ravel()
+          mT = m.T
+          tp = t.transpose(0, 2, 1)
+          vcol = v[:, None]
+          vrow = np.expand_dims(v, 0)
+          cs = c.squeeze(1)
+        check: |
+          assert isinstance(M, np.ndarray) and M.shape == (4, 6) and M[1, 0] == 6, f"M shape = {np.shape(M)}"
+          assert isinstance(R, np.ndarray) and R.shape == (3, 8) and R[1, 0] == 8, f"R shape = {np.shape(R)}"
+          assert isinstance(flat, np.ndarray) and flat.tolist() == list(range(24)), f"flat = {flat!r}"
+          assert isinstance(mT, np.ndarray) and mT.shape == (5, 3) and mT[1, 2] == m[2, 1], f"mT shape = {np.shape(mT)}"
+          assert isinstance(tp, np.ndarray) and tp.shape == (2, 4, 3) and tp[1, 3, 2] == t[1, 2, 3], f"tp shape = {np.shape(tp)}"
+          assert isinstance(vcol, np.ndarray) and vcol.shape == (5, 1) and vcol.ravel().tolist() == [0, 1, 2, 3, 4], f"vcol shape = {np.shape(vcol)}"
+          assert isinstance(vrow, np.ndarray) and vrow.shape == (1, 5) and vrow.ravel().tolist() == [0, 1, 2, 3, 4], f"vrow shape = {np.shape(vrow)}"
+          assert isinstance(cs, np.ndarray) and cs.shape == (4,) and cs.tolist() == [0, 1, 2, 3], f"cs = {cs!r}"
+      - id: b
+        prompt: |
+          Flatten the images `imgs` (N, 28, 28) and split the hidden states `h` (B, T, H*Dh) into `H` heads.
+          - `X` (N, 784): one flattened row per image (use `-1`, not 784)
+          - `heads` (B, H, T, Dh): `heads[b, k, t] = h[b, t, k*Dh:(k+1)*Dh]`
+        setup: |
+          import numpy as np
+          imgs = np.arange(3 * 28 * 28).reshape(3, 28, 28)
+          B, T, H, Dh = 2, 5, 3, 4
+          h = np.arange(B * T * H * Dh).reshape(B, T, H * Dh)
+        solution: |
+          X = imgs.reshape(len(imgs), -1)
+          heads = h.reshape(B, T, H, Dh).transpose(0, 2, 1, 3)
+        check: |
+          assert isinstance(X, np.ndarray) and X.shape == (3, 784) and (X[1] == imgs[1].ravel()).all(), f"X shape = {np.shape(X)}"
+          assert isinstance(heads, np.ndarray) and heads.shape == (2, 3, 5, 4), f"heads shape = {np.shape(heads)}, expected (B, H, T, Dh) = (2, 3, 5, 4)"
+          assert (heads[1, 2, 3] == h[1, 3, 8:12]).all(), f"heads[1, 2, 3] = {heads[1, 2, 3]}, expected h[1, 3, 8:12] = {h[1, 3, 8:12]}"
+
+  - id: np-shapes.combine
+    name: concatenate, stack, vstack / hstack, split / array_split
+    teach: |
+      ```python
+      a = np.array([[1, 2]]); b = np.array([[3, 4]])          # (1, 2) each
+      np.concatenate([a, b], axis=0)     # along an EXISTING axis: (2, 2) [[1, 2], [3, 4]];  axis=1 -> (1, 4)
+      np.stack([a, b], axis=0).shape     # along a NEW axis, shapes must be equal: (2, 1, 2)
+      np.vstack([[1, 2], [3, 4]])        # on top of each other, 1-D -> rows: [[1, 2], [3, 4]]
+      np.hstack([[1, 2], [3]])           # side by side, 1-D -> one vector: [1, 2, 3]
+      np.split(np.arange(6), 3)          # list of 3 equal parts (error if not divisible): [[0, 1], [2, 3], [4, 5]]
+      np.array_split(np.arange(5), 2)    # unequal parts allowed: [[0, 1, 2], [3, 4]]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Join and split arrays.
+          - `rows` (4, 3): `a` above `b`; `cols` (2, 6): `a` beside `b` (both with `np.concatenate`)
+          - `st` (2, 3, 2): `a` and `b` stacked along a new last axis (`st[..., 0] = a`)
+          - `uv` (2, 3): `u` above `w`, with `np.vstack`; `uh` (6,): `u` then `w`, with `np.hstack`
+          - `parts` (list of 4 arrays): `x` split into 4 equal parts
+          - `zparts` (list of 3 arrays): `z` split into parts of sizes 3, 2, 2
+        setup: |
+          import numpy as np
+          a = np.arange(6).reshape(2, 3)
+          b = np.arange(6, 12).reshape(2, 3)
+          u = np.array([1, 2, 3])
+          w = np.array([4, 5, 6])
+          x = np.arange(12)
+          z = np.arange(7)
+        solution: |
+          rows = np.concatenate([a, b], axis=0)
+          cols = np.concatenate([a, b], axis=1)
+          st = np.stack([a, b], axis=-1)
+          uv = np.vstack([u, w])
+          uh = np.hstack([u, w])
+          parts = np.split(x, 4)
+          zparts = np.array_split(z, 3)
+        check: |
+          assert isinstance(rows, np.ndarray) and rows.shape == (4, 3) and rows[2].tolist() == [6, 7, 8], f"rows = {rows!r}"
+          assert isinstance(cols, np.ndarray) and cols.shape == (2, 6) and cols[0].tolist() == [0, 1, 2, 6, 7, 8], f"cols = {cols!r}"
+          assert isinstance(st, np.ndarray) and st.shape == (2, 3, 2) and st[1, 2].tolist() == [5, 11], f"st shape = {np.shape(st)}"
+          assert isinstance(uv, np.ndarray) and uv.tolist() == [[1, 2, 3], [4, 5, 6]], f"uv = {uv!r}"
+          assert isinstance(uh, np.ndarray) and uh.tolist() == [1, 2, 3, 4, 5, 6], f"uh = {uh!r}"
+          assert isinstance(parts, list) and [p.tolist() for p in parts] == [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]], f"parts = {parts!r}"
+          assert isinstance(zparts, list) and [p.tolist() for p in zparts] == [[0, 1, 2], [3, 4], [5, 6]], f"zparts = {zparts!r}"
+      - id: b
+        prompt: |
+          Prepare `X` (N, D) for linear regression and 5-fold cross-validation.
+          - `Xb` (N, D + 1): a column of ones, then the columns of `X`
+          - `folds` (list of 5 int arrays): the indices `0 .. N-1` split in order into 5 parts whose sizes differ by at most 1, larger parts first
+          - `train0` (1-D int): the indices of every fold except fold 0, concatenated in order
+        setup: |
+          import numpy as np
+          X = np.arange(23 * 2, dtype=float).reshape(23, 2)
+          N = len(X)
+        solution: |
+          Xb = np.hstack([np.ones((N, 1)), X])
+          folds = np.array_split(np.arange(N), 5)
+          train0 = np.concatenate(folds[1:])
+        check: |
+          assert isinstance(Xb, np.ndarray) and Xb.shape == (23, 3), f"Xb shape = {np.shape(Xb)}"
+          assert (Xb[:, 0] == 1).all() and (Xb[:, 1:] == X).all(), f"Xb[:2] = {Xb[:2]!r}"
+          assert isinstance(folds, list) and len(folds) == 5, f"folds has {len(folds) if isinstance(folds, list) else type(folds).__name__} parts"
+          assert [len(f) for f in folds] == [5, 5, 5, 4, 4] and np.concatenate(folds).tolist() == list(range(23)), f"fold sizes = {[len(f) for f in folds]}"
+          assert isinstance(train0, np.ndarray) and train0.tolist() == list(range(5, 23)), f"train0 = {train0!r}"

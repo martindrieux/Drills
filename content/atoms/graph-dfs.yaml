@@ -1,0 +1,324 @@
+id: graph-dfs
+title: DFS — depth-first search
+summary: Go as deep as possible, then backtrack. Reachability, flood fill, components, cycles and topological order.
+links:
+  - to: graph-adjacency
+    kind: prereq
+    note: DFS walks an adjacency list (or a grid's 4 neighbors); build that first.
+  - to: py-stack
+    kind: uses
+    note: Iterative DFS is a plain list used as a stack (append / pop); recursion uses the call stack.
+  - to: py-sets
+    kind: uses
+    note: The visited set gives O(1) "have I seen this node?" checks.
+lesson: |
+  DFS follows one path as far as it goes, then backs up. It does **not** find shortest paths,
+  but it is the shortest code for "what can I reach?", "how many pieces?", "is there a cycle?".
+
+  **Recursive (the version to write from memory)**
+
+  ```python
+  seen = set()
+
+  def dfs(u):
+      seen.add(u)
+      for v in adj[u]:
+          if v not in seen:
+              dfs(v)
+
+  dfs(start)
+  ```
+
+  **Iterative with a stack** (no recursion limit; visit order differs, reachability is the same):
+
+  ```python
+  seen = {start}
+  stack = [start]
+  while stack:
+      u = stack.pop()
+      for v in adj[u]:
+          if v not in seen:
+              seen.add(v)
+              stack.append(v)
+  ```
+
+  **Connected components:** start a DFS from every node not yet seen; each start is a new component.
+
+  ```python
+  count = 0
+  for u in range(n):           # range(n), not adj: isolated nodes count too
+      if u not in seen:
+          count += 1
+          dfs(u)
+  ```
+
+  **Grid flood fill:** overwrite the cell to mark it visited (no set needed; mutates the input).
+
+  ```python
+  def sink(r, c):
+      if not (0 <= r < R and 0 <= c < C) or grid[r][c] != "1":
+          return
+      grid[r][c] = "0"
+      sink(r + 1, c); sink(r - 1, c); sink(r, c + 1); sink(r, c - 1)
+  ```
+
+  **Cycle detection in a directed graph: 3 colors.** A plain `seen` set is not enough: reaching a
+  node that is already finished (via another branch) is fine; reaching one **on the current path** is a cycle.
+
+  ```python
+  WHITE, GRAY, BLACK = 0, 1, 2     # unvisited / on current path / finished
+  color = [WHITE] * n
+
+  def has_cycle(u):
+      color[u] = GRAY
+      for v in adj[u]:
+          if color[v] == GRAY:
+              return True          # back edge
+          if color[v] == WHITE and has_cycle(v):
+              return True
+      color[u] = BLACK
+      return False
+
+  cyclic = any(color[u] == WHITE and has_cycle(u) for u in range(n))
+  ```
+
+  (Undirected graph: a cycle is an edge to a seen node **other than your parent**.)
+
+  **Topological sort: Kahn's algorithm** (BFS-flavoured, no recursion, detects cycles for free).
+  Repeatedly take a node with in-degree 0 and "remove" its outgoing edges.
+
+  ```python
+  from collections import deque
+
+  indeg = [0] * n
+  for u, v in edges:               # u -> v
+      adj[u].append(v)
+      indeg[v] += 1
+  q = deque(u for u in range(n) if indeg[u] == 0)
+  order = []
+  while q:
+      u = q.popleft()
+      order.append(u)
+      for v in adj[u]:
+          indeg[v] -= 1
+          if indeg[v] == 0:
+              q.append(v)
+  cyclic = len(order) < n          # nodes on a cycle never reach in-degree 0
+  ```
+
+  (DFS alternative: append each node when it turns BLACK; the reversed list is a topological order.)
+
+  **Pitfalls**
+  - **Recursion limit.** CPython stops at ~1000 frames: a 100x100 all-land grid raises
+    `RecursionError`. Add `sys.setrecursionlimit(10**6)` at the top, or write the iterative version.
+  - Mark visited **before** recursing (at the top of `dfs`), or cycles loop forever.
+  - Flood fill mutates `grid`. Copy it first if the caller needs it intact.
+  - Course Schedule: `[a, b]` means edge `b -> a`. Getting it backwards still detects cycles,
+    but gives a reversed topological order.
+
+  **Complexity:** O(V + E) time, O(V) space (visited + recursion depth or stack). Grid: O(R·C).
+drills:
+  - id: recursive-reach
+    prompt: |
+      Complete the recursive `dfs(u)` so that after `dfs(0)` the set `seen` holds every node reachable from `0`.
+    setup: |
+      adj = {0: [1], 1: [2], 2: [0], 3: [4], 4: []}
+      seen = set()
+    starter: |
+      def dfs(u):
+          pass
+
+      dfs(0)
+    solution: |
+      def dfs(u):
+          seen.add(u)
+          for v in adj[u]:
+              if v not in seen:
+                  dfs(v)
+
+      dfs(0)
+    check: |
+      assert seen == {0, 1, 2}, f"seen = {seen!r}"
+  - id: iterative-reach
+    prompt: |
+      Without recursion: using a list `stack`, fill `seen` with every node reachable from `0`.
+    setup: |
+      adj = {0: [1, 3], 1: [2], 2: [0], 3: [], 4: [0]}
+    starter: |
+      seen = {0}
+      stack = [0]
+    solution: |
+      seen = {0}
+      stack = [0]
+      while stack:
+          u = stack.pop()
+          for v in adj[u]:
+              if v not in seen:
+                  seen.add(v)
+                  stack.append(v)
+    check: |
+      assert seen == {0, 1, 2, 3}, f"seen = {seen!r}"
+  - id: components
+    prompt: |
+      Nodes are `0..n-1` and `adj` is an undirected list-of-lists adjacency.
+      Put the number of connected components into `count` (isolated nodes count).
+    setup: |
+      n = 6
+      adj = [[1], [0, 2], [1], [4], [3], []]
+    solution: |
+      seen = set()
+      count = 0
+      for s in range(n):
+          if s not in seen:
+              count += 1
+              seen.add(s)
+              stack = [s]
+              while stack:
+                  u = stack.pop()
+                  for v in adj[u]:
+                      if v not in seen:
+                          seen.add(v)
+                          stack.append(v)
+    check: |
+      assert count == 3, f"count = {count!r}"
+  - id: flood-size
+    prompt: |
+      Flood fill: put into `size` the number of `"1"` cells in the 4-connected island containing `(0, 0)`.
+    setup: |
+      grid = [["1", "1", "0"],
+              ["0", "1", "0"],
+              ["1", "0", "1"]]
+      R, C = len(grid), len(grid[0])
+    solution: |
+      def fill(r, c):
+          if not (0 <= r < R and 0 <= c < C) or grid[r][c] != "1":
+              return 0
+          grid[r][c] = "0"
+          return 1 + fill(r + 1, c) + fill(r - 1, c) + fill(r, c + 1) + fill(r, c - 1)
+
+      size = fill(0, 0)
+    check: |
+      assert size == 3, f"size = {size!r}"
+  - id: kahn
+    prompt: |
+      `adj` (directed) and `indeg` are already built. Run Kahn's algorithm and put a topological order
+      of all `n` nodes into `order`.
+    setup: |
+      from collections import deque
+      n = 5
+      adj = [[1, 2], [3], [3], [], [0]]
+      indeg = [1, 1, 1, 2, 0]
+    solution: |
+      q = deque(u for u in range(n) if indeg[u] == 0)
+      order = []
+      while q:
+          u = q.popleft()
+          order.append(u)
+          for v in adj[u]:
+              indeg[v] -= 1
+              if indeg[v] == 0:
+                  q.append(v)
+    check: |
+      assert sorted(order) == [0, 1, 2, 3, 4], f"order = {order!r} (not all nodes)"
+      pos = {u: i for i, u in enumerate(order)}
+      for u in range(n):
+          for v in adj[u]:
+              assert pos[u] < pos[v], f"order = {order!r}: {u} must come before {v}"
+classics:
+  - id: number-of-islands
+    title: Number of Islands
+    url: https://leetcode.com/problems/number-of-islands/
+    difficulty: Medium
+    prompt: |
+      `grid` is a list of lists of `"1"` (land) and `"0"` (water). Return the number of islands
+      (groups of land connected horizontally or vertically).
+    starter: |
+      def numIslands(grid):
+          pass
+    hints:
+      - Scan every cell. Each time you hit a "1", that is a new island; count it.
+      - Then flood-fill (DFS) from it, turning its whole island into "0" so it is never counted again.
+    solution: |
+      def numIslands(grid):
+          R, C = len(grid), len(grid[0])
+
+          def sink(r, c):
+              if not (0 <= r < R and 0 <= c < C) or grid[r][c] != "1":
+                  return
+              grid[r][c] = "0"
+              sink(r + 1, c)
+              sink(r - 1, c)
+              sink(r, c + 1)
+              sink(r, c - 1)
+
+          count = 0
+          for r in range(R):
+              for c in range(C):
+                  if grid[r][c] == "1":
+                      count += 1
+                      sink(r, c)
+          return count
+    check: |
+      res = numIslands([
+          ["1", "1", "1", "1", "0"],
+          ["1", "1", "0", "1", "0"],
+          ["1", "1", "0", "0", "0"],
+          ["0", "0", "0", "0", "0"],
+      ])
+      assert res == 1, f"res = {res!r}"
+      res = numIslands([
+          ["1", "1", "0", "0", "0"],
+          ["1", "1", "0", "0", "0"],
+          ["0", "0", "1", "0", "0"],
+          ["0", "0", "0", "1", "1"],
+      ])
+      assert res == 3, f"res = {res!r}"
+      res = numIslands([["0"]])
+      assert res == 0, f"all water: res = {res!r}"
+      res = numIslands([["1", "0", "1"], ["0", "1", "0"]])
+      assert res == 3, f"diagonals do not connect: res = {res!r}"
+    takeaway: Count connected regions → loop over all cells, start a flood fill at each unvisited one, count the starts.
+  - id: course-schedule
+    title: Course Schedule
+    url: https://leetcode.com/problems/course-schedule/
+    difficulty: Medium
+    prompt: |
+      There are `numCourses` courses `0..numCourses-1`. `prerequisites[i] = [a, b]` means you must take
+      `b` before `a`. Return `True` if you can finish all courses (i.e. the dependency graph has no cycle).
+    starter: |
+      def canFinish(numCourses, prerequisites):
+          pass
+    hints:
+      - Build a directed graph with edge b -> a for each [a, b]. The answer is "is it acyclic?".
+      - "DFS with 3 colors: an edge to a GRAY node (still on the current path) is a cycle."
+      - "Or Kahn's algorithm: count how many nodes you can pop at in-degree 0; all of them ⇔ no cycle."
+    solution: |
+      def canFinish(numCourses, prerequisites):
+          adj = [[] for _ in range(numCourses)]
+          for a, b in prerequisites:
+              adj[b].append(a)
+          color = [0] * numCourses          # 0 white, 1 gray, 2 black
+
+          def has_cycle(u):
+              color[u] = 1
+              for v in adj[u]:
+                  if color[v] == 1:
+                      return True
+                  if color[v] == 0 and has_cycle(v):
+                      return True
+              color[u] = 2
+              return False
+
+          return not any(color[u] == 0 and has_cycle(u) for u in range(numCourses))
+    check: |
+      res = canFinish(2, [[1, 0]])
+      assert res is True, f"res = {res!r}"
+      res = canFinish(2, [[1, 0], [0, 1]])
+      assert res is False, f"2-cycle: res = {res!r}"
+      res = canFinish(1, [])
+      assert res is True, f"no prerequisites: res = {res!r}"
+      res = canFinish(4, [[1, 0], [2, 0], [3, 1], [3, 2]])
+      assert res is True, f"diamond (shared descendant is not a cycle): res = {res!r}"
+      res = canFinish(4, [[1, 0], [2, 1], [3, 2], [1, 3]])
+      assert res is False, f"cycle not involving node 0: res = {res!r}"
+    takeaway: "\"Can all tasks be ordered?\" = is the directed graph acyclic → 3-color DFS (edge to GRAY = cycle) or Kahn (len(order) == n)."

@@ -1,0 +1,30 @@
+{
+  "name": "drills",
+  "productName": "Drills",
+  "version": "0.1.0",
+  "description": "Desktop wrapper for the local knowledge map web app",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --mac --dir"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "local.drills.app",
+    "productName": "Drills",
+    "files": [
+      "main.js",
+      "root.json",
+      "package.json"
+    ],
+    "mac": {
+      "target": "dir",
+      "category": "public.app-category.education",
+      "identity": null
+    }
+  }
+}

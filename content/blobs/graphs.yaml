@@ -1,0 +1,10 @@
+id: graphs
+title: Graphs
+domain: leetcode
+summary: Representing graphs and the three traversals that solve most graph problems.
+requires: [python-toolkit]
+sections:
+  - title: Building blocks
+    atoms: [py-dict-counter, py-sets, py-deque, py-heapq]
+  - title: Traversals
+    atoms: [graph-adjacency, graph-bfs, graph-dfs, graph-dijkstra]

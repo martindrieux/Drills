@@ -1,0 +1,265 @@
+id: py-cache
+title: functools.cache — memoised recursion
+summary: One decorator turns a recursive function into top-down DP; know its limits (hashable args, recursion depth).
+links:
+  - to: py-dict-counter
+    kind: contrast
+    note: "@cache is a dict keyed by the arguments, written for you; a hand-rolled memo dict does the same with more control."
+lesson: |
+  `@cache` stores every result keyed by the call's arguments. A second call with the same arguments
+  returns the stored value without running the body. On a recursive function, that is **top-down DP**:
+  write the recurrence, add one line, exponential becomes polynomial.
+
+  ```python
+  from functools import cache
+
+  @cache
+  def fib(n):
+      if n < 2:
+          return n
+      return fib(n - 1) + fib(n - 2)
+
+  fib(80)            # instant; without @cache it would never finish
+  ```
+
+  **cache vs lru_cache**
+
+  | Decorator | Meaning |
+  |---|---|
+  | `@cache` (3.9+) | unbounded cache. Use this. |
+  | `@lru_cache(maxsize=None)` | exactly the same, works on older Pythons |
+  | `@lru_cache` / `@lru_cache()` | **maxsize=128**: evicts old entries → can silently go exponential again |
+
+  **Decorate a nested function** that closes over the inputs. The cache then lives for one call of
+  the outer function, so it never leaks between test cases, and only the changing state (indices)
+  goes in the arguments.
+
+  ```python
+  def numDecodings(s):
+      @cache
+      def dp(i):                 # number of ways to decode s[i:]
+          if i == len(s):
+              return 1
+          ...                    # uses s from the enclosing scope
+      return dp(0)
+  ```
+
+  **Arguments must be hashable.** Lists, dicts and sets raise `TypeError: unhashable type`.
+  Pass indices instead of slices (also avoids O(n) copies), or convert: `tuple(lst)`,
+  `frozenset(s)`. Return values are shared between calls: don't mutate a cached list you got back.
+
+  **Introspection**
+
+  ```python
+  fib.cache_info()     # CacheInfo(hits=78, misses=81, maxsize=None, currsize=81)
+  fib.cache_clear()    # empty it (needed for a module-level cached fn whose inputs change)
+  ```
+
+  **Recursion depth.** CPython stops at ~1000 frames (`RecursionError`). A memoised recursion on
+  `n = 10⁴` goes that deep on the first call. Raise the limit:
+
+  ```python
+  import sys
+  sys.setrecursionlimit(10**5)
+  ```
+
+  Very deep recursion can still crash the interpreter (C stack); if depth is ~10⁵ or more, write it
+  bottom-up instead.
+
+  **When a hand-written memo dict is clearer**
+  - You need to look at or pre-seed the table (`memo = {0: 1}`).
+  - Arguments aren't hashable as-is and you'd rather build your own key.
+  - A method on a class: `@cache` on a method also keys on `self` and keeps every instance alive.
+  - The interviewer asks you to show the memoisation explicitly.
+
+  ```python
+  memo = {}
+  def f(i):
+      if i in memo:
+          return memo[i]
+      ...
+      memo[i] = ans
+      return ans
+  ```
+
+  **Complexity:** (number of distinct states) × (work per state), plus O(states) memory.
+
+  **Pitfalls**
+  - `@lru_cache` without arguments caps at 128 entries.
+  - A module-level `@cache` function that reads a global input keeps stale answers when that input
+    changes: nest it or call `cache_clear()`.
+  - Unhashable arguments → `TypeError`.
+  - Recursion deeper than ~1000 → `RecursionError`.
+drills:
+  - id: decorate
+    prompt: Make `fib` memoised by adding one decorator line, then set `res = fib(80)`.
+    starter: |
+      from functools import cache
+
+      def fib(n):
+          return n if n < 2 else fib(n - 1) + fib(n - 2)
+    solution: |
+      from functools import cache
+
+      @cache
+      def fib(n):
+          return n if n < 2 else fib(n - 1) + fib(n - 2)
+
+      res = fib(80)
+    check: |
+      assert hasattr(fib, "cache_info"), "fib is not decorated with a cache"
+      assert res == 23416728348467685, f"res = {res!r}"
+  - id: lru-unbounded
+    prompt: Decorate `ways` with the `lru_cache` equivalent of `@cache` (no size limit), then set `res = ways(30)`.
+    starter: |
+      from functools import lru_cache
+
+      def ways(n):
+          return 1 if n <= 1 else ways(n - 1) + ways(n - 2)
+    solution: |
+      from functools import lru_cache
+
+      @lru_cache(maxsize=None)
+      def ways(n):
+          return 1 if n <= 1 else ways(n - 1) + ways(n - 2)
+
+      res = ways(30)
+    check: |
+      assert hasattr(ways, "cache_info"), "ways is not decorated"
+      assert ways.cache_info().maxsize is None, f"maxsize = {ways.cache_info().maxsize!r}"
+      assert res == 1346269, f"res = {res!r}"
+  - id: hashable-arg
+    prompt: '`total` is cached, so it cannot take a list. Call it on the values of `nums` and store the result in `res`.'
+    setup: |
+      from functools import cache
+
+      @cache
+      def total(xs):
+          return sum(xs)
+
+      nums = [1, 2, 3]
+    solution: |
+      res = total(tuple(nums))
+    check: |
+      assert res == 6, f"res = {res!r}"
+  - id: clear-cache
+    prompt: Empty the cache of `sq`, then set `size` to the number of entries it currently holds (via `cache_info`).
+    setup: |
+      from functools import cache
+
+      @cache
+      def sq(x):
+          return x * x
+
+      for i in range(5):
+          sq(i)
+    solution: |
+      sq.cache_clear()
+      size = sq.cache_info().currsize
+    check: |
+      assert size == 0, f"size = {size!r}"
+  - id: memo-dict
+    prompt: Memoise `fib` by hand with the dict `memo` (no decorator), then set `res = fib(60)`.
+    starter: |
+      memo = {}
+
+      def fib(n):
+          if n < 2:
+              return n
+          return fib(n - 1) + fib(n - 2)
+    solution: |
+      memo = {}
+
+      def fib(n):
+          if n < 2:
+              return n
+          if n not in memo:
+              memo[n] = fib(n - 1) + fib(n - 2)
+          return memo[n]
+
+      res = fib(60)
+    check: |
+      assert res == 1548008755920, f"res = {res!r}"
+      assert len(memo) > 0, f"memo = {memo!r}"
+  - id: recursion-limit
+    prompt: Raise Python's recursion limit to `10**4`, then read the current limit back into `limit`.
+    setup: |
+      import sys
+    solution: |
+      sys.setrecursionlimit(10**4)
+      limit = sys.getrecursionlimit()
+    check: |
+      assert limit == 10**4, f"limit = {limit!r}"
+classics:
+  - id: climbing-stairs
+    title: Climbing Stairs (top-down)
+    url: https://leetcode.com/problems/climbing-stairs/
+    difficulty: Easy
+    prompt: |
+      You climb a staircase of `n` steps, 1 or 2 steps at a time. Return the number of distinct
+      ways to reach the top. Write it **top-down**: a recursive function plus `@cache`.
+    starter: |
+      from functools import cache
+
+      def climbStairs(n):
+          pass
+    hints:
+      - "Define `ways(i)` = number of ways to climb `i` steps. The last move was 1 or 2 steps."
+      - "Base cases: `ways(0) = ways(1) = 1`."
+      - Without `@cache` this is fib-shaped and takes ~2^n calls; with it, n calls.
+    solution: |
+      from functools import cache
+
+      def climbStairs(n):
+          @cache
+          def ways(i):
+              if i <= 1:
+                  return 1
+              return ways(i - 1) + ways(i - 2)
+
+          return ways(n)
+    check: |
+      for n, want in [(1, 1), (2, 2), (3, 3), (5, 8), (45, 1836311903)]:
+          res = climbStairs(n)
+          assert res == want, f"climbStairs({n}) = {res!r}"
+    takeaway: Recurrence first (what was the last move?), then @cache on a nested function = top-down DP.
+  - id: decode-ways
+    title: Decode Ways (top-down)
+    url: https://leetcode.com/problems/decode-ways/
+    difficulty: Medium
+    prompt: |
+      Letters map to numbers `A=1 … Z=26`. Given a digit string `s`, return how many ways it can
+      be decoded. `"06"` is invalid (no leading zero), so it decodes in 0 ways. Write it top-down
+      with a cached `dp(i)` over the suffix `s[i:]`.
+    starter: |
+      from functools import cache
+
+      def numDecodings(s):
+          pass
+    hints:
+      - "`dp(i)` = ways to decode `s[i:]`. `dp(len(s)) = 1` (empty suffix: one way, decode nothing)."
+      - A `"0"` at position i can't start a letter → `dp(i) = 0`.
+      - Otherwise take one digit (`dp(i + 1)`), plus two digits (`dp(i + 2)`) if `s[i:i+2]` is between 10 and 26.
+      - Pass the index, not the substring; indices are hashable and avoid copies.
+    solution: |
+      from functools import cache
+
+      def numDecodings(s):
+          @cache
+          def dp(i):
+              if i == len(s):
+                  return 1
+              if s[i] == "0":
+                  return 0
+              res = dp(i + 1)
+              if i + 1 < len(s) and 10 <= int(s[i:i + 2]) <= 26:
+                  res += dp(i + 2)
+              return res
+
+          return dp(0)
+    check: |
+      for s, want in [("12", 2), ("226", 3), ("06", 0), ("0", 0), ("10", 1),
+                      ("27", 1), ("2101", 1), ("11106", 2), ("1" * 30, 1346269)]:
+          res = numDecodings(s)
+          assert res == want, f"numDecodings({s!r}) = {res!r}"
+    takeaway: Top-down DP over a string → cached dp(i) on the suffix index; base case at i == len(s).

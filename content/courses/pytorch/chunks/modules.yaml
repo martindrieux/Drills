@@ -1,0 +1,372 @@
+id: modules
+title: Defining models with nn.Module
+intro: |
+  Every model you write in an interview is an `nn.Module`: layers created in `__init__`, the
+  computation in `forward`. Know the containers (`Sequential`, `ModuleList`, `ModuleDict`), how
+  parameters get registered and counted, and what `train()` / `eval()` actually change.
+problems:
+  - Implement an MLP classifier from scratch
+  - Build a model with a variable number of layers
+  - How many trainable parameters does this model have?
+  - Add a learnable scale and a fixed mask to a layer
+  - Why does my model give different outputs at inference?
+atoms: []
+skills:
+  - id: modules.subclass
+    name: class Net(nn.Module) with forward
+    teach: |
+      ```python
+      class Net(nn.Module):
+          def __init__(self, d_in, d_out):
+              super().__init__()                  # first, before assigning any layer
+              self.fc = nn.Linear(d_in, d_out)    # layers assigned to self are registered
+          def forward(self, x):                   # the computation
+              return self.fc(x)
+      # net(x) -> runs forward (plus hooks); never call net.forward(x) directly
+      Net(4, 2)(torch.randn(3, 4)).shape          # (3, 2)
+      ```
+      Pitfall: without `super().__init__()`, assigning a layer raises *"cannot assign module before Module.__init__() call"*.
+    cards:
+      - id: a
+        prompt: Define `Net` with one `nn.Linear(4, 2)` stored as `self.fc`, create `net = Net()`, and set `out` by calling it on `x`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.randn(3, 4)
+        solution: |
+          class Net(nn.Module):
+              def __init__(self):
+                  super().__init__()
+                  self.fc = nn.Linear(4, 2)
+
+              def forward(self, x):
+                  return self.fc(x)
+
+          net = Net()
+          out = net(x)
+        check: |
+          assert isinstance(net, nn.Module), "Net must subclass nn.Module"
+          assert out.shape == (3, 2), f"out.shape = {tuple(out.shape)}"
+          assert torch.allclose(out, net.fc(x)), "out should be net.fc(x)"
+      - id: c
+        prompt: This `Block` crashes when instantiated. Fix it. `forward` should return `x + self.fc(x)` (a residual).
+        starter: |
+          class Block(nn.Module):
+              def __init__(self, d):
+                  self.fc = nn.Linear(d, d)
+
+              def forward(self, x):
+                  return x + self.fc(x)
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+        solution: |
+          class Block(nn.Module):
+              def __init__(self, d):
+                  super().__init__()
+                  self.fc = nn.Linear(d, d)
+
+              def forward(self, x):
+                  return x + self.fc(x)
+        check: |
+          b = Block(3)
+          x = torch.randn(2, 3)
+          assert torch.allclose(b(x), x + b.fc(x)), "forward should return x + fc(x)"
+          assert len(list(b.parameters())) == 2, "fc should be registered"
+
+  - id: modules.linear-activations
+    name: nn.Linear and activations (module vs functional)
+    teach: |
+      ```python
+      # nn.Linear(in, out, bias=True) -> maps (..., in) to (..., out); .weight is (out, in)
+      nn.Linear(16, 4)(torch.randn(8, 16)).shape   # (8, 4)
+      # nn.ReLU() / nn.GELU() / nn.Tanh() / nn.Sigmoid() -> activation MODULES: build, then call
+      nn.ReLU()(torch.tensor([-1., 2.]))           # [0., 2.]
+      # F.relu / F.gelu / torch.tanh / torch.sigmoid -> same, as functions (import torch.nn.functional as F)
+      F.relu(torch.tensor([-1., 2.]))              # [0., 2.]
+      ```
+      Pitfall: `nn.ReLU(x)` does not apply ReLU, it only builds a module.
+    cards:
+      - id: a
+        prompt: |
+          Set: `layer` = linear layer 5 → 3 without bias · `y = layer(x)` · on `y`: `r1` = ReLU with an `nn` module ·
+          `r2` = ReLU with the `F` function · `g` = GELU (module) · `t` = tanh (function) · `s` = sigmoid (module).
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          x = torch.randn(2, 5)
+        solution: |
+          layer = nn.Linear(5, 3, bias=False)
+          y = layer(x)
+          r1 = nn.ReLU()(y)
+          r2 = F.relu(y)
+          g = nn.GELU()(y)
+          t = torch.tanh(y)
+          s = nn.Sigmoid()(y)
+        check: |
+          assert tuple(layer.weight.shape) == (3, 5), f"weight shape = {tuple(layer.weight.shape)}"
+          assert layer.bias is None, "layer should have no bias"
+          assert y.shape == (2, 3), f"y.shape = {tuple(y.shape)}"
+          assert torch.equal(r1, y.clamp(min=0)), f"r1 = {r1}"
+          assert torch.equal(r2, y.clamp(min=0)), f"r2 = {r2}"
+          assert torch.allclose(g, y * 0.5 * (1 + torch.erf(y / 2 ** 0.5)), atol=1e-6), f"g = {g}"
+          assert torch.allclose(t, (torch.exp(2 * y) - 1) / (torch.exp(2 * y) + 1), atol=1e-6), f"t = {t}"
+          assert torch.allclose(s, 1 / (1 + torch.exp(-y)), atol=1e-6), f"s = {s}"
+      - id: c
+        prompt: "`x` is `(B, T, 8)` (a batch of token embeddings). Create `proj`, a bias-free linear layer to 16 features, and set `h = F.gelu(proj(x))`."
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8)
+        solution: |
+          proj = nn.Linear(8, 16, bias=False)
+          h = F.gelu(proj(x))
+        check: |
+          assert proj.bias is None, "proj should have no bias"
+          assert h.shape == (2, 5, 16), f"h.shape = {tuple(h.shape)}"
+          assert torch.allclose(h, F.gelu(x @ proj.weight.T)), "h should be gelu(proj(x))"
+
+  - id: modules.sequential
+    name: nn.Sequential, indexing and names
+    teach: |
+      ```python
+      # nn.Sequential(*modules) -> calls them in order on ONE input
+      model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+      # model[i] -> i-th layer;  model[a:b] -> a new Sequential
+      model[:-1]              # Linear(4, 8) -> ReLU, outputs (N, 8)
+      # nn.Sequential(OrderedDict([(name, module), ...])) -> named layers, read as attributes
+      named = nn.Sequential(OrderedDict([("fc1", nn.Linear(4, 8)), ("act", nn.ReLU())]))
+      named.fc1               # Linear(in_features=4, out_features=8, bias=True)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Set: `model` = Linear(4, 8) → ReLU → Linear(8, 2) with `nn.Sequential` · `out = model(x)` ·
+          `last` = the last layer of `model` · `body` = all layers but the last (a Sequential) ·
+          `named` = Linear(4, 8) → ReLU as a Sequential with names `fc1`, `act`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          from collections import OrderedDict
+          torch.manual_seed(0)
+          x = torch.randn(3, 4)
+        solution: |
+          model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+          out = model(x)
+          last = model[-1]
+          body = model[:-1]
+          named = nn.Sequential(OrderedDict([("fc1", nn.Linear(4, 8)), ("act", nn.ReLU())]))
+        check: |
+          assert isinstance(model, nn.Sequential) and len(model) == 3, f"model = {model}"
+          assert isinstance(model[1], nn.ReLU), f"model[1] = {model[1]}"
+          assert out.shape == (3, 2), f"out.shape = {tuple(out.shape)}"
+          assert last is model[2], f"last = {last}"
+          assert isinstance(body, nn.Sequential) and len(body) == 2, f"body = {body}"
+          names = [n for n, _ in named.named_children()]
+          assert names == ["fc1", "act"], f"named children = {names}"
+          assert named.fc1.in_features == 4 and named.fc1.out_features == 8, f"named.fc1 = {named.fc1}"
+      - id: c
+        prompt: |
+          Transfer learning: `model` is a trained 2-class net. Build `new_model`, a Sequential of `model`'s layers
+          except the last, followed by a fresh `nn.Linear(8, 5)` head, and set `out = new_model(x)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+          x = torch.randn(3, 4)
+        solution: |
+          new_model = nn.Sequential(model[:-1], nn.Linear(8, 5))
+          out = new_model(x)
+        check: |
+          assert isinstance(new_model, nn.Sequential), f"new_model is {type(new_model).__name__}"
+          assert out.shape == (3, 5), f"out.shape = {tuple(out.shape)}"
+          assert any(m is model[0] for m in new_model.modules()), "reuse model's first layer (slice model)"
+          head = list(new_model.modules())[-1]
+          assert isinstance(head, nn.Linear) and head.out_features == 5, f"last layer = {head}"
+          assert torch.allclose(out, head(torch.relu(model[0](x)))), "out should be head(relu(model[0](x)))"
+
+  - id: modules.modulelist
+    name: nn.ModuleList / nn.ModuleDict
+    teach: |
+      ```python
+      # nn.ModuleList(list) -> registered list of modules; loop over it in forward yourself
+      self.layers = nn.ModuleList([nn.Linear(d, d) for _ in range(n)])
+      # nn.ModuleDict(dict) -> registered dict of modules, indexed by key
+      self.heads = nn.ModuleDict({"cls": nn.Linear(d, 3), "reg": nn.Linear(d, 1)})
+      ```
+      Pitfall: a plain Python `list` of layers is not registered, so the optimizer never sees them.
+    cards:
+      - id: a
+        prompt: |
+          Define `Stack(n)` with `self.layers`, an `nn.ModuleList` of `n` `nn.Linear(8, 8)`, and `self.heads`, an `nn.ModuleDict`
+          with `"cls": nn.Linear(8, 3)` and `"reg": nn.Linear(8, 1)`. `forward(x, task)` applies the layers in order
+          with a ReLU after each, then returns `self.heads[task]` of the result.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+        solution: |
+          class Stack(nn.Module):
+              def __init__(self, n):
+                  super().__init__()
+                  self.layers = nn.ModuleList([nn.Linear(8, 8) for _ in range(n)])
+                  self.heads = nn.ModuleDict({"cls": nn.Linear(8, 3), "reg": nn.Linear(8, 1)})
+
+              def forward(self, x, task):
+                  for layer in self.layers:
+                      x = torch.relu(layer(x))
+                  return self.heads[task](x)
+        check: |
+          m = Stack(3)
+          assert isinstance(m.layers, nn.ModuleList), "use nn.ModuleList for self.layers"
+          assert isinstance(m.heads, nn.ModuleDict), "use nn.ModuleDict for self.heads"
+          n = len(list(m.parameters()))
+          assert n == 10, f"{n} parameter tensors registered, expected 10"
+          x = torch.randn(2, 8)
+          h = x
+          for l in m.layers:
+              h = torch.relu(l(h))
+          assert torch.allclose(m(x, "cls"), m.heads["cls"](h)), "forward(x, 'cls') is wrong"
+          assert m(x, "reg").shape == (2, 1), f"reg shape = {tuple(m(x, 'reg').shape)}"
+      - id: b
+        prompt: This model has **no** registered parameters. Fix `__init__` so the optimizer would see its layers.
+        starter: |
+          class Deep(nn.Module):
+              def __init__(self, n):
+                  super().__init__()
+                  self.layers = [nn.Linear(4, 4) for _ in range(n)]
+
+              def forward(self, x):
+                  for layer in self.layers:
+                      x = layer(x)
+                  return x
+        setup: |
+          import torch
+          import torch.nn as nn
+        solution: |
+          class Deep(nn.Module):
+              def __init__(self, n):
+                  super().__init__()
+                  self.layers = nn.ModuleList([nn.Linear(4, 4) for _ in range(n)])
+
+              def forward(self, x):
+                  for layer in self.layers:
+                      x = layer(x)
+                  return x
+        check: |
+          n = sum(p.numel() for p in Deep(2).parameters())
+          assert n == 40, f"Deep(2) has {n} registered params, expected 40"
+
+  - id: modules.parameters
+    name: parameters, counting, nn.Parameter, buffers
+    teach: |
+      ```python
+      # model.named_parameters() -> (name, tensor) pairs;  model.parameters() -> tensors only
+      [n for n, _ in nn.Linear(2, 1).named_parameters()]     # ['weight', 'bias']
+      # summing p.numel() -> parameter count
+      sum(p.numel() for p in nn.Linear(2, 1).parameters())   # 3
+      # nn.Parameter(tensor) -> learnable tensor, registered when assigned in __init__
+      self.gamma = nn.Parameter(torch.ones(d))
+      # self.register_buffer(name, tensor) -> saved with the model and moved by .to(), never trained
+      self.register_buffer("mask", torch.tril(torch.ones(T, T)))
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Set: `names` = list of the parameter names of `model` · `n` = its number of parameters (scalars) ·
+          define `Scale(d)` with a learnable `self.gamma` (ones, shape `(d,)`) and a buffer `"mask"` (zeros, shape `(d,)`);
+          `forward` returns `x * self.gamma`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Sequential(nn.Linear(4, 8), nn.Linear(8, 2))
+        solution: |
+          names = [name for name, _ in model.named_parameters()]
+          n = sum(p.numel() for p in model.parameters())
+
+          class Scale(nn.Module):
+              def __init__(self, d):
+                  super().__init__()
+                  self.gamma = nn.Parameter(torch.ones(d))
+                  self.register_buffer("mask", torch.zeros(d))
+
+              def forward(self, x):
+                  return x * self.gamma
+        check: |
+          assert names == ["0.weight", "0.bias", "1.weight", "1.bias"], f"names = {names}"
+          assert n == 58, f"n = {n}, expected 58"
+          m = Scale(3)
+          assert list(dict(m.named_parameters())) == ["gamma"], f"parameters = {list(dict(m.named_parameters()))}"
+          assert list(dict(m.named_buffers())) == ["mask"], f"buffers = {list(dict(m.named_buffers()))}"
+          x = torch.randn(2, 3)
+          assert torch.allclose(m(x), x), "forward should return x * gamma"
+      - id: b
+        prompt: Build `shapes`, a dict mapping each parameter name of `model` to its shape as a tuple.
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+        solution: |
+          shapes = {name: tuple(p.shape) for name, p in model.named_parameters()}
+        check: |
+          exp = {"0.weight": (8, 4), "0.bias": (8,), "2.weight": (2, 8), "2.bias": (2,)}
+          assert shapes == exp, f"shapes = {shapes}"
+
+  - id: modules.train-eval
+    name: model.train() / model.eval()
+    teach: |
+      ```python
+      # model.eval() -> training=False on every submodule: Dropout = identity, BatchNorm uses running stats
+      model.eval()
+      # model.train() -> back to training behavior (the default mode)
+      model.train()
+      # model.training -> the current mode
+      model.training            # True
+      ```
+      Pitfall: `eval()` does not turn off autograd; for inference also wrap in `torch.no_grad()`.
+    cards:
+      - id: a
+        prompt: |
+          Put `model` in evaluation mode, set `out = model(x)` and `m_eval` = the model's mode flag ·
+          then switch it back to training mode and set `m_train` = the mode flag again.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          model = nn.Sequential(nn.Dropout(0.5))
+          model.train()
+          x = torch.ones(100)
+        solution: |
+          model.eval()
+          out = model(x)
+          m_eval = model.training
+          model.train()
+          m_train = model.training
+        check: |
+          assert torch.equal(out, x), f"dropout was applied: {out[:6]}... (call model.eval() first)"
+          assert m_eval is False, f"m_eval = {m_eval!r} (read model.training)"
+          assert m_train is True, f"m_train = {m_train!r}"
+          assert model.training, "model should end in training mode"
+      - id: c
+        prompt: Run `bn` on `x` for inference (eval mode, no autograd) into `out`, without updating its running stats.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          bn = nn.BatchNorm1d(3)
+          x = torch.randn(8, 3) * 5 + 2
+        solution: |
+          bn.eval()
+          with torch.no_grad():
+              out = bn(x)
+        check: |
+          assert torch.equal(bn.running_mean, torch.zeros(3)), f"running_mean changed: {bn.running_mean}"
+          assert torch.allclose(out, x / (1 + bn.eps) ** 0.5), "out should use running stats (mean 0, var 1)"
+          assert not out.requires_grad, "run it under torch.no_grad()"

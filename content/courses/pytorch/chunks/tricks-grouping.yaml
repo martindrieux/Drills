@@ -1,0 +1,353 @@
+id: tricks-grouping
+title: "Tricks: grouping, counting & indexed reductions"
+intro: |
+  "Group by" in PyTorch without a Python loop: scatter rows into per-group accumulators, give groups
+  contiguous ids first when the labels are arbitrary. The plain group sum / mean and the confusion matrix are
+  drilled in Interview tricks (`one_hot, index_add_`); these problems add weights, batches and label compression.
+problems:
+  - Weighted per-class mean of embeddings (sample weights, importance weights)
+  - Per-sequence segment means in a batch (graph pooling, token-to-word pooling)
+  - Map arbitrary user / item ids to 0..K-1 before an embedding table
+  - Group-by on several key columns (pair counts, co-occurrence sums)
+atoms: []
+skills:
+  - id: tricks-grouping.weighted-mean
+    name: Weighted group aggregation (Medium)
+    teach: |
+      Each row of `x` has a group id and a weight; return every group's weighted mean.
+      ```python
+      # x (N, D) float, ids (N,) int64 in 0..K-1, w (N,) float >= 0  ->  out (K, D), same dtype as x
+      # out[k] = sum_{ids[i]=k} w[i] * x[i] / sum_{ids[i]=k} w[i];  out[k] = 0 if that total weight is 0
+      x = [[1., 2.], [3., 4.], [5., 6.]];  ids = [0, 0, 2];  w = [1., 3., 2.];  K = 3
+      # -> [[2.5, 3.5], [0., 0.], [5., 6.]]     group 0: (1*[1, 2] + 3*[3, 4]) / 4; group 1 empty
+      ```
+      Constraints: no Python loops; no NaN for an empty or zero-weight group.
+    cards:
+      - id: a
+        prompt: |
+          Write `weighted_group_mean(x, ids, w, K)`: the weighted mean of the rows of `x` in each of `K` groups.
+          - `x` (N, D) float: rows (may be non-contiguous, `N` may be 0); `ids` (N,) int64 in `0..K-1`: group of each row; `w` (N,) float `>= 0`: row weights; `K` (int): number of groups
+          - returns `out` (K, D), dtype of `x`: `out[k] = Σ_{ids[i]=k} w[i] * x[i] / Σ_{ids[i]=k} w[i]`; 0 for an empty or zero-weight group (never NaN)
+          - No Python loops or comprehensions.
+
+          <details><summary>Hint 1</summary>Two per-group accumulators: the numerator (a D-vector) and the denominator (a scalar); divide at the end.</details>
+          <details><summary>Hint 2</summary><code>t.index_add_(0, ids, src)</code> sums rows into <code>t[ids]</code>, repeated ids included (<code>t[ids] += src</code> does not).</details>
+          <details><summary>Hint 3</summary><code>num.index_add_(0, ids, w[:, None] * x)</code>, <code>den.index_add_(0, ids, w)</code>, then <code>torch.where(den[:, None] > 0, num / den[:, None], 0.)</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def weighted_group_mean(x, ids, w, K):
+              raise NotImplementedError
+        solution: |
+          def weighted_group_mean(x, ids, w, K):
+              D = x.shape[1]
+              num = torch.zeros(K, D, dtype=x.dtype).index_add_(0, ids, w[:, None] * x)   # (K, D) weighted sums
+              den = torch.zeros(K, dtype=x.dtype).index_add_(0, ids, w)                 # (K,) total weight
+              den = den[:, None]                                                          # (K, 1) broadcasts over D
+              return torch.where(den > 0, num / den.clamp(min=1e-30), torch.zeros_like(num))
+
+          # Trick: index_add_ is a scatter-sum (out[ids[i]] += src[i]) that accumulates repeated ids, unlike t[ids] += src.
+          #   Weights appear in the numerator (w[:, None] * x) and as their own (K,) accumulator.
+          # Cost: O(N*D) time, O(K*D) memory (a (K, N) membership mask would be O(K*N*D)).
+          # NumPy: np.add.at(num, ids, w[:, None] * x); np.bincount(ids, weights=w, minlength=K).
+          # Mistakes: num / den gives NaN for empty groups; dividing by the count instead of the weight.
+          # Follow-up: weighted variance per group (also accumulate w * x**2).
+        check: |
+          import dis, types
+          from cardtest import against, rand_cases
+
+          def _no_loops(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if isinstance(c, types.CodeType))
+              assert not walk(fn.__code__), f"{fn.__name__} uses a Python loop or comprehension: vectorize it"
+
+          def _ref(x, ids, w, K):
+              xs, ids, w = x.double().tolist(), ids.tolist(), w.double().tolist()
+              D = x.shape[1]
+              out = [[0.0] * D for _ in range(K)]
+              for k in range(K):
+                  tw, acc = 0.0, [0.0] * D
+                  for i in range(len(ids)):
+                      if ids[i] == k:
+                          tw += w[i]
+                          acc = [a + w[i] * v for a, v in zip(acc, xs[i])]
+                  if tw > 0:
+                      out[k] = [a / tw for a in acc]
+              return torch.tensor(out, dtype=torch.float64).reshape(K, D).to(x.dtype)
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and not torch.isnan(got).any() and torch.allclose(got.double(), exp.double(), rtol=1e-4, atol=1e-5))
+
+          def _show(x, ids, w, K):
+              return f"(x {tuple(x.shape)}{'' if x.is_contiguous() else ' non-contiguous'}, ids={ids.tolist()}, w={[round(v, 2) for v in w.tolist()]}, K={K})"
+
+          def _gen(r):
+              N, D, K = r.randint(0, 14), r.randint(1, 4), r.randint(1, 6)
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              x = torch.randn(D, N, generator=g).t() if r.random() < 0.3 else torch.randn(N, D, generator=g)
+              ids = torch.randint(0, K, (N,), generator=g)
+              w = torch.rand(N, generator=g) * 2 + 0.05
+              w[torch.rand(N, generator=g) < 0.3] = 0.0
+              return (x * 3, ids, w, K)
+
+          T = torch.tensor
+          _edge = [
+              (T([[1., 2.], [3., 4.], [5., 6.]]), T([0, 0, 2]), T([1., 3., 2.]), 3),
+              (torch.zeros(0, 2), torch.zeros(0, dtype=torch.long), torch.zeros(0), 3),
+              (T([[1., -1.]]), T([4]), T([0.5]), 6),
+              (T([[1.], [2.], [7.]]), T([1, 1, 0]), T([0., 0., 1.]), 2),
+              (T([[1., 2.], [3., 5.], [-4., 0.5], [2., 2.]]), T([0, 0, 0, 0]), T([1., 2., 0.5, 0.]), 1),
+              (torch.arange(12.).view(3, 4).t(), T([2, 0, 2, 2]), T([1., 1., 2., 0.]), 3),
+          ]
+          _no_loops(weighted_group_mean)
+          against(weighted_group_mean, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Write `batched_group_mean(x, ids, K)`: per batch element, the mean of the rows in each of `K` groups (groups are separate per batch element).
+          - `x` (B, N, D) float: rows (may be non-contiguous, `N` may be 0); `ids` (B, N) int64 in `0..K-1`: group of each row; `K` (int): groups per batch element
+          - returns `out` (B, K, D), dtype of `x`: `out[b, k]` = mean of the `x[b, i]` with `ids[b, i] == k`, 0 if there are none (never NaN)
+          - No Python loops or comprehensions (no loop over `b` either).
+
+          <details><summary>Hint 1</summary>Turn the B separate problems into one problem with B * K groups.</details>
+          <details><summary>Hint 2</summary>Group <code>(b, k)</code> gets the flat id <code>b * K + k</code>.</details>
+          <details><summary>Hint 3</summary><code>flat = (ids + K * torch.arange(B)[:, None]).reshape(-1)</code>; scatter-sum into <code>(B * K, D)</code>, divide by counts (guard 0), <code>.view(B, K, D)</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def batched_group_mean(x, ids, K):
+              raise NotImplementedError
+        solution: |
+          def batched_group_mean(x, ids, K):
+              B, N, D = x.shape
+              flat = (ids + K * torch.arange(B)[:, None]).reshape(-1)                     # (B*N,) ids in 0..B*K-1
+              sums = torch.zeros(B * K, D, dtype=x.dtype).index_add_(0, flat, x.reshape(B * N, D))
+              cnt = torch.bincount(flat, minlength=B * K).clamp(min=1).to(x.dtype)        # (B*K,)
+              return (sums / cnt[:, None]).view(B, K, D)
+
+          # Trick: offset row b's ids by b * K so all groups get distinct flat ids, then one scatter-sum over B*N rows.
+          #   Empty groups sum to 0, so clamping the count to 1 gives 0. reshape (not view) handles a transposed x.
+          # Cost: O(B*N*D), one kernel instead of B; one_hot(ids, K)^T @ x would be O(B*K*N*D).
+          # NumPy: same flat ids, then np.add.at(sums, flat, x.reshape(-1, D)).
+          # Follow-up: padded batches: give pad tokens weight 0 or a dump group K.
+        check: |
+          import dis, types
+          from cardtest import against, rand_cases
+
+          def _no_loops(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if isinstance(c, types.CodeType))
+              assert not walk(fn.__code__), f"{fn.__name__} uses a Python loop or comprehension: vectorize it"
+
+          def _ref(x, ids, K):
+              B, N, D = x.shape
+              out = torch.zeros(B, K, D, dtype=torch.float64)
+              xs, il = x.double().tolist(), ids.tolist()
+              for b in range(B):
+                  for k in range(K):
+                      rows = [xs[b][i] for i in range(N) if il[b][i] == k]
+                      if rows:
+                          out[b, k] = torch.tensor(rows, dtype=torch.float64).mean(0)
+              return out.to(x.dtype)
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and not torch.isnan(got).any() and torch.allclose(got.double(), exp.double(), rtol=1e-4, atol=1e-5))
+
+          def _show(x, ids, K):
+              return f"(x {tuple(x.shape)}{'' if x.is_contiguous() else ' non-contiguous'}, ids={ids.tolist()}, K={K})"
+
+          def _gen(r):
+              B, N, D, K = r.randint(1, 4), r.randint(0, 8), r.randint(1, 3), r.randint(1, 5)
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              x = torch.randn(B, D, N, generator=g).transpose(1, 2) if r.random() < 0.3 else torch.randn(B, N, D, generator=g)
+              return (x * 2, torch.randint(0, K, (B, N), generator=g), K)
+
+          T = torch.tensor
+          _edge = [
+              (T([[[1.], [3.], [5.]]]), T([[0, 0, 2]]), 3),
+              (T([[[1., 2.], [3., 4.]], [[5., 6.], [7., 8.]]]), T([[1, 1], [1, 0]]), 2),
+              (torch.zeros(2, 0, 3), torch.zeros(2, 0, dtype=torch.long), 2),
+              (T([[[2.]], [[4.]]]), T([[3], [0]]), 5),
+              (torch.arange(24.).view(3, 4, 2).transpose(1, 2), T([[0, 3], [3, 3], [1, 0]]), 4),
+          ]
+          _no_loops(batched_group_mean)
+          against(batched_group_mean, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: tricks-grouping.compress-ids
+    name: Group-id compression (Medium)
+    teach: |
+      Group labels are arbitrary integers (negative, huge, gaps). Map them to contiguous ids `0..K-1` in sorted label
+      order, then aggregate.
+      ```python
+      # labels (N,) int64, x (N, D) float  ->  uniq (K,), ids (N,), means (K, D)
+      labels = [40, -7, 40, 1000000];  x = [[1.], [2.], [3.], [4.]]
+      # uniq  = [-7, 40, 1000000]     sorted distinct labels, K = 3
+      # ids   = [1, 0, 1, 2]          uniq[ids] == labels
+      # means = [[2.], [2.], [4.]]    means[k] = mean of the rows with label uniq[k]
+      ```
+      Constraints: no Python loops, no dict.
+    cards:
+      - id: a
+        prompt: |
+          Write `group_by_label(labels, x)`: map arbitrary integer labels to contiguous group ids, then average the rows of each group.
+          - `labels` (N,) int64: any values (negative, huge, with gaps; `N` may be 0); `x` (N, D) float: rows
+          - returns `(uniq, ids, means)`: `uniq` (K,) int64: the distinct labels, increasing; `ids` (N,) int64 in `0..K-1` with `uniq[ids] == labels`; `means` (K, D), dtype of `x`: `means[k]` = mean of the `x[i]` with `labels[i] == uniq[k]`
+          - No Python loops, comprehensions or dicts.
+
+          <details><summary>Hint 1</summary>A label's new id is its rank among the distinct labels; one built-in gives both.</details>
+          <details><summary>Hint 2</summary><code>torch.unique</code> has <code>return_inverse</code> and <code>return_counts</code> flags.</details>
+          <details><summary>Hint 3</summary><code>uniq, ids, cnt = torch.unique(labels, return_inverse=True, return_counts=True)</code>; scatter-sum <code>x</code> at <code>ids</code>, divide by <code>cnt[:, None]</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def group_by_label(labels, x):
+              raise NotImplementedError
+        solution: |
+          def group_by_label(labels, x):
+              uniq, ids, cnt = torch.unique(labels, return_inverse=True, return_counts=True)   # (K,), (N,), (K,)
+              sums = torch.zeros(len(uniq), x.shape[1], dtype=x.dtype).index_add_(0, ids, x)  # (K, D)
+              return uniq, ids, sums / cnt[:, None].to(x.dtype)                                # every group non-empty
+
+          # Trick: unique(return_inverse=True) is a label encoder: ids[i] = rank of labels[i] among the distinct values.
+          #   Tables then have size K (not max + 1), negatives work, and every group is non-empty (no division guard).
+          # Cost: O(N log N) sort + O(N*D) scatter.
+          # NumPy: np.unique(labels, return_inverse=True, return_counts=True), then np.add.at(sums, ids, x).
+          # Mistakes: labels - labels.min() keeps the gaps; bincount on raw labels fails on negatives.
+          # Follow-up: unseen labels at test time: searchsorted into uniq and check equality.
+        check: |
+          import dis, types
+          from cardtest import against, rand_cases
+
+          def _no_loops(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if isinstance(c, types.CodeType))
+              assert not walk(fn.__code__), f"{fn.__name__} uses a Python loop or comprehension: vectorize it"
+
+          def _ref(labels, x):
+              lab, xs = labels.tolist(), x.double().tolist()
+              uniq = sorted(set(lab))
+              pos = {v: k for k, v in enumerate(uniq)}
+              ids = [pos[v] for v in lab]
+              D = x.shape[1]
+              means = torch.zeros(len(uniq), D, dtype=torch.float64)
+              for k in range(len(uniq)):
+                  means[k] = torch.tensor([xs[i] for i in range(len(lab)) if ids[i] == k], dtype=torch.float64).mean(0)
+              return (torch.tensor(uniq, dtype=torch.long), torch.tensor(ids, dtype=torch.long), means.to(x.dtype))
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 3 and all(torch.is_tensor(t) for t in got)):
+                  return False
+              u, i, m = got
+              return (u.shape == exp[0].shape and u.dtype == torch.long and torch.equal(u, exp[0])
+                      and i.shape == exp[1].shape and i.dtype == torch.long and torch.equal(i, exp[1])
+                      and m.shape == exp[2].shape and m.dtype == exp[2].dtype
+                      and torch.allclose(m.double(), exp[2].double(), rtol=1e-4, atol=1e-5))
+
+          def _show(labels, x):
+              return f"(labels={labels.tolist()}, x {tuple(x.shape)})"
+
+          def _gen(r):
+              N, D = r.randint(0, 12), r.randint(1, 3)
+              pool = r.sample([-10**12, -50, -7, -1, 0, 1, 2, 3, 9, 40, 1000, 10**6, 10**12], r.randint(1, 6))
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              labels = torch.tensor([r.choice(pool) for _ in range(N)], dtype=torch.long)
+              return (labels, torch.randn(N, D, generator=g))
+
+          T = torch.tensor
+          _edge = [
+              (T([40, -7, 40, 1000000]), T([[1.], [2.], [3.], [4.]])),
+              (torch.zeros(0, dtype=torch.long), torch.zeros(0, 2)),
+              (T([5]), T([[1., 2.]])),
+              (T([3, 3, 3]), T([[1.], [2.], [6.]])),
+              (T([9, 2, 9, 0, 2]), T([[1., 0.], [2., 0.], [3., 1.], [4., 1.], [6., 2.]])),
+              (T([-10**12, 10**12, -10**12]), T([[1.], [2.], [5.]])),
+          ]
+          _no_loops(group_by_label)
+          against(group_by_label, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Write `pair_stats(keys, vals)`: a group-by on two key columns, returning each distinct key pair with its row count and value sum.
+          - `keys` (N, 2) int64: any values, `N >= 1`; `vals` (N,) float32: one value per row
+          - returns `(pairs, counts, sums)`: `pairs` (K, 2) int64: the distinct rows of `keys`, sorted by column 0, then column 1; `counts` (K,) int64: number of rows of `keys` equal to `pairs[k]`; `sums` (K,), dtype of `vals`: sum of `vals` over those rows
+          - No Python loops, comprehensions or dicts.
+
+          <details><summary>Hint 1</summary>The distinct-values built-in can compare whole rows.</details>
+          <details><summary>Hint 2</summary><code>torch.unique(keys, dim=0, ...)</code> sorts rows lexicographically; same flags as before.</details>
+          <details><summary>Hint 3</summary><code>pairs, ids, counts = torch.unique(keys, dim=0, return_inverse=True, return_counts=True)</code>, then <code>torch.zeros(K).index_add_(0, ids, vals)</code>.</details>
+        setup: |
+          import torch
+        starter: |
+          def pair_stats(keys, vals):
+              raise NotImplementedError
+        solution: |
+          def pair_stats(keys, vals):
+              pairs, ids, counts = torch.unique(keys, dim=0, return_inverse=True, return_counts=True)  # (K, 2), (N,), (K,)
+              sums = torch.zeros(len(pairs), dtype=vals.dtype).index_add_(0, ids, vals)                 # (K,)
+              return pairs, counts, sums
+
+          # Trick: unique(dim=0) treats each row as one value (lexicographic), so the inverse gives each row its pair id.
+          # Alternative: encode (a, b) as one int for a 1-D unique; a fixed multiplier (a * 1000 + b) collides or overflows.
+          # Cost: O(N log N) sort, O(N) memory.
+          # NumPy: np.unique(keys, axis=0, return_inverse=True, return_counts=True) (axis, not dim).
+          # Follow-up: torch.sparse_coo_tensor(keys.T, vals).coalesce() sums duplicates the same way.
+        check: |
+          import dis, types
+          from cardtest import against, rand_cases
+
+          def _no_loops(fn):
+              def walk(co):
+                  if any(i.opname in ("FOR_ITER", "JUMP_BACKWARD", "JUMP_BACKWARD_NO_INTERRUPT") for i in dis.get_instructions(co)):
+                      return True
+                  return any(walk(c) for c in co.co_consts if isinstance(c, types.CodeType))
+              assert not walk(fn.__code__), f"{fn.__name__} uses a Python loop or comprehension: vectorize it"
+
+          def _ref(keys, vals):
+              kl, vl = [tuple(k) for k in keys.tolist()], vals.double().tolist()
+              cnt, tot = {}, {}
+              for k, v in zip(kl, vl):
+                  cnt[k] = cnt.get(k, 0) + 1
+                  tot[k] = tot.get(k, 0.0) + v
+              order = sorted(cnt)
+              return (torch.tensor(order, dtype=torch.long).reshape(-1, 2), torch.tensor([cnt[k] for k in order], dtype=torch.long),
+                      torch.tensor([tot[k] for k in order], dtype=torch.float64).to(vals.dtype))
+
+          def _same(got, exp):
+              if not (isinstance(got, tuple) and len(got) == 3 and all(torch.is_tensor(t) for t in got)):
+                  return False
+              p, c, s = got
+              return (p.shape == exp[0].shape and p.dtype == torch.long and torch.equal(p, exp[0])
+                      and c.shape == exp[1].shape and c.dtype == torch.long and torch.equal(c, exp[1])
+                      and s.shape == exp[2].shape and s.dtype == exp[2].dtype
+                      and torch.allclose(s.double(), exp[2].double(), rtol=1e-4, atol=1e-5))
+
+          def _show(keys, vals):
+              return f"(keys={keys.tolist()}, vals={[round(v, 2) for v in vals.tolist()]})"
+
+          def _gen(r):
+              N = r.randint(1, 12)
+              big = r.random() < 0.3
+              pool = [-10**9, -5, 0, 1, 2, 5, 10**9] if big else [-2, -1, 0, 1, 2, 3]
+              col0 = r.sample(pool, r.randint(1, 3))
+              col1 = r.sample(pool, r.randint(1, 3))
+              keys = torch.tensor([[r.choice(col0), r.choice(col1)] for _ in range(N)], dtype=torch.long)
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              return (keys, torch.randn(N, generator=g))
+
+          T = torch.tensor
+          _edge = [
+              (T([[3, 4]]), T([2.5])),
+              (T([[1, 1], [1, 1], [1, 1]]), T([1., 2., 3.])),
+              (T([[1, 2], [2, 1], [1, 2]]), T([1., 10., 100.])),
+              (T([[0, 5], [0, -5], [-1, 5], [0, 5]]), T([1., 2., 3., 4.])),
+              (T([[10**9, -10**9], [-10**9, 10**9], [10**9, -10**9]]), T([0.5, 0.25, 1.])),
+              (T([[2, 0], [0, 12], [1, 2], [0, 2]]), T([1., 2., 3., 4.])),
+          ]
+          _no_loops(pair_stats)
+          against(pair_stats, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)

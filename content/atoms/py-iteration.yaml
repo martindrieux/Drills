@@ -1,0 +1,197 @@
+id: py-iteration
+title: Iteration — enumerate, zip, itertools
+summary: Loop idioms that replace index bookkeeping, including enumerate, zip, ranges, any/all, generators and itertools.
+links:
+  - to: py-lists
+    kind: prereq
+    note: Most of these idioms walk over lists, so slicing and indexing come first.
+lesson: |
+  Pythonic loops iterate over **values**, not indices. Reach for these before writing `range(len(...))`.
+
+  **enumerate and zip**
+
+  ```python
+  for i, x in enumerate(nums):           # index and value
+  for i, x in enumerate(nums, start=1):  # 1-based index
+  for a, b in zip(xs, ys):               # parallel walk; stops at the SHORTER one
+  dict(zip(keys, values))                # build a dict from two lists
+  for a, b in zip(nums, nums[1:]):       # adjacent pairs
+  ```
+
+  **Transpose and rotate a matrix with `zip(*m)`**
+
+  ```python
+  m = [[1, 2, 3],
+       [4, 5, 6]]
+  list(zip(*m))                      # [(1, 4), (2, 5), (3, 6)]  tuples!
+  [list(r) for r in zip(*m)]         # transpose as lists
+  [list(r) for r in zip(*m[::-1])]   # rotate 90° clockwise
+  ```
+
+  **range and reversed**
+
+  ```python
+  range(5)              # 0..4
+  range(2, 10, 3)       # 2, 5, 8
+  range(n - 1, -1, -1)  # n-1 down to 0 (stop is excluded, so -1 to include 0)
+  reversed(range(n))    # same thing, easier to read
+  reversed(nums)        # iterator over a list/str/range, no copy
+  ```
+
+  **any / all / sum over generators**
+
+  ```python
+  any(x < 0 for x in nums)       # short-circuits; any([]) is False
+  all(a <= b for a, b in zip(nums, nums[1:]))   # sorted? all([]) is True
+  sum(x * x for x in nums)       # no brackets needed inside a call
+  sum(1 for w in words if w.startswith("a"))    # count matches
+  sum(c.isupper() for c in s)    # True counts as 1
+  ```
+
+  **itertools**
+
+  ```python
+  from itertools import accumulate, product, combinations, permutations, pairwise
+
+  list(accumulate([3, 1, 4]))             # [3, 4, 8]       running sums
+  P = list(accumulate(nums, initial=0))   # prefix sums with a leading 0
+  # sum(nums[i:j]) == P[j] - P[i]  in O(1)
+  list(accumulate(nums, max))             # running max
+
+  list(pairwise([1, 2, 3]))               # [(1, 2), (2, 3)]   (Python 3.10+)
+  list(product("ab", repeat=2))           # [('a','a'), ('a','b'), ('b','a'), ('b','b')]
+  list(product([1, 2], "xy"))             # cartesian product of several iterables
+  list(combinations("abc", 2))            # [('a','b'), ('a','c'), ('b','c')]   order ignored
+  list(permutations("abc", 2))            # 6 tuples, order matters
+  ```
+
+  Sizes: `combinations` yields C(n, k), `permutations` n!/(n-k)!, `product` multiplies the lengths.
+  Count them with `math.comb` / `math.perm` instead of generating when you only need the number.
+
+  **Pitfalls**
+  - `zip`, `enumerate`, `reversed`, `map`, generators are **single-use iterators**. A second `list(z)` is `[]`.
+  - `zip(*m)` yields tuples; convert if you need to mutate rows.
+  - `product()` with no iterables yields one empty tuple, so "all combinations of nothing" is `[()]`, not `[]`.
+  - `range(n, 0, -1)` stops at 1; to reach 0 the stop must be `-1`.
+drills:
+  - id: enumerate-start
+    prompt: Using `enumerate` with `start=1`, set `pos` to a dict mapping each letter of `letters` to its 1-based position.
+    setup: |
+      letters = ["x", "y", "z"]
+    solution: |
+      pos = {c: i for i, c in enumerate(letters, start=1)}
+    check: |
+      assert pos == {"x": 1, "y": 2, "z": 3}, f"pos = {pos!r}"
+  - id: transpose
+    prompt: Set `t` to the transpose of `m`, as a list of **lists**, using `zip(*m)`.
+    setup: |
+      m = [[1, 2, 3], [4, 5, 6]]
+    solution: |
+      t = [list(r) for r in zip(*m)]
+    check: |
+      assert t == [[1, 4], [2, 5], [3, 6]], f"t = {t!r}"
+  - id: reverse-range
+    prompt: With a single `range`, set `res` to the list `[10, 8, 6, 4, 2, 0]`.
+    solution: |
+      res = list(range(10, -1, -2))
+    check: |
+      assert res == [10, 8, 6, 4, 2, 0], f"res = {res!r}"
+  - id: any-all-pairwise
+    prompt: Set `has_neg` to whether `nums` contains a negative number (use `any`), and `increasing` to whether it is strictly increasing (use `all` over adjacent pairs).
+    setup: |
+      nums = [-2, 0, 3, 7]
+    solution: |
+      from itertools import pairwise
+      has_neg = any(x < 0 for x in nums)
+      increasing = all(a < b for a, b in pairwise(nums))
+    check: |
+      assert has_neg is True, f"has_neg = {has_neg!r}"
+      assert increasing is True, f"increasing = {increasing!r}"
+  - id: prefix-sums
+    prompt: Set `P` to the prefix sums of `nums` with a leading 0 (use `accumulate`). Then set `s` to `sum(nums[1:4])` computed from `P` only.
+    setup: |
+      from itertools import accumulate
+      nums = [2, 4, 1, 5, 3]
+    solution: |
+      P = list(accumulate(nums, initial=0))
+      s = P[4] - P[1]
+    check: |
+      assert P == [0, 2, 6, 7, 12, 15], f"P = {P!r}"
+      assert s == 10, f"s = {s!r}"
+  - id: combos
+    prompt: Set `pairs` to the list of all 2-element combinations of `"abc"` (tuples), and `n_perm` to the number of 2-element permutations of `"abc"`.
+    setup: |
+      from itertools import combinations, permutations
+    solution: |
+      pairs = list(combinations("abc", 2))
+      n_perm = len(list(permutations("abc", 2)))
+    check: |
+      assert pairs == [("a", "b"), ("a", "c"), ("b", "c")], f"pairs = {pairs!r}"
+      assert n_perm == 6, f"n_perm = {n_perm!r}"
+classics:
+  - id: find-pivot-index
+    title: Find Pivot Index
+    url: https://leetcode.com/problems/find-pivot-index/
+    difficulty: Easy
+    prompt: |
+      Return the leftmost index `i` where the sum of the numbers strictly left of `i` equals the
+      sum strictly right of `i`, or -1 if there is none. Aim for O(n).
+    starter: |
+      def pivotIndex(nums):
+          pass
+    hints:
+      - Compute `total = sum(nums)` once.
+      - Walk with `enumerate`, keeping a running `left` sum. The right sum is `total - left - x`.
+    solution: |
+      def pivotIndex(nums):
+          total = sum(nums)
+          left = 0
+          for i, x in enumerate(nums):
+              if left == total - left - x:
+                  return i
+              left += x
+          return -1
+    check: |
+      r = pivotIndex([1, 7, 3, 6, 5, 6])
+      assert r == 3, f"r = {r!r}"
+      r = pivotIndex([1, 2, 3])
+      assert r == -1, f"r = {r!r}"
+      r = pivotIndex([2, 1, -1])
+      assert r == 0, f"pivot at 0: r = {r!r}"
+      r = pivotIndex([0])
+      assert r == 0, f"single element: r = {r!r}"
+    takeaway: Total minus running prefix gives the suffix sum, so one `enumerate` pass suffices.
+  - id: letter-combinations
+    title: Letter Combinations of a Phone Number
+    url: https://leetcode.com/problems/letter-combinations-of-a-phone-number/
+    difficulty: Medium
+    prompt: |
+      Given a string of digits `2-9`, return every letter string they could spell on a phone keypad
+      (2→abc, 3→def, 4→ghi, 5→jkl, 6→mno, 7→pqrs, 8→tuv, 9→wxyz), in keypad order.
+      An empty input returns `[]`.
+    starter: |
+      def letterCombinations(digits):
+          pass
+    hints:
+      - This is a cartesian product of one letter group per digit.
+      - "`itertools.product(*groups)` takes the groups as separate arguments."
+      - Watch the empty case. `product()` yields one empty tuple.
+    solution: |
+      from itertools import product
+
+      def letterCombinations(digits):
+          if not digits:
+              return []
+          keys = {"2": "abc", "3": "def", "4": "ghi", "5": "jkl",
+                  "6": "mno", "7": "pqrs", "8": "tuv", "9": "wxyz"}
+          return ["".join(t) for t in product(*(keys[d] for d in digits))]
+    check: |
+      r = letterCombinations("23")
+      assert r == ["ad", "ae", "af", "bd", "be", "bf", "cd", "ce", "cf"], f"r = {r!r}"
+      r = letterCombinations("")
+      assert r == [], f"empty input: r = {r!r}"
+      r = letterCombinations("2")
+      assert r == ["a", "b", "c"], f"r = {r!r}"
+      r = letterCombinations("79")
+      assert len(r or []) == 16, f"len = {len(r or [])}"
+    takeaway: '"Every choice from each group" → `itertools.product(*groups)`; special-case the empty input.'

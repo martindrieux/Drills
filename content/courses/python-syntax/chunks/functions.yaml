@@ -1,0 +1,686 @@
+id: functions
+title: Functions, closures & memoisation
+intro: |
+  Most LeetCode solutions are one function with a **helper defined inside it** (a dfs, a dp).
+  This page covers nested functions, updating outer variables, lambdas, returning several values,
+  and the two ways to memoise a recursion.
+problems:
+  - Climbing Stairs
+  - Coin Change
+  - Word Break
+  - Decode Ways
+  - Number of Islands
+  - Diameter of Binary Tree
+atoms: [py-cache, dp-framing, graph-dfs]
+skills:
+  - id: functions.nested
+    name: helper def inside a function
+    teach: |
+      ```python
+      # a def inside a function can READ every outer variable (a closure); define it before calling it
+      def numIslands(grid):
+          rows, cols = len(grid), len(grid[0])
+          def inside(r, c):
+              return 0 <= r < rows and 0 <= c < cols
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `grid`, a non-empty `list` of equal-length rows; the starter sets `rows = len(grid)` and `cols = len(grid[0])`.
+          - **Write**, inside `solve(grid)`, a nested `inside(r, c)` that reads the outer `rows` and `cols` (don't recompute them).
+          - **Returns**: `inside(r, c)` is `True` iff `0 <= r < rows` and `0 <= c < cols`, else `False`; `solve` returns `(inside(1, 2), inside(2, 0))` as in the starter.
+          - **Checked on**: grids from 1 x 1 to 4 x 4, and `inside` itself on negative, boundary and too-large `(r, c)`.
+        starter: |
+          def solve(grid):
+              rows, cols = len(grid), len(grid[0])
+              # define inside(r, c) here
+              return inside(1, 2), inside(2, 0)
+        solution: |
+          def solve(grid):
+              rows, cols = len(grid), len(grid[0])
+              def inside(r, c):
+                  return 0 <= r < rows and 0 <= c < cols
+              return inside(1, 2), inside(2, 0)
+        check: |
+          import types
+          def _nested(fn, name):  # the code of the def named `name` written inside fn
+              for k in fn.__code__.co_consts:
+                  if isinstance(k, types.CodeType) and k.co_name == name:
+                      return k
+              raise AssertionError(f"no nested `def {name}(...)` found inside {fn.__name__}")
+
+          from cardtest import against, rand_cases
+          _code = _nested(solve, "inside")
+          assert {"rows", "cols"} <= set(_code.co_freevars), \
+              f"inside should read the outer rows and cols (it reads {list(_code.co_freevars)})"
+          against(lambda R, C: solve([[0] * C for _ in range(R)]), lambda R, C: (1 < R and 2 < C, 2 < R),
+                  [(R, C) for R in range(1, 5) for C in range(1, 5)], show=lambda R, C: f" on a {R} x {C} grid", name="solve")
+          def _inside(R, C, r, c):  # rebuild the nested inside with rows=R, cols=C
+              env = {"rows": R, "cols": C, "grid": [[0] * C for _ in range(R)]}
+              f = types.FunctionType(_code, solve.__globals__, "inside", None,
+                                     tuple(types.CellType(env.get(v)) for v in _code.co_freevars))
+              return f(r, c)
+          def _gen(r):
+              R, C = r.randint(1, 6), r.randint(1, 6)
+              return (R, C, r.randint(-2, R + 1), r.randint(-2, C + 1))
+          edge = [(2, 3, 0, 0), (2, 3, 1, 2), (2, 3, 2, 0), (2, 3, 0, 3), (2, 3, -1, 0), (2, 3, 0, -1), (1, 1, 0, 0), (3, 1, 2, 0), (3, 1, 0, 1)]
+          against(_inside, lambda R, C, r, c: 0 <= r < R and 0 <= c < C, edge + rand_cases(_gen, 300),
+                  show=lambda R, C, r, c: f"({r}, {c}) with rows={R}, cols={C}", name="inside")
+      - id: b
+        prompt: |
+          - **Given**: `nums: list[int]` (may be empty, may hold negatives).
+          - **Write**, inside `total(nums)`, a nested **recursive** `go(i)` that reads the outer `nums`: `go(i) = nums[i] + go(i + 1)`, and `0` once `i == len(nums)`.
+          - **Returns**: `total(nums)` returns `go(0)`: the `int` sum of `nums` (`0` for `[]`).
+          - **Checked on**: `[]`, one element, negatives, 300 random lists; `go` must be a nested def that calls itself.
+        starter: |
+          def total(nums):
+              # define go(i) here
+              return go(0)
+        solution: |
+          def total(nums):
+              def go(i):
+                  if i == len(nums):
+                      return 0
+                  return nums[i] + go(i + 1)
+              return go(0)
+        check: |
+          import types
+          def _nested(fn, name):  # the code of the def named `name` written inside fn
+              for k in fn.__code__.co_consts:
+                  if isinstance(k, types.CodeType) and k.co_name == name:
+                      return k
+              raise AssertionError(f"no nested `def {name}(...)` found inside {fn.__name__}")
+
+          from cardtest import against, rand_cases
+          _code = _nested(total, "go")
+          assert "go" in _code.co_freevars, "go should call itself (go(i + 1))"
+          assert "nums" in _code.co_freevars, "go should read the outer nums"
+          def _gen(r):
+              return ([r.randint(-9, 9) for _ in range(r.randint(0, 12))],)
+          against(total, sum, [([],), ([5],), ([-3],), ([1, 2, 3],), ([4, -4],)] + rand_cases(_gen, 300))
+      - id: c
+        prompt: |
+          - **Given**: `nums: list[int]`, `k: int >= 0`.
+          - **Write**, inside the method `countClose(self, nums, k)`, a nested `close(a, b)` that reads the outer `k` and returns `abs(a - b) <= k`.
+          - **Returns**: `countClose` returns an `int`: how many **adjacent** pairs `(nums[i], nums[i + 1])` are close (`0` for fewer than 2 numbers).
+          - **Checked on**: `[]`, one number, `k = 0`, equal neighbours, negatives, 300 random cases; `close` must be a nested def reading `k`.
+        starter: |
+          class Solution:
+              def countClose(self, nums, k):
+                  pass
+        solution: |
+          class Solution:
+              def countClose(self, nums, k):
+                  def close(a, b):
+                      return abs(a - b) <= k
+                  return sum(close(nums[i], nums[i + 1]) for i in range(len(nums) - 1))
+        check: |
+          import types
+          def _nested(fn, name):  # the code of the def named `name` written inside fn
+              for k in fn.__code__.co_consts:
+                  if isinstance(k, types.CodeType) and k.co_name == name:
+                      return k
+              raise AssertionError(f"no nested `def {name}(...)` found inside {fn.__name__}")
+
+          from cardtest import against, rand_cases
+          _code = _nested(Solution.countClose, "close")
+          assert "k" in _code.co_freevars, "close(a, b) should read the outer k (not take it as a parameter)"
+          def _ref(nums, k):
+              return sum(1 for i in range(len(nums) - 1) if abs(nums[i] - nums[i + 1]) <= k)
+          def _gen(r):
+              return ([r.randint(-6, 6) for _ in range(r.randint(0, 10))], r.randint(0, 4))
+          edge = [([], 1), ([3], 0), ([1, 2, 5, 6], 1), ([2, 2], 0), ([1, 3], 1), ([5, 1, 5], 3), ([-2, 2], 4), ([1, 9, 1], 0)]
+          against(Solution().countClose, _ref, edge + rand_cases(_gen, 300), name="countClose")
+
+  - id: functions.nonlocal
+    name: nonlocal for counters / best-so-far
+    teach: |
+      ```python
+      # nonlocal x: lets a nested def ASSIGN an outer x (without it, x = ... / x += 1 raises UnboundLocalError)
+      def diameter(root):
+          best = 0
+          def dfs(node):
+              nonlocal best
+              best = max(best, ...)
+      ```
+      Mutating a list/dict/set (`res.append(x)`, `freq[k] += 1`) is **not** assignment: no `nonlocal` needed.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums: list[int]` (may be empty; negatives allowed).
+          - **Write** the body of the nested `visit(x)`: if `x` is even, add 1 to the outer `count` (needs `nonlocal`); otherwise append `x` to the outer list `odds` (no `nonlocal` needed).
+          - **Returns**: `count_evens(nums)` returns the tuple `(count, odds)`: the number of even values and the `list` of odd values in their original order.
+          - **Checked on**: `[]`, zero, negatives, several calls in a row, 300 random lists.
+        starter: |
+          def count_evens(nums):
+              count = 0
+              odds = []
+              def visit(x):
+                  pass  # increment count if x is even, else append x to odds
+              for x in nums:
+                  visit(x)
+              return count, odds
+        solution: |
+          def count_evens(nums):
+              count = 0
+              odds = []
+              def visit(x):
+                  nonlocal count
+                  if x % 2 == 0:
+                      count += 1
+                  else:
+                      odds.append(x)
+              for x in nums:
+                  visit(x)
+              return count, odds
+        check: |
+          from cardtest import against, rand_cases
+          def _ref(nums):
+              return sum(1 for x in nums if x % 2 == 0), [x for x in nums if x % 2]
+          def _gen(r):
+              return ([r.randint(-9, 9) for _ in range(r.randint(0, 10))],)
+          edge = [([],), ([0],), ([2, 3, 4, 7, 8],), ([-3, -2],), ([5, 3, 1],), ([4, 4],)]
+          against(count_evens, _ref, edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          - **Given**: `words: list[str]` (may be empty, may contain `""`).
+          - **Write** the body of the nested `visit(w)` so the outer `best` is always the length of the longest word seen so far (use `nonlocal`).
+          - **Returns**: `longest(words)` returns that `int` (`0` for `[]`).
+          - **Checked on**: `[]`, `[""]`, the longest word first / middle / last, ties, 300 random lists.
+        starter: |
+          def longest(words):
+              best = 0
+              def visit(w):
+                  pass  # update best
+              for w in words:
+                  visit(w)
+              return best
+        solution: |
+          def longest(words):
+              best = 0
+              def visit(w):
+                  nonlocal best
+                  best = max(best, len(w))
+              for w in words:
+                  visit(w)
+              return best
+        check: |
+          from cardtest import against, rand_cases
+          def _gen(r):
+              return (["x" * r.randint(0, 6) for _ in range(r.randint(0, 6))],)
+          edge = [([],), ([""],), (["hi", "hello", "hey"],), (["hello", "hi"],), (["a", "bcd", "ef"],), (["ab", "cd"],)]
+          against(longest, lambda words: max(map(len, words), default=0), edge + rand_cases(_gen, 300))
+      - id: c
+        prompt: |
+          - **Given**: `s: str` (may be empty).
+          - **Write** the body of the nested `add(ch)` so it adds 1 to `freq[ch]` in the outer dict `freq` (a new key starts from 0). Mutating a dict needs no `nonlocal`.
+          - **Returns**: `char_count(s)` returns `freq`: a `dict` mapping each character to its number of occurrences (`{}` for `""`).
+          - **Checked on**: `""`, one character, repeats, spaces, several calls in a row, 300 random strings.
+        starter: |
+          def char_count(s):
+              freq = {}
+              def add(ch):
+                  pass  # bump freq[ch]
+              for ch in s:
+                  add(ch)
+              return freq
+        solution: |
+          def char_count(s):
+              freq = {}
+              def add(ch):
+                  freq[ch] = freq.get(ch, 0) + 1
+              for ch in s:
+                  add(ch)
+              return freq
+        check: |
+          from cardtest import against, rand_cases
+          def _ref(s):
+              out = {}
+              for ch in s:
+                  out[ch] = s.count(ch)
+              return out
+          def _gen(r):
+              return ("".join(r.choice("ab c") for _ in range(r.randint(0, 10))),)
+          edge = [("",), ("a",), ("abca",), ("aaa",), ("a b",)]
+          against(char_count, _ref, edge + rand_cases(_gen, 300))
+
+  - id: functions.lambda
+    name: lambda args, expr
+    teach: |
+      ```python
+      # lambda args: expr -> tiny unnamed function; the body is ONE expression, returned automatically
+      square = lambda x: x * x
+      square(4)                   # 16
+      ```
+      Its main use is as a `key=`: `sorted(pairs, key=lambda p: p[1])`.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `pairs`, a `list` of `(str, int)` tuples (see setup).
+          - **Set** `dist` to a **lambda** (not a `def`) taking two numbers `a, b` and returning `abs(a - b)`.
+          - **Set** `res`: a new `list` of `pairs` sorted by their **second** item ascending, with `sorted(..., key=lambda ...)`.
+          - **Checked on**: `dist` with `a < b`, `a > b`, equal, negatives, floats, 200 random pairs; `res` for the given `pairs`, which must stay unchanged.
+        setup: |
+          pairs = [("a", 3), ("b", 1), ("c", 2)]
+        solution: |
+          dist = lambda a, b: abs(a - b)
+          res = sorted(pairs, key=lambda p: p[1])
+        check: |
+          from cardtest import against, rand_cases
+          assert getattr(dist, "__name__", None) == "<lambda>", "dist should be a lambda, not a def"
+          def _gen(r):
+              return (r.randint(-20, 20), r.randint(-20, 20))
+          edge = [(2, 7), (7, 2), (3, 3), (-4, 5), (0, -6), (1.5, -1.0)]
+          against(dist, lambda a, b: abs(a - b), edge + rand_cases(_gen, 200), name="dist")
+          assert res == [("b", 1), ("c", 2), ("a", 3)], f"res = {res!r}"
+          assert pairs == [("a", 3), ("b", 1), ("c", 2)], f"pairs was changed: {pairs!r} (use sorted, which returns a new list)"
+      - id: b
+        prompt: |
+          - **Given**: `intervals`, a `list` of `[start, end]` lists (see setup).
+          - **Do**: sort `intervals` **in place** by their end (the second item), ascending, with `.sort(key=lambda ...)`.
+          - **Checked on**: the given `intervals` afterwards.
+        setup: |
+          intervals = [[1, 9], [2, 3], [4, 6]]
+        solution: |
+          intervals.sort(key=lambda iv: iv[1])
+        check: |
+          assert intervals == [[2, 3], [4, 6], [1, 9]], f"intervals = {intervals!r}"
+      - id: c
+        prompt: |
+          - **Given**: `words`, a `list` of `str` (see setup).
+          - **Set** `res`: a new `list` of `words` sorted by length **descending**, ties alphabetically, with a `key=` lambda returning a tuple.
+          - **Checked on**: the given `words` (it contains a tie).
+        setup: |
+          words = ["bb", "a", "ccc", "aa"]
+        solution: |
+          res = sorted(words, key=lambda w: (-len(w), w))
+        check: |
+          assert res == ["ccc", "aa", "bb", "a"], f"res = {res!r}"
+
+  - id: functions.multiple-returns
+    name: return a, b and unpacking
+    teach: |
+      ```python
+      # return a, b -> returns ONE tuple (a, b); unpack it at the call site
+      def min_max(nums):
+          return min(nums), max(nums)
+      lo, hi = min_max([4, 1, 9])     # lo = 1, hi = 9
+      # _ : conventional name for a value you throw away
+      _, hi = min_max([4, 1, 9])      # hi = 9
+      ```
+      Recursions often return a pair per call: `rob, skip = dfs(node.left)`.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums` and `other`, non-empty `list`s of numbers (see setup).
+          - **Write** `min_max(nums)`. **Returns** the tuple `(smallest, largest)` via `return a, b`; for one element, both are that element.
+          - **Set** `lo, hi` by unpacking `min_max(nums)`.
+          - **Set** `top`: the largest of `other`, by unpacking `min_max(other)` with `_` for the smallest.
+          - **Checked on**: one element, negatives, duplicates, unsorted input, 300 random lists; the result must be a `tuple`.
+        setup: |
+          nums = [4, 1, 9]
+          other = [7, 3, 5]
+        solution: |
+          def min_max(nums):
+              return min(nums), max(nums)
+          lo, hi = min_max(nums)
+          _, top = min_max(other)
+        check: |
+          from cardtest import against, rand_cases
+          def _gen(r):
+              return ([r.randint(-9, 9) for _ in range(r.randint(1, 10))],)
+          edge = [([2],), ([4, 1, 9],), ([-5, -1],), ([3, 3],), ([9, 1, 4],), ([0, -2, 7, -2],)]
+          against(min_max, lambda nums: (min(nums), max(nums)), edge + rand_cases(_gen, 300),
+                  same=lambda got, want: type(got) is tuple and got == want)
+          assert (lo, hi) == (1, 9), f"lo, hi = {lo!r}, {hi!r}"
+          assert top == 7, f"top = {top!r}"
+      - id: b
+        prompt: |
+          - **Given**: `best(nums)`, which returns the tuple `(value, index)` of the largest element, and `nums` (see setup).
+          - **Set** `idx` by unpacking `best(nums)`, throwing the value away with `_`.
+          - **Checked on**: the given `nums`.
+        setup: |
+          def best(nums):
+              m = max(nums)
+              return m, nums.index(m)
+          nums = [3, 1, 8, 2]
+        solution: |
+          _, idx = best(nums)
+        check: |
+          assert idx == 2, f"idx = {idx!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums: list[int]` and a start index `0 <= i <= len(nums)` (default `0`).
+          - **Write** the recursive case of `sum_count(nums, i)`: unpack `s, c = sum_count(nums, i + 1)`, then return the pair for `nums[i:]`.
+          - **Returns**: the tuple `(sum of nums[i:], number of elements in nums[i:])`; `(0, 0)` when `i == len(nums)`.
+          - **Checked on**: `[]`, one element, negatives, explicit `i` values, 300 random cases; it must recurse once per remaining element.
+        starter: |
+          def sum_count(nums, i=0):
+              if i == len(nums):
+                  return 0, 0
+              # unpack sum_count(nums, i + 1), then return the pair for nums[i:]
+        solution: |
+          def sum_count(nums, i=0):
+              if i == len(nums):
+                  return 0, 0
+              s, c = sum_count(nums, i + 1)
+              return s + nums[i], c + 1
+        check: |
+          from cardtest import against, rand_cases
+          def _ref(nums, i=0):
+              return sum(nums[i:]), len(nums) - i
+          def _gen(r):
+              nums = [r.randint(-9, 9) for _ in range(r.randint(0, 10))]
+              return (nums, r.randint(0, len(nums)))
+          edge = [([], 0), ([5], 0), ([5], 1), ([5, 1, 4], 0), ([5, 1, 4], 2), ([-3, 3], 0), ([0, 0, 0], 1)]
+          against(sum_count, _ref, edge + rand_cases(_gen, 300), same=lambda got, want: type(got) is tuple and got == want)
+          res = sum_count([5, 1, 4])
+          assert res == (10, 3), f"sum_count([5, 1, 4]) = {res!r}"
+          _orig, _calls = sum_count, [0]
+          def sum_count(nums, i=0):  # counts the recursive calls made by the original
+              _calls[0] += 1
+              return _orig(nums, i)
+          try:
+              _orig([5, 1, 4, 2])
+          finally:
+              sum_count = _orig
+          assert _calls[0] == 4, f"sum_count([5, 1, 4, 2]) made {_calls[0]} recursive calls (expected 4: one per element after the first, down to i == 4)"
+
+  - id: functions.cache
+    name: "@cache / @lru_cache memoisation"
+    teach: |
+      ```python
+      from functools import cache, lru_cache
+      # @cache above a def: same arguments -> stored result; @lru_cache(maxsize=None) does the same
+      def climbStairs(n):
+          @cache                  # on a NESTED def: a fresh cache for each outer call
+          def dp(i):
+              return 1 if i <= 1 else dp(i - 1) + dp(i - 2)
+          return dp(n)
+      ```
+      Pitfall: arguments must be **hashable**: pass `tuple(lst)`, not a list.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `cache` and `lru_cache` imported (see setup).
+          - **Write**: decorate `fib` with `@cache` so each `fib(n)` body runs once per `n` (`fib(0) = 0`, `fib(1) = 1`).
+          - **Write**: in `climb(n)`, decorate the nested `dp` with `@lru_cache(maxsize=None)`, then return `dp(n)`: the number of ways to climb `n` stairs taking 1 or 2 steps (`climb(0) = climb(1) = 1`).
+          - **Checked on**: `fib(0..90)`, `climb(0..80)`, and how many times the bodies of `fib` and `dp` run (about once per value of `n`).
+        setup: |
+          from functools import cache, lru_cache
+        starter: |
+          def fib(n):
+              return n if n < 2 else fib(n - 1) + fib(n - 2)
+
+          def climb(n):
+              def dp(i):
+                  return 1 if i <= 1 else dp(i - 1) + dp(i - 2)
+              # memoise dp, then return dp(n)
+        solution: |
+          @cache
+          def fib(n):
+              return n if n < 2 else fib(n - 1) + fib(n - 2)
+
+          def climb(n):
+              @lru_cache(maxsize=None)
+              def dp(i):
+                  return 1 if i <= 1 else dp(i - 1) + dp(i - 2)
+              return dp(n)
+        check: |
+          import sys
+          def _body_runs(name, thunk, cap):  # how many times a function body named `name` starts running
+              n = [0]
+              def tr(frame, event, arg):
+                  if event == "call" and frame.f_code.co_name == name:
+                      n[0] += 1
+                      if n[0] > cap:
+                          raise AssertionError(f"the body of {name} ran more than {cap} times: it is not memoised")
+              sys.settrace(tr)
+              try:
+                  out = thunk()
+              finally:
+                  sys.settrace(None)
+              return out, n[0]
+
+          assert hasattr(fib, "cache_info"), "fib is not decorated with @cache"
+          assert fib.cache_parameters()["maxsize"] is None, f"fib's cache is limited ({fib.cache_parameters()}): use @cache"
+          fib.cache_clear()
+          got, runs = _body_runs("fib", lambda: fib(90), 500)
+          assert got == 2880067194370816120, f"fib(90) = {got!r}"
+          assert runs <= 91, f"fib(90) from an empty cache ran the body of fib {runs} times (expected 91)"
+          _f = [0, 1]
+          for _ in range(89):
+              _f.append(_f[-1] + _f[-2])
+          for n in range(91):
+              assert fib(n) == _f[n], f"fib({n}) = {fib(n)!r}, expected {_f[n]}"
+
+          _ways = [1, 1]
+          for _ in range(80):
+              _ways.append(_ways[-1] + _ways[-2])
+          _real_lru, _seen = lru_cache, []
+          def lru_cache(*a, **kw):  # spy: records how climb decorates dp
+              _seen.append(kw["maxsize"] if "maxsize" in kw else a[0] if a and not callable(a[0]) else 128)
+              return _real_lru(*a, **kw)
+          try:
+              got, runs = _body_runs("dp", lambda: climb(60), 1000)
+          finally:
+              lru_cache = _real_lru
+          assert _seen, "the nested dp is not decorated with @lru_cache(maxsize=None)"
+          assert _seen[0] is None, f"dp uses lru_cache with maxsize={_seen[0]!r}: write @lru_cache(maxsize=None)"
+          assert got == _ways[60], f"climb(60) = {got!r}, expected {_ways[60]}"
+          assert runs <= 65, f"climb(60) ran the body of dp {runs} times (expected about 61: once per stair)"
+          for n in range(81):
+              assert climb(n) == _ways[n], f"climb({n}) = {climb(n)!r}, expected {_ways[n]}"
+      - id: b
+        prompt: |
+          - **Given**: `lru_cache` imported (see setup).
+          - **Write**: in `climb(n)`, decorate the nested `dp` with `@lru_cache(maxsize=None)`, then return `dp(n)`: the number of ways to climb `n` stairs taking 1 or 2 steps (`climb(0) = climb(1) = 1`).
+          - **Checked on**: `climb(0..80)` (several calls in a row), and that the body of `dp` runs about once per stair (a plain recursion is far too slow).
+        setup: |
+          from functools import lru_cache
+        starter: |
+          def climb(n):
+              def dp(i):
+                  return 1 if i <= 1 else dp(i - 1) + dp(i - 2)
+              # memoise dp, then return dp(n)
+        solution: |
+          def climb(n):
+              @lru_cache(maxsize=None)
+              def dp(i):
+                  return 1 if i <= 1 else dp(i - 1) + dp(i - 2)
+              return dp(n)
+        check: |
+          import sys
+          def _body_runs(name, thunk, cap):  # how many times a function body named `name` starts running
+              n = [0]
+              def tr(frame, event, arg):
+                  if event == "call" and frame.f_code.co_name == name:
+                      n[0] += 1
+                      if n[0] > cap:
+                          raise AssertionError(f"the body of {name} ran more than {cap} times: it is not memoised")
+              sys.settrace(tr)
+              try:
+                  out = thunk()
+              finally:
+                  sys.settrace(None)
+              return out, n[0]
+
+          _ways = [1, 1]
+          for _ in range(80):
+              _ways.append(_ways[-1] + _ways[-2])
+          _real_lru, _seen = lru_cache, []
+          def lru_cache(*a, **kw):  # spy: records how climb decorates dp
+              _seen.append(kw["maxsize"] if "maxsize" in kw else a[0] if a and not callable(a[0]) else 128)
+              return _real_lru(*a, **kw)
+          try:
+              got, runs = _body_runs("dp", lambda: climb(60), 1000)
+          finally:
+              lru_cache = _real_lru
+          assert _seen, "the nested dp is not decorated with @lru_cache(maxsize=None)"
+          assert _seen[0] is None, f"dp uses lru_cache with maxsize={_seen[0]!r}: write @lru_cache(maxsize=None)"
+          assert got == _ways[60], f"climb(60) = {got!r}, expected {_ways[60]}"
+          assert runs <= 65, f"climb(60) ran the body of dp {runs} times (expected about 61: once per stair)"
+          for n in range(81):
+              assert climb(n) == _ways[n], f"climb({n}) = {climb(n)!r}, expected {_ways[n]}"
+      - id: c
+        prompt: |
+          - **Given**: `total(t)`, decorated with `@cache` (so its argument must be hashable), and `nums`, a `list` (see setup).
+          - **Set** `res`: `total` called on `nums` converted to a `tuple`.
+          - **Checked on**: the given `nums`.
+        setup: |
+          from functools import cache
+          @cache
+          def total(t):
+              return sum(t)
+          nums = [3, 4, 5]
+        solution: |
+          res = total(tuple(nums))
+        check: |
+          assert res == 12, f"res = {res!r}"
+
+  - id: functions.memo-dict
+    name: hand-written memo dict
+    teach: |
+      ```python
+      # manual @cache: check the dict first, store before returning
+      memo = {}
+      def dp(i, j):
+          if (i, j) in memo: return memo[(i, j)]
+          memo[(i, j)] = ...      # compute
+          return memo[(i, j)]
+      ```
+      Pitfall: a default argument `memo={}` is shared by every call; create `memo` in the outer function.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: the global dict `memo`, empty at the start (starter).
+          - **Write** the memo lookup and store in `fib(n)`: if `n` is in `memo`, return `memo[n]`; otherwise compute it, store it in `memo[n]`, and return it (`fib(0) = 0`, `fib(1) = 1`; storing the base cases is optional).
+          - **Returns**: `fib(n)`, an `int`.
+          - **Checked on**: `fib(0..90)`, `n in memo` after `fib(n)`, and the number of calls to `fib` (about 2 per new `n`; without the lookup it explodes).
+        starter: |
+          memo = {}
+          def fib(n):
+              if n < 2:
+                  return n
+              # look in memo first, store the result before returning
+              return fib(n - 1) + fib(n - 2)
+        solution: |
+          memo = {}
+          def fib(n):
+              if n < 2:
+                  return n
+              if n in memo:
+                  return memo[n]
+              memo[n] = fib(n - 1) + fib(n - 2)
+              return memo[n]
+        check: |
+          _body, _calls = fib, [0]
+          def fib(n):  # counting wrapper: the recursion inside the original goes through it
+              _calls[0] += 1
+              if _calls[0] > 3000:
+                  raise AssertionError("fib(30) made more than 3000 calls: look in memo before computing, and store every result")
+              return _body(n)
+          try:
+              memo.clear()
+              got = fib(30)
+          finally:
+              fib = _body
+          assert got == 832040, f"fib(30) = {got!r}"
+          assert _calls[0] <= 62, f"fib(30) from an empty memo made {_calls[0]} calls (expected about 59: each n computed once)"
+          assert 30 in memo and memo[30] == 832040, "memo[30] should hold fib(30) after the call"
+          _f = [0, 1]
+          for _ in range(89):
+              _f.append(_f[-1] + _f[-2])
+          memo.clear()
+          for n in range(91):
+              assert fib(n) == _f[n], f"fib({n}) = {fib(n)!r}, expected {_f[n]}"
+              assert n < 2 or memo.get(n) == _f[n], f"after fib({n}), memo.get({n}) = {memo.get(n)!r}"
+      - id: b
+        prompt: |
+          - **Given**: the global dict `memo`, empty at the start (starter).
+          - **Write** the memo in `paths(r, c)` (the number of grid paths; `1` when `r == 0` or `c == 0`): key it by the **tuple** `(r, c)`, in that order; return the stored value if present, else compute, store, and return it.
+          - **Returns**: `paths(r, c)`, an `int`.
+          - **Checked on**: all `0 <= r, c <= 16` (incl. `r != c`) in one shared `memo`, that every key is an `(r, c)` tuple, and the number of calls (about 2 per new `(r, c)`).
+        starter: |
+          memo = {}
+          def paths(r, c):
+              if r == 0 or c == 0:
+                  return 1
+              # use memo[(r, c)]
+              return paths(r - 1, c) + paths(r, c - 1)
+        solution: |
+          memo = {}
+          def paths(r, c):
+              if r == 0 or c == 0:
+                  return 1
+              if (r, c) not in memo:
+                  memo[(r, c)] = paths(r - 1, c) + paths(r, c - 1)
+              return memo[(r, c)]
+        check: |
+          import math
+          _body, _calls = paths, [0]
+          def paths(r, c):  # counting wrapper: the recursion inside the original goes through it
+              _calls[0] += 1
+              if _calls[0] > 5000:
+                  raise AssertionError("paths(12, 12) made more than 5000 calls: look in memo before computing, and store every result")
+              return _body(r, c)
+          try:
+              memo.clear()
+              got = paths(12, 12)
+          finally:
+              paths = _body
+          assert got == 2704156, f"paths(12, 12) = {got!r}"
+          assert _calls[0] <= 300, f"paths(12, 12) from an empty memo made {_calls[0]} calls (expected about 289)"
+          memo.clear()
+          for r in range(17):
+              for c in range(17):
+                  want = math.comb(r + c, r)
+                  assert paths(r, c) == want, f"paths({r}, {c}) = {paths(r, c)!r}, expected {want}"
+          bad = [k for k in memo if not (isinstance(k, tuple) and len(k) == 2)]
+          assert not bad, f"memo keys should be (r, c) tuples, found {bad[:3]!r}"
+          memo.clear()
+          paths(2, 5)
+          assert memo.get((2, 5)) == 21 and (5, 2) not in memo,     f"after paths(2, 5) from an empty memo, memo[(2, 5)] should hold 21 (key order (r, c)); memo = {memo!r}"
+      - id: c
+        prompt: |
+          - **Given**: `climb(n, memo)` receives the memo dict to use (a fresh `{}` or one already partly filled).
+          - **Write**: if `n` is not in `memo`, set `memo[n] = climb(n - 1, memo) + climb(n - 2, memo)`; then return `memo[n]` (the base case `n <= 1` returns `1`).
+          - **Returns**: an `int`: the number of ways to climb `n` stairs taking 1 or 2 steps.
+          - **Checked on**: `n = 0..80` with fresh dicts, that `memo[n]` gets filled, that a value already in `memo` is returned as is (not recomputed), and the number of calls (about 2 per new `n`).
+        starter: |
+          def climb(n, memo):
+              if n <= 1:
+                  return 1
+              # fill memo[n] if missing, then return it
+        solution: |
+          def climb(n, memo):
+              if n <= 1:
+                  return 1
+              if n not in memo:
+                  memo[n] = climb(n - 1, memo) + climb(n - 2, memo)
+              return memo[n]
+        check: |
+          _ways = [1, 1]
+          for _ in range(80):
+              _ways.append(_ways[-1] + _ways[-2])
+          _body, _calls = climb, [0]
+          def climb(n, memo):  # counting wrapper: the recursion inside the original goes through it
+              _calls[0] += 1
+              if _calls[0] > 3000:
+                  raise AssertionError("climb(30, {}) made more than 3000 calls: fill memo[n] once and reuse it (pass memo down)")
+              return _body(n, memo)
+          try:
+              got = climb(30, {})
+          finally:
+              climb = _body
+          assert got == _ways[30], f"climb(30, {{}}) = {got!r}"
+          assert _calls[0] <= 62, f"climb(30, {{}}) made {_calls[0]} calls (expected about 59: each n computed once)"
+          for n in range(81):
+              assert climb(n, {}) == _ways[n], f"climb({n}, {{}}) = {climb(n, {})!r}, expected {_ways[n]}"
+          m = {}
+          climb(10, m)
+          assert all(m.get(n) == _ways[n] for n in range(2, 11)), f"after climb(10, m): m = {m!r}"
+          got = climb(5, {5: 999})
+          assert got == 999, f"climb(5, {{5: 999}}) = {got!r}: a value already in memo must be returned as is"
+          got = climb(7, {5: 999})
+          assert got == 2003, f"climb(7, {{5: 999}}) = {got!r} (expected 2003, reusing memo[5] = 999)"

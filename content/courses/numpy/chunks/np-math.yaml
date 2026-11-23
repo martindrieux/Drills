@@ -1,0 +1,285 @@
+id: np-math
+title: Elementwise math, broadcasting, reductions, linear algebra
+intro: |
+  The core of every NumPy model: elementwise functions (exp, log, ReLU, clip), broadcasting to combine
+  shapes without loops, reductions along an axis (mean per feature, argmax per row), sorting and counting,
+  and matrix products.
+problems:
+  - Center and scale features, apply an activation
+  - Predicted class per row, accuracy, class counts
+  - Top-k scores, matrix products, solving a linear system
+atoms: []
+skills:
+  - id: np-math.broadcast
+    name: elementwise ops, exp / log / sqrt / abs, maximum, clip, broadcasting
+    teach: |
+      ```python
+      # + - * / ** ==: ELEMENTWISE (a * b is not a matrix product); np.exp / log / sqrt / abs: same shape out
+      np.exp(np.array([0., 1.]))               # (2,): [1., 2.718]
+      # np.maximum(a, b): elementwise max (b may be a number); np.clip(a, lo, hi): limit to [lo, hi]
+      np.maximum(np.array([-1., 2.]), 0)       # (2,): [0., 2.]  ReLU
+      np.clip(np.array([-5., .5, 9.]), 0, 1)   # (3,): [0., .5, 1.]
+      # broadcasting: align shapes from the RIGHT; size-1 or missing axes repeat
+      np.array([[0], [10]]) + np.array([1, 2]) # (2, 1) + (2,) -> (2, 2): [[1, 2], [11, 12]]
+      ```
+      Pitfall: `(N, D) - (N,)` fails; use `v[:, None]` `(N, 1)`.
+    cards:
+      - id: a
+        prompt: |
+          Apply elementwise functions and broadcasting to `x` (4,), `p` (3,), `X` (3, 2), `mu` (2,) and `s` (3,).
+          - `ex`, `ab` (4,): `exp(x)` and `|x|`; `lg`, `rt` (3,): natural log and square root of `p`
+          - `relu` (4,): `x` with negatives set to 0, using `np.maximum`
+          - `cl` (4,): `x` clipped to `[-1, 1]`
+          - `table` (3, 4): `table[i, j] = s[i] + x[j]`, no loop
+          - `Xc` (3, 2): `mu` subtracted from every row of `X`
+          - `Xs` (3, 2): row `i` of `X` divided by `s[i]`
+        setup: |
+          import numpy as np
+          x = np.array([-2.0, -0.5, 0.0, 3.0])
+          p = np.array([1.0, 4.0, 9.0])
+          X = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+          mu = np.array([3.0, 4.0])
+          s = np.array([1.0, 2.0, 4.0])
+        solution: |
+          ex = np.exp(x)
+          lg = np.log(p)
+          rt = np.sqrt(p)
+          ab = np.abs(x)
+          relu = np.maximum(x, 0)
+          cl = np.clip(x, -1, 1)
+          table = s[:, None] + x
+          Xc = X - mu
+          Xs = X / s[:, None]
+        check: |
+          import math
+          assert isinstance(ex, np.ndarray) and np.allclose(ex, [math.exp(v) for v in x]), f"ex = {ex!r}"
+          assert isinstance(lg, np.ndarray) and np.allclose(lg, [0, math.log(4), math.log(9)]), f"lg = {lg!r}"
+          assert isinstance(rt, np.ndarray) and np.allclose(rt, [1, 2, 3]), f"rt = {rt!r}"
+          assert isinstance(ab, np.ndarray) and np.allclose(ab, [2, 0.5, 0, 3]), f"ab = {ab!r}"
+          assert isinstance(relu, np.ndarray) and np.allclose(relu, [0, 0, 0, 3]), f"relu = {relu!r}"
+          assert isinstance(cl, np.ndarray) and np.allclose(cl, [-1, -0.5, 0, 1]), f"cl = {cl!r}"
+          assert isinstance(table, np.ndarray) and table.shape == (3, 4) and np.allclose(table, [[a + b for b in x] for a in s]), f"table = {table!r}"
+          assert isinstance(Xc, np.ndarray) and np.allclose(Xc, [[-2, -2], [0, 0], [2, 2]]), f"Xc = {Xc!r}"
+          assert isinstance(Xs, np.ndarray) and Xs.shape == (3, 2) and np.allclose(Xs, [[1, 2], [1.5, 2], [1.25, 1.5]]), f"Xs = {Xs!r}"
+      - id: b
+        prompt: |
+          Turn the logits `z` (N,) into safe log-probabilities.
+          - `p` (N,): `sigmoid(z) = 1 / (1 + exp(-z))`
+          - `p_safe` (N,): `p` clipped to `[1e-7, 1 - 1e-7]`
+          - `logp` (N,): natural log of `p_safe` (all finite)
+        setup: |
+          import numpy as np
+          z = np.array([-50.0, -1.0, 0.0, 2.0, 50.0])
+        solution: |
+          p = 1 / (1 + np.exp(-z))
+          p_safe = np.clip(p, 1e-7, 1 - 1e-7)
+          logp = np.log(p_safe)
+        check: |
+          import math
+          _p = [1 / (1 + math.exp(-v)) for v in z]
+          assert isinstance(p, np.ndarray) and np.allclose(p, _p), f"p = {p!r}"
+          _ps = [min(max(v, 1e-7), 1 - 1e-7) for v in _p]
+          assert isinstance(p_safe, np.ndarray) and np.allclose(p_safe, _ps, rtol=0, atol=1e-12), f"p_safe = {p_safe!r}"
+          assert isinstance(logp, np.ndarray) and np.isfinite(logp).all() and np.allclose(logp, [math.log(v) for v in _ps]), f"logp = {logp!r}"
+
+  - id: np-math.reduce
+    name: sum / mean / std / max over an axis, keepdims, argmax, counting with bool arrays
+    teach: |
+      ```python
+      X = np.array([[1., 5.], [3., 1.]])       # (2, 2)
+      # X.sum/mean/std/max/min(axis=k): reduce over axis k (it disappears); no axis: one number
+      X.sum(axis=0), X.max(axis=1)             # (2,) each: [4., 6.] per column, [5., 3.] per row
+      # keepdims=True keeps axis k as size 1, so it broadcasts back
+      X - X.mean(axis=1, keepdims=True)        # (2, 2) - (2, 1): rows centered
+      # X.argmax(axis=k): index of the max along k (first on ties)
+      X.argmax(axis=1)                         # (2,): [1, 0]
+      # bool counts as 0/1: mask.sum() = number True, mask.mean() = fraction
+      (X > 2).sum()                            # 2
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Reduce the matrix `X` (4, 3) along its axes.
+          - `total` (float): sum of all entries
+          - `col_mean`, `col_std` (3,): mean and (population) standard deviation of each column
+          - `row_max`, `row_min` (4,): max and min of each row
+          - `best` (4,): column index of each row's max
+          - `Xc` (4, 3): each row minus its own mean, using `keepdims=True`
+          - `n_neg` (int): number of negative entries; `frac_neg` (float): their fraction of all entries
+        setup: |
+          import numpy as np
+          X = np.array([[1.0, -2.0, 3.0], [4.0, 5.0, -6.0], [0.0, 1.0, 1.5], [-1.0, -3.0, 2.0]])
+        solution: |
+          total = X.sum()
+          col_mean = X.mean(axis=0)
+          col_std = X.std(axis=0)
+          row_max = X.max(axis=1)
+          row_min = X.min(axis=1)
+          Xc = X - X.mean(axis=1, keepdims=True)
+          best = X.argmax(axis=1)
+          n_neg = (X < 0).sum()
+          frac_neg = (X < 0).mean()
+        check: |
+          import statistics as st
+          cols = list(zip(*X.tolist()))
+          assert np.isclose(total, 5.5), f"total = {total!r}"
+          assert np.shape(col_mean) == (3,) and np.allclose(col_mean, [sum(c) / 4 for c in cols]), f"col_mean = {col_mean!r}"
+          assert np.shape(col_std) == (3,) and np.allclose(col_std, [st.pstdev(c) for c in cols]), f"col_std = {col_std!r}"
+          assert np.shape(row_max) == (4,) and np.allclose(row_max, [3, 5, 1.5, 2]), f"row_max = {row_max!r}"
+          assert np.shape(row_min) == (4,) and np.allclose(row_min, [-2, -6, 0, -3]), f"row_min = {row_min!r}"
+          assert np.shape(Xc) == (4, 3) and np.allclose(Xc, [[v - sum(r) / 3 for v in r] for r in X.tolist()]), f"Xc = {Xc!r}"
+          assert np.shape(best) == (4,) and np.asarray(best).tolist() == [2, 1, 2, 2], f"best = {best!r}"
+          assert n_neg == 4, f"n_neg = {n_neg!r}"
+          assert np.isclose(frac_neg, 4 / 12), f"frac_neg = {frac_neg!r}"
+      - id: b
+        prompt: |
+          Evaluate a classifier from its `logits` (N, C) and the true labels `y` (N,).
+          - `pred` (N,) int: predicted class of each row = column of its largest logit
+          - `acc` (float): fraction of rows where `pred == y`
+          - `per_class` (C,) int: `per_class[c]` = number of rows predicted as class `c`
+        setup: |
+          import numpy as np
+          logits = np.array([[2.0, 0.1, -1.0], [0.0, 3.0, 0.5], [0.2, 0.1, 0.9], [1.0, 1.5, 0.0], [5.0, 0.0, 0.0]])
+          y = np.array([0, 1, 1, 1, 2])
+          C = 3
+        solution: |
+          pred = logits.argmax(axis=1)
+          acc = (pred == y).mean()
+          per_class = (pred[:, None] == np.arange(C)).sum(axis=0)
+        check: |
+          assert np.asarray(pred).tolist() == [0, 1, 2, 1, 0], f"pred = {pred!r}"
+          assert np.isclose(acc, 0.6), f"acc = {acc!r}"
+          assert np.shape(per_class) == (3,) and np.asarray(per_class).tolist() == [2, 2, 1], f"per_class = {per_class!r}"
+
+  - id: np-math.sort-count
+    name: np.sort, argsort, top-k, np.unique with counts, cumsum
+    teach: |
+      ```python
+      x = np.array([30, 10, 20, 40])           # (4,)
+      # np.sort(x): sorted copy; x.argsort(): indices that sort x (ascending)
+      np.sort(x), x.argsort()                  # [10, 20, 30, 40], [1, 2, 0, 3]
+      x.argsort()[::-1][:2]                    # top-2 indices, largest first: [3, 0]
+      # np.unique(a, return_counts=True) -> (sorted distinct values, count of each)
+      np.unique([2, 0, 2, 2], return_counts=True)   # ([0, 2], [1, 3])
+      # np.cumsum(x): running totals, same shape
+      np.cumsum(x)                             # [30, 40, 60, 100]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Sort and count `scores` (6,) and `labels` (8,).
+          - `srt` (6,): `scores` in ascending order; `order` (6,): the indices that sort `scores` ascending
+          - `top3` (3,): indices of the 3 largest scores, largest first
+          - `vals`, `counts`: the distinct values of `labels` in ascending order, and how often each appears
+          - `running` (6,): running totals of `scores`, `running[i] = scores[0] + ... + scores[i]`
+        setup: |
+          import numpy as np
+          scores = np.array([0.3, 0.9, 0.1, 0.5, 0.7, 0.2])
+          labels = np.array([3, 1, 3, 0, 1, 3, 3, 0])
+        solution: |
+          srt = np.sort(scores)
+          order = scores.argsort()
+          top3 = scores.argsort()[::-1][:3]
+          vals, counts = np.unique(labels, return_counts=True)
+          running = np.cumsum(scores)
+        check: |
+          assert np.allclose(srt, sorted(scores.tolist())), f"srt = {srt!r}"
+          assert np.asarray(order).tolist() == [2, 5, 0, 3, 4, 1], f"order = {order!r}"
+          assert np.asarray(top3).tolist() == [1, 4, 3], f"top3 = {top3!r}"
+          assert np.asarray(vals).tolist() == [0, 1, 3] and np.asarray(counts).tolist() == [2, 2, 4], f"vals, counts = {vals!r}, {counts!r}"
+          assert np.allclose(running, [0.3, 1.2, 1.3, 1.8, 2.5, 2.7]), f"running = {running!r}"
+      - id: b
+        prompt: |
+          Compute a majority vote over `y` and how many top probabilities cover 90% of the mass.
+          - `majority`: the most frequent label in `y`; ties -> the smallest label
+          - `k90` (int): the smallest `k` with `probs[:k].sum() >= 0.9` (`probs` is sorted descending)
+        setup: |
+          import numpy as np
+          y = np.array([2, 7, 7, 2, 5, 7, 2])
+          probs = np.array([0.5, 0.25, 0.125, 0.0625, 0.0625])
+        solution: |
+          vals, counts = np.unique(y, return_counts=True)
+          majority = vals[counts.argmax()]
+          k90 = (np.cumsum(probs) < 0.9).sum() + 1
+        check: |
+          assert majority == 2, f"majority = {majority!r} (2 and 7 both appear 3 times: take the smallest)"
+          assert k90 == 4, f"k90 = {k90!r}"
+
+  - id: np-math.linalg
+    name: "@, np.dot, np.outer, np.linalg.norm, np.linalg.solve, np.einsum"
+    teach: |
+      ```python
+      A = np.array([[1., 2.], [3., 4.]]); v = np.array([1., 1.])
+      # A @ B: (n, k) @ (k, m) -> (n, m); (n, k) @ (k,) -> (n,); (B, n, k) @ (k, m) -> (B, n, m)
+      A @ v                                    # (2,): [3., 7.]
+      # np.dot(u, w) = sum(u * w); np.outer(u, w)[i, j] = u[i] * w[j], (len(u), len(w))
+      np.dot(v, v), np.outer([1, 2], [3, 4])   # 2.0, [[3, 4], [6, 8]]
+      # np.linalg.norm(x, axis=k): sqrt(sum of squares) along k
+      np.linalg.norm([[3., 4.]], axis=1)       # (1, 2) -> (1,): [5.]
+      # np.linalg.solve(A, b): x with A @ x = b (A square, invertible)
+      np.linalg.solve(A, [3., 7.])             # (2,): [1., 1.]
+      # np.einsum: multiply matching letters, sum the ones missing after ->
+      np.einsum("bi,bi->b", A, A)              # (2, 2) -> (2,): row self-dots [5., 25.]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Compute matrix products, norms and a linear solve with the arrays from the setup.
+          - `AB` (3, 4): `A @ B`; `Au` (3,): `A` times the vector `u`
+          - `QB` (5, 3, 4): `QB[i] = Q[i] @ B` for every `i`
+          - `d` (float): dot product of `u` and `w`; `O` (2, 2): their outer product, `O[i, j] = u[i] * w[j]`
+          - `lens` (3,): Euclidean length of each row of `A`
+          - `sol` (2,): the `x` with `S @ x == b`
+          - `rowdots` (3,): `rowdots[i] = Σ_j A[i, j] * u[j]`, using `np.einsum`
+        setup: |
+          import numpy as np
+          A = np.array([[1.0, 2.0], [3.0, 4.0], [0.0, -1.0]])
+          B = np.arange(8, dtype=float).reshape(2, 4)
+          u = np.array([1.0, -1.0])
+          w = np.array([2.0, 3.0])
+          Q = np.arange(30, dtype=float).reshape(5, 3, 2)
+          S = np.array([[2.0, 1.0], [1.0, 3.0]])
+          b = np.array([3.0, 5.0])
+        solution: |
+          AB = A @ B
+          Au = A @ u
+          QB = Q @ B
+          d = np.dot(u, w)
+          O = np.outer(u, w)
+          lens = np.linalg.norm(A, axis=1)
+          sol = np.linalg.solve(S, b)
+          rowdots = np.einsum("ij,j->i", A, u)
+        check: |
+          import math
+          _mm = lambda P, R: [[sum(P[i][k] * R[k][j] for k in range(len(R))) for j in range(len(R[0]))] for i in range(len(P))]
+          assert np.shape(AB) == (3, 4) and np.allclose(AB, _mm(A.tolist(), B.tolist())), f"AB = {AB!r}"
+          assert np.shape(Au) == (3,) and np.allclose(Au, [-1, -1, 1]), f"Au = {Au!r}"
+          assert np.shape(QB) == (5, 3, 4) and all(np.allclose(QB[i], _mm(Q[i].tolist(), B.tolist())) for i in range(5)), f"QB shape = {np.shape(QB)}"
+          assert np.isclose(d, -1), f"d = {d!r}"
+          assert np.shape(O) == (2, 2) and np.allclose(O, [[2, 3], [-2, -3]]), f"O = {O!r}"
+          assert np.shape(lens) == (3,) and np.allclose(lens, [math.sqrt(5), 5, 1]), f"lens = {lens!r}"
+          assert np.shape(sol) == (2,) and np.allclose(sol, [0.8, 1.4]), f"sol = {sol!r}"
+          assert np.shape(rowdots) == (3,) and np.allclose(rowdots, [-1, -1, 1]), f"rowdots = {rowdots!r}"
+      - id: b
+        prompt: |
+          Compute scaled dot-product scores between queries `Q` (B, T, D) and keys `K` (B, T, D).
+          - `scores` (B, T, T): `scores[b, i, j] = Q[b, i] · K[b, j] / sqrt(D)`, using `np.einsum`
+          - `scores2` (B, T, T): the same values, using `@` and `K.transpose(0, 2, 1)`
+          - `unit` (B, T, D): each vector `Q[b, i]` divided by its Euclidean length
+        setup: |
+          import numpy as np
+          rng = np.random.default_rng(0)
+          Q = rng.normal(size=(2, 3, 4))
+          K = rng.normal(size=(2, 3, 4))
+          B, T, D = Q.shape
+        solution: |
+          scores = np.einsum("btd,bsd->bts", Q, K) / np.sqrt(D)
+          scores2 = Q @ K.transpose(0, 2, 1) / np.sqrt(D)
+          unit = Q / np.linalg.norm(Q, axis=-1, keepdims=True)
+        check: |
+          import math
+          _s = [[[sum(Q[b, i, k] * K[b, j, k] for k in range(4)) / 2 for j in range(3)] for i in range(3)] for b in range(2)]
+          assert np.shape(scores) == (2, 3, 3) and np.allclose(scores, _s), f"scores[0] = {np.asarray(scores)[0]!r}"
+          assert np.shape(scores2) == (2, 3, 3) and np.allclose(scores2, _s), f"scores2[0] = {np.asarray(scores2)[0]!r}"
+          _u = [[[v / math.sqrt(sum(x * x for x in r)) for v in r] for r in m] for m in Q.tolist()]
+          assert np.shape(unit) == (2, 3, 4) and np.allclose(unit, _u), f"unit[0] = {np.asarray(unit)[0]!r}"

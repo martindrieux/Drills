@@ -1,0 +1,347 @@
+id: tensor-ops
+title: Tensor ops - index, reshape, reduce, broadcast, matmul
+intro: |
+  Most interview code is shape plumbing: slice a batch, reshape heads, reduce over a dim,
+  broadcast a mean, batch a matmul. Get these right and attention or a loss is a few lines.
+problems:
+  - Implement softmax / layer norm / cross-entropy from scratch
+  - Split hidden states into attention heads and merge them back
+  - Compute pairwise distances or a similarity matrix
+  - Pick the logits of the target classes for a batch
+  - Accuracy from logits and labels
+atoms: []
+skills:
+  - id: tensor-ops.index
+    name: slicing, x[:, 0], boolean masks, fancy indexing
+    teach: |
+      ```python
+      x = torch.tensor([[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]])
+      # x[i] -> row i;  x[:, j] -> column j with the dim dropped, shape (3,)
+      x[:, 0]                  # [0, 4, 8]
+      # x[:, a:b] -> slice, dim kept (x[:, 0:1] has shape (3, 1))
+      x[:, -2:]                # last two columns, shape (3, 2)
+      # x[..., j] -> index the last dim, whatever the rank
+      x[..., 0]                # [0, 4, 8]
+      # x[bool_mask] -> 1-D tensor of the selected values
+      x[x > 9]                 # [10, 11]
+      # x[list] -> those rows (a copy)
+      x[[0, 2]]                # rows 0 and 2, shape (2, 4)
+      # x[rows, cols] with two index tensors -> x[rows[k], cols[k]] for each k
+      x[torch.arange(3), torch.tensor([1, 0, 3])]   # [1, 4, 11]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          From `x` (shape `(3, 4)`), set:
+          `row` = last row · `col` = first column, shape `(3,)` · `colk` = same column, shape `(3, 1)` ·
+          `last` = last entry along the last dim of the 3-D `t` (use `...`) · `big` = entries of `x` greater than 9 ·
+          `sel` = rows 0 and 2 · `picked` = `x[i, y[i]]` for each row `i`, in one expression.
+        setup: |
+          import torch
+          x = torch.arange(12).reshape(3, 4)
+          t = torch.arange(24).reshape(2, 3, 4)
+          y = torch.tensor([1, 0, 3])
+        solution: |
+          row = x[-1]
+          col = x[:, 0]
+          colk = x[:, 0:1]
+          last = t[..., -1]
+          big = x[x > 9]
+          sel = x[[0, 2]]
+          picked = x[torch.arange(3), y]
+        check: |
+          assert torch.equal(row, torch.tensor([8, 9, 10, 11])), f"row = {row}"
+          assert torch.equal(col, torch.tensor([0, 4, 8])), f"col = {col}"
+          assert colk.shape == (3, 1) and colk.flatten().tolist() == [0, 4, 8], f"colk = {colk}"
+          assert last.shape == (2, 3) and last[1].tolist() == [15, 19, 23], f"last = {last}"
+          assert big.tolist() == [10, 11], f"big = {big}"
+          assert sel.tolist() == [[0, 1, 2, 3], [8, 9, 10, 11]], f"sel = {sel}"
+          assert picked.tolist() == [1, 4, 11], f"picked = {picked}"
+      - id: c
+        prompt: "Cross-entropy by hand: `logp` `(B, C)` holds log-probabilities and `y` the target classes. Set `nll` = minus the mean of `logp[i, y[i]]` over the batch, in one expression."
+        setup: |
+          import torch
+          logp = torch.log(torch.tensor([[0.1, 0.9, 0.0], [0.5, 0.25, 0.25], [0.2, 0.3, 0.5]]))
+          y = torch.tensor([1, 0, 2])
+        solution: |
+          nll = -logp[torch.arange(len(y)), y].mean()
+        check: |
+          exp = -(torch.log(torch.tensor(0.9)) + torch.log(torch.tensor(0.5)) + torch.log(torch.tensor(0.5))) / 3
+          assert torch.is_tensor(nll) and torch.allclose(nll, exp), f"nll = {nll}, expected {exp}"
+
+  - id: tensor-ops.reshape
+    name: view / reshape / flatten, unsqueeze / squeeze, permute / transpose
+    teach: |
+      ```python
+      x = torch.randn(2, 3, 4)
+      # x.view(*shape) -> same data, new shape (no copy; needs contiguous memory)
+      x.view(2, 12).shape                 # (2, 12)
+      # x.reshape(*shape) -> like view, copies if needed; -1 = inferred size
+      x.reshape(-1, 4).shape              # (6, 4)
+      # x.flatten(start_dim) -> merge dims start_dim..last
+      x.flatten(1).shape                  # (2, 12)
+      # x.unsqueeze(d) -> insert a size-1 dim at d
+      x.unsqueeze(0).shape                # (1, 2, 3, 4)
+      # x.squeeze(d) -> remove dim d if its size is 1
+      torch.zeros(5, 1).squeeze(-1).shape # (5,)
+      # x.transpose(d0, d1) -> swap two dims
+      x.transpose(1, 2).shape             # (2, 4, 3)
+      # x.permute(*dims) -> reorder all dims
+      x.permute(2, 0, 1).shape            # (4, 2, 3)
+      # x.contiguous() -> contiguous copy; .view after transpose/permute needs it
+      x.transpose(1, 2).contiguous().view(2, 12)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Given `x` `(2, 3, 4)` and `y` `(5, 1)`, set:
+
+          - `v`: `x` as `(2, 12)` with `view`
+          - `r`: `x` as `(?, 4)` with `reshape`, inferring `?`
+          - `f`: `x` flattened from dim 1
+          - `u`: `x` with a new leading dim, `(1, 2, 3, 4)`
+          - `s`: `y` without its last dim, `(5,)`
+          - `t`: `x` with dims 1 and 2 swapped, `(2, 4, 3)`
+          - `p`: `x` reordered to `(4, 2, 3)`
+          - `m`: `t` viewed as `(2, 12)`
+        setup: |
+          import torch
+          x = torch.arange(24.0).reshape(2, 3, 4)
+          y = torch.zeros(5, 1)
+        solution: |
+          v = x.view(2, 12)
+          r = x.reshape(-1, 4)
+          f = x.flatten(1)
+          u = x.unsqueeze(0)
+          s = y.squeeze(-1)
+          t = x.transpose(1, 2)
+          p = x.permute(2, 0, 1)
+          m = t.contiguous().view(2, 12)
+        check: |
+          for name, val, shape in [("v", v, (2, 12)), ("r", r, (6, 4)), ("f", f, (2, 12)), ("u", u, (1, 2, 3, 4)),
+                                   ("s", s, (5,)), ("t", t, (2, 4, 3)), ("p", p, (4, 2, 3)), ("m", m, (2, 12))]:
+              assert tuple(val.shape) == shape, f"{name}.shape = {tuple(val.shape)}, expected {shape}"
+          assert torch.equal(p[3, 1, 2], x[1, 2, 3]), "p: use permute(2, 0, 1)"
+          assert m[0, :3].tolist() == [0.0, 4.0, 8.0], f"m[0, :3] = {m[0, :3].tolist()} (transpose, then .contiguous().view)"
+      - id: b
+        prompt: Split `x` of shape `(B, T, C)` into `H = 4` heads and move the head dim forward, giving `heads` of shape `(B, H, T, C // H)`.
+        setup: |
+          import torch
+          B, T, C, H = 2, 5, 8, 4
+          x = torch.randn(B, T, C)
+        solution: |
+          heads = x.view(B, T, H, C // H).transpose(1, 2)
+        check: |
+          assert heads.shape == (2, 4, 5, 2), f"heads.shape = {tuple(heads.shape)}"
+          assert torch.equal(heads[1, 3, 2], x[1, 2, 6:8]), "wrong element order: view to (B, T, H, D) then transpose(1, 2)"
+
+  - id: tensor-ops.cat-stack
+    name: torch.cat vs torch.stack
+    teach: |
+      ```python
+      a, b = torch.zeros(2, 3), torch.ones(2, 3)
+      # torch.cat(tensors, dim) -> join along an EXISTING dim (other dims must match)
+      torch.cat([a, b], dim=1).shape     # (2, 6)
+      # torch.stack(tensors, dim=0) -> join along a NEW dim (shapes must be identical)
+      torch.stack([a, b]).shape          # (2, 2, 3)
+      ```
+    cards:
+      - id: a
+        prompt: Concatenate `a` and `b` along the rows into `c` (shape `(4, 3)`), and stack them on a new first dim into `s` (shape `(2, 2, 3)`).
+        setup: |
+          import torch
+          a = torch.zeros(2, 3)
+          b = torch.ones(2, 3)
+        solution: |
+          c = torch.cat([a, b], dim=0)
+          s = torch.stack([a, b])
+        check: |
+          assert c.shape == (4, 3), f"c.shape = {tuple(c.shape)}"
+          assert torch.equal(c[2:], b), f"c = {c}"
+          assert s.shape == (2, 2, 3) and torch.equal(s[1], b), f"s.shape = {tuple(s.shape)}"
+      - id: c
+        prompt: Append a column of ones to `x` (shape `(N, 2)`) to get `xb` of shape `(N, 3)` (bias trick). Build the ones with `torch.ones(...)`.
+        setup: |
+          import torch
+          x = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        solution: |
+          xb = torch.cat([x, torch.ones(len(x), 1)], dim=1)
+        check: |
+          assert xb.shape == (3, 3), f"xb.shape = {tuple(xb.shape)}"
+          assert torch.equal(xb[:, :2], x) and torch.all(xb[:, 2] == 1), f"xb = {xb}"
+
+  - id: tensor-ops.reduce
+    name: sum / mean / max over dim, keepdim, argmax
+    teach: |
+      ```python
+      x = torch.tensor([[1., 5.], [3., 2.]])
+      # x.sum() -> scalar;  x.sum(dim=d) -> dim d reduced away
+      x.sum(dim=0)                    # [4., 7.]  (one per column)
+      # keepdim=True -> reduced dim stays as size 1 (works for any reduction)
+      x.mean(dim=1, keepdim=True)     # [[3.], [2.5]], shape (2, 1)
+      # x.max(dim=d) -> (values, indices);  x.max() -> one scalar tensor
+      vals, idx = x.max(dim=1)        # [5., 3.], [1, 0]
+      # x.argmax(dim=d) -> indices only
+      x.argmax(dim=0)                 # [1, 0]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          For `x`, set: `total` = sum of all entries (tensor) · `col_sums` = sum of each column ·
+          `row_means` = mean of each row, kept as shape `(2, 1)` · `vals, idx` = max of each row and its column index ·
+          `best_row` = for each column, the index of the row holding its max.
+        setup: |
+          import torch
+          x = torch.tensor([[1.0, 2.0, 9.0], [4.0, 5.0, 6.0]])
+        solution: |
+          total = x.sum()
+          col_sums = x.sum(dim=0)
+          row_means = x.mean(dim=1, keepdim=True)
+          vals, idx = x.max(dim=1)
+          best_row = x.argmax(dim=0)
+        check: |
+          assert torch.is_tensor(total) and total.item() == 27.0, f"total = {total!r}"
+          assert torch.equal(col_sums, torch.tensor([5.0, 7.0, 15.0])), f"col_sums = {col_sums}"
+          assert row_means.shape == (2, 1) and row_means.flatten().tolist() == [4.0, 5.0], f"row_means = {row_means}"
+          assert vals.tolist() == [9.0, 6.0] and idx.tolist() == [2, 2], f"vals = {vals}, idx = {idx}"
+          assert best_row.tolist() == [1, 1, 0], f"best_row = {best_row}"
+      - id: b
+        prompt: Compute `acc`, the accuracy (a float tensor) of the predictions `logits.argmax(...)` against labels `y`.
+        setup: |
+          import torch
+          logits = torch.tensor([[2.0, 1.0], [0.1, 0.3], [5.0, 4.0], [0.0, 1.0]])
+          y = torch.tensor([0, 1, 1, 1])
+        solution: |
+          acc = (logits.argmax(dim=1) == y).float().mean()
+        check: |
+          assert torch.is_tensor(acc) and abs(acc.item() - 0.75) < 1e-6, f"acc = {acc}"
+
+  - id: tensor-ops.broadcast
+    name: broadcasting rules, keepdim, unsqueeze for outer ops
+    teach: |
+      Shapes align from the **right**; each dim must be equal, 1, or missing.
+
+      ```python
+      # (N, D) - (1, D) -> (N, D): subtract each column's mean
+      x - x.mean(dim=0, keepdim=True)
+      # (N, 1) * (1, M) -> (N, M): outer product
+      a.unsqueeze(1) * b.unsqueeze(0)
+      ```
+      Pitfall: a row reduction without `keepdim` gives `(N,)`, which aligns with D, not N.
+    cards:
+      - id: a
+        prompt: Center each column of `x` (subtract its column mean) into `xc`. Then compute the outer product `o[i, j] = a[i] * b[j]` by broadcasting (no loops, no `torch.outer`).
+        setup: |
+          import torch
+          x = torch.tensor([[1.0, 10.0], [3.0, 20.0]])
+          a = torch.tensor([1.0, 2.0, 3.0])
+          b = torch.tensor([10.0, 20.0])
+        solution: |
+          xc = x - x.mean(dim=0, keepdim=True)
+          o = a.unsqueeze(1) * b.unsqueeze(0)
+        check: |
+          assert torch.allclose(xc, torch.tensor([[-1.0, -5.0], [1.0, 5.0]])), f"xc = {xc}"
+          assert torch.equal(o, torch.tensor([[10.0, 20.0], [20.0, 40.0], [30.0, 60.0]])), f"o = {o}"
+      - id: d
+        prompt: For points `p` `(N, D)` and `q` `(M, D)`, compute `d2[i, j]`, the squared distance between `p[i]` and `q[j]` (shape `(N, M)`), by broadcasting to `(N, M, D)`.
+        setup: |
+          import torch
+          p = torch.tensor([[0.0, 0.0], [1.0, 1.0]])
+          q = torch.tensor([[3.0, 4.0], [1.0, 0.0], [0.0, 0.0]])
+        solution: |
+          d2 = ((p.unsqueeze(1) - q.unsqueeze(0)) ** 2).sum(dim=-1)
+        check: |
+          assert d2.shape == (2, 3), f"d2.shape = {tuple(d2.shape)}"
+          assert torch.allclose(d2, torch.tensor([[25.0, 1.0, 0.0], [13.0, 1.0, 2.0]])), f"d2 = {d2}"
+
+  - id: tensor-ops.matmul
+    name: "@ / matmul (batched), bmm, * vs @, einsum"
+    teach: |
+      ```python
+      # A @ B (torch.matmul) -> matrix product, batched over any leading dims
+      (torch.ones(2, 3) @ torch.ones(3, 4)).shape                # (2, 4)
+      # torch.bmm(a, b) -> strictly 3-D: (B, N, K) @ (B, K, M)
+      torch.bmm(torch.ones(5, 2, 3), torch.ones(5, 3, 4)).shape  # (5, 2, 4)
+      # A * B -> ELEMENTWISE product (broadcasts silently, never a matmul)
+      torch.tensor([1., 2.]) * torch.tensor([3., 4.])            # [3., 8.]
+      # torch.einsum(spec, *tensors) -> letters name dims; letters absent from the output are summed
+      torch.einsum("ik,kj->ij", A, B)                            # same as A @ B
+      ```
+      Pitfall: on batched tensors transpose with `.transpose(-2, -1)`, not `.T`.
+    cards:
+      - id: a
+        prompt: |
+          Set: `C` = matrix product of `A` and `B` with `@` · `E` = elementwise product of `A` with itself ·
+          `C2` = the same matrix product with `torch.einsum` · `S` = `Q @ K^T` for the batched `Q, K` `(B, T, D)` ·
+          `O` = `P` `(B, T, T)` times `V` `(B, T, D)` with `torch.bmm`.
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          A = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+          B = torch.tensor([[0.0, 1.0], [1.0, 0.0]])
+          Q, K, V = torch.randn(3, 2, 4, 3).unbind(0)
+          P = torch.softmax(torch.randn(2, 4, 4), dim=-1)
+        solution: |
+          C = A @ B
+          E = A * A
+          C2 = torch.einsum("ik,kj->ij", A, B)
+          S = Q @ K.transpose(-2, -1)
+          O = torch.bmm(P, V)
+        check: |
+          assert torch.equal(C, torch.tensor([[2.0, 1.0], [4.0, 3.0]])), f"C = {C}"
+          assert torch.equal(E, torch.tensor([[1.0, 4.0], [9.0, 16.0]])), f"E = {E}"
+          assert torch.equal(C2, C), f"C2 = {C2}"
+          assert S.shape == (2, 4, 4) and torch.allclose(S[1, 2, 3], (Q[1, 2] * K[1, 3]).sum()), f"S.shape = {tuple(S.shape)} (use K.transpose(-2, -1))"
+          assert O.shape == (2, 4, 3) and torch.allclose(O, P @ V, atol=1e-6), f"O.shape = {tuple(O.shape)}"
+      - id: c
+        prompt: Write the batched attention scores `q k^T` with `torch.einsum` into `scores` (q, k have shape `(B, T, D)`; output `(B, T, T)`).
+        setup: |
+          import torch
+          torch.manual_seed(1)
+          q = torch.randn(2, 4, 3)
+          k = torch.randn(2, 4, 3)
+        solution: |
+          scores = torch.einsum("bid,bjd->bij", q, k)
+        check: |
+          assert scores.shape == (2, 4, 4), f"scores.shape = {tuple(scores.shape)}"
+          assert torch.allclose(scores, torch.bmm(q, k.transpose(1, 2)), atol=1e-6), "scores differ from q @ k^T"
+
+  - id: tensor-ops.where-clamp
+    name: torch.where, clamp, masked_fill
+    teach: |
+      ```python
+      x = torch.tensor([-2., 0.5, 3.])
+      # torch.where(cond, a, b) -> a where cond is True else b (tensors or scalars)
+      torch.where(x > 0, x, 0.0)           # [0., 0.5, 3.]  (ReLU)
+      # x.clamp(min=..., max=...) -> clipped into [min, max]; either bound optional
+      x.clamp(min=0, max=1)                # [0., 0.5, 1.]
+      # x.masked_fill(mask, value) -> value where mask is True
+      x.masked_fill(x < 0, float("-inf"))  # [-inf, 0.5, 3.]
+      ```
+    cards:
+      - id: a
+        prompt: "From `x`, set: `r` = ReLU with `torch.where` · `c` = `x` clipped to `[0, 1]` · `m` = `x` with `-inf` wherever it is negative, with `masked_fill`."
+        setup: |
+          import torch
+          x = torch.tensor([-1.0, 0.5, -0.2, 3.0])
+        solution: |
+          r = torch.where(x > 0, x, 0.0)
+          c = x.clamp(min=0, max=1)
+          m = x.masked_fill(x < 0, float("-inf"))
+        check: |
+          assert torch.equal(r, torch.tensor([0.0, 0.5, 0.0, 3.0])), f"r = {r}"
+          assert torch.equal(c, torch.tensor([0.0, 0.5, 0.0, 1.0])), f"c = {c}"
+          inf = float("-inf")
+          assert torch.equal(m, torch.tensor([inf, 0.5, inf, 3.0])), f"m = {m}"
+      - id: c
+        prompt: Apply a causal mask. Set `masked` to `scores` with `-inf` wherever the lower-triangular `mask` is 0.
+        setup: |
+          import torch
+          scores = torch.ones(3, 3)
+          mask = torch.tril(torch.ones(3, 3))
+        solution: |
+          masked = scores.masked_fill(mask == 0, float("-inf"))
+        check: |
+          inf = float("-inf")
+          exp = torch.tensor([[1.0, inf, inf], [1.0, 1.0, inf], [1.0, 1.0, 1.0]])
+          assert torch.equal(masked, exp), f"masked = {masked}"

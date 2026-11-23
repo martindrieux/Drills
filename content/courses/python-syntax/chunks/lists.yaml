@@ -1,0 +1,405 @@
+id: lists
+title: "Lists: the workhorse"
+intro: |
+  Almost every LeetCode input is a list. This page is the list syntax you type without thinking:
+  making, indexing, slicing, changing, searching and unpacking.
+problems:
+  - Two Sum
+  - Best Time to Buy and Sell Stock
+  - Contains Duplicate
+  - Product of Array Except Self
+  - Rotate Array
+  - Move Zeroes
+atoms: [py-lists]
+skills:
+  - id: lists.create
+    name: make a list, len
+    teach: |
+      ```python
+      # [x] * n -> list: n copies of x
+      [0] * 3            # [0, 0, 0]
+      # list(range(n)) -> list: 0, 1, ..., n-1
+      list(range(4))     # [0, 1, 2, 3]
+      # len(a) -> int: number of items
+      len([3, 1, 2])     # 3
+      ```
+      Pitfall: `[[0] * m] * n` repeats the **same** row n times; for a grid use `[[0] * m for _ in range(n)]`.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Set** `n`: `int`, the number of items in `nums`.
+          - **Set** `zeros`: `list[int]`, `n` zeros.
+          - **Set** `idx`: `list[int]`, `[0, 1, ..., n - 1]`, built with `range`.
+        setup: |
+          nums = [7, 2, 9, 4, 6]
+        solution: |
+          n = len(nums)
+          zeros = [0] * n
+          idx = list(range(n))
+        check: |
+          assert n == 5, f"n = {n!r}"
+          assert zeros == [0, 0, 0, 0, 0], f"zeros = {zeros!r}"
+          assert idx == [0, 1, 2, 3, 4], f"idx = {idx!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Set** `idx`: `list[int]`, every valid index of `nums` in increasing order, `[0, 1, ..., len(nums) - 1]`, built with `range`.
+        setup: |
+          nums = [7, 2, 9, 4]
+        solution: |
+          idx = list(range(len(nums)))
+        check: |
+          assert idx == [0, 1, 2, 3], f"idx = {idx!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Set** `res`: `list[bool]`, `len(nums)` copies of `False`.
+        setup: |
+          nums = [7, 2, 9]
+        solution: |
+          res = [False] * len(nums)
+        check: |
+          assert res == [False, False, False], f"res = {res!r}"
+      - id: d
+        prompt: |
+          - **Given**: `n`, `m` (`int`s).
+          - **Set** `grid`: `list[list[int]]`, `n` rows, each a list of `m` zeros.
+          - The rows must be **independent** lists (checked: setting `grid[0][0]` must not change other rows).
+        setup: |
+          n, m = 3, 2
+        solution: |
+          grid = [[0] * m for _ in range(n)]
+        check: |
+          assert grid == [[0, 0], [0, 0], [0, 0]], f"grid = {grid!r}"
+          grid[0][0] = 1
+          assert grid[1][0] == 0, f"rows are shared: after grid[0][0] = 1, grid = {grid!r}"
+
+  - id: lists.index
+    name: indexing, negative indices
+    teach: |
+      ```python
+      a = [10, 20, 30]
+      # a[i] -> item at index i (from 0); negative i counts from the end
+      a[0], a[-1]    # (10, 30)
+      ```
+      Pitfall: `a[3]` raises IndexError: valid indices are `0..len(a)-1`.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums`, a non-empty `list[int]`.
+          - **Set** `first`: `int`, the first item.
+          - **Set** `res`: `int`, the last item, without using `len`.
+        setup: |
+          nums = [4, 8, 15, 16]
+        solution: |
+          first = nums[0]
+          res = nums[-1]
+        check: |
+          assert first == 4, f"first = {first!r}"
+          assert res == 16, f"res = {res!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums`, a `list[int]` with at least 2 items.
+          - **Set** `res`: `int`, the second-to-last item.
+        setup: |
+          nums = [4, 8, 15, 16]
+        solution: |
+          res = nums[-2]
+        check: |
+          assert res == 15, f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `i` (`int`, `>= 0`).
+          - **Set** `res`: `nums[i]` if `i` is a valid index, otherwise `None`.
+          - **Checked on**: an out-of-range `i` (`i == len(nums)`).
+        setup: |
+          nums = [3, 5, 7]
+          i = 3
+        solution: |
+          res = nums[i] if i < len(nums) else None
+        check: |
+          assert res is None, f"res = {res!r} (index {i} is out of range for a list of length {len(nums)})"
+
+  - id: lists.slice
+    name: slicing a[i:j]
+    teach: |
+      ```python
+      a = [0, 1, 2, 3, 4]
+      # a[i:j:step] -> NEW list from i up to (not incl.) j; omitted i / j = the edge; step -1 = backwards
+      a[1:3]    # [1, 2]
+      a[:2]     # [0, 1]
+      a[::-1]   # [4, 3, 2, 1, 0]
+      ```
+      Pitfall: slices never raise: `a[:100]` on a short list just gives the whole list.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `i`, `j`, `k` (`int`s, 0-indexed).
+          - **Set** `mid`: `list[int]`, the items from index `i` (inclusive) to `j` (exclusive).
+          - **Set** `res`: `list[int]`, the first `k` items.
+          - **Set** `rev`: `list[int]`, a reversed copy of `nums`.
+          - `nums` must stay unchanged (checked).
+        setup: |
+          nums = [5, 6, 7, 8]
+          i, j = 1, 3
+          k = 2
+        solution: |
+          mid = nums[i:j]
+          res = nums[:k]
+          rev = nums[::-1]
+        check: |
+          assert mid == [6, 7], f"mid = {mid!r}"
+          assert res == [5, 6], f"res = {res!r}"
+          assert rev == [8, 7, 6, 5], f"rev = {rev!r}"
+          assert nums == [5, 6, 7, 8], f"nums changed: {nums!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Set** `res`: `list[int]`, a reversed copy of `nums`.
+          - `nums` must stay unchanged (checked).
+        setup: |
+          nums = [1, 2, 3]
+        solution: |
+          res = nums[::-1]
+        check: |
+          assert res == [3, 2, 1], f"res = {res!r}"
+          assert nums == [1, 2, 3], f"nums changed: {nums!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums`, a `list[int]` with at least 2 items.
+          - **Set** `res`: `list[int]`, `nums` without its first and last items, same order.
+        setup: |
+          nums = [9, 1, 2, 3, 9]
+        solution: |
+          res = nums[1:-1]
+        check: |
+          assert res == [1, 2, 3], f"res = {res!r}"
+      - id: d
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `k` (`int`, `>= 1`).
+          - **Set** `last`: `list[int]`, the last `k` items, in their original order.
+          - **Set** `evens`: `list[int]`, the items at indices 0, 2, 4, … (every other item, starting at index 0).
+        setup: |
+          nums = [0, 1, 2, 3, 4, 5]
+          k = 2
+        solution: |
+          last = nums[-k:]
+          evens = nums[::2]
+        check: |
+          assert last == [4, 5], f"last = {last!r}"
+          assert evens == [0, 2, 4], f"evens = {evens!r}"
+
+  - id: lists.mutate
+    name: append, pop, insert, extend
+    teach: |
+      ```python
+      a = [1, 2]
+      # a.append(x): add x at the end, O(1)
+      a.append(3)        # a = [1, 2, 3]
+      # a.pop(i=-1) -> item: remove and return a[i] (default last); O(1) at the end, O(n) elsewhere
+      a.pop()            # 3, a = [1, 2]
+      # a.insert(i, x): put x before index i, O(n)
+      a.insert(0, 9)     # a = [9, 1, 2]
+      # a.extend(b): add every item of b at the end
+      a.extend([5, 6])   # a = [9, 1, 2, 5, 6]
+      # del a[i]: remove a[i], returns nothing
+      del a[0]           # a = [1, 2, 5, 6]
+      # a.remove(x): remove the first x (ValueError if absent)
+      a.remove(5)        # a = [1, 2, 6]
+      ```
+      Pitfall: `a.append(b)` adds the list `b` as **one** item.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `x` (`int`), `more` (`list[int]`).
+          - **Change** `nums` in place, in this order:
+            1. append `x`;
+            2. pop the last item into `res` (`int`);
+            3. insert `0` at the front;
+            4. add all items of `more` at the end, in one call;
+            5. delete the item at index `1`;
+            6. remove the first `7`.
+          - **Checked**: `res` and the final `nums`.
+        setup: |
+          nums = [4, 7]
+          x = 5
+          more = [7, 8]
+        solution: |
+          nums.append(x)
+          res = nums.pop()
+          nums.insert(0, 0)
+          nums.extend(more)
+          del nums[1]
+          nums.remove(7)
+        check: |
+          assert res == 5, f"res = {res!r}"
+          assert nums == [0, 7, 8], f"nums = {nums!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums` (`list[int]`, non-empty), `x` (`int`).
+          - **Set** `res`: `int`, the **first** item, removed from `nums` in one call.
+          - **Then** insert `x` at the front of `nums` (in place).
+        setup: |
+          nums = [7, 8, 9]
+          x = 0
+        solution: |
+          res = nums.pop(0)
+          nums.insert(0, x)
+        check: |
+          assert res == 7, f"res = {res!r}"
+          assert nums == [0, 8, 9], f"nums = {nums!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums`, `more` (`list[int]`s).
+          - **Change** `nums` in place: add all items of `more` at its end, in order, in one call.
+        setup: |
+          nums = [1, 2]
+          more = [3, 4]
+        solution: |
+          nums.extend(more)
+        check: |
+          assert nums == [1, 2, 3, 4], f"nums = {nums!r}"
+      - id: d
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `i` (a valid index), `x` (an `int` value in `nums`).
+          - **Change** `nums` in place, in this order: delete the item at index `i`, then remove the first occurrence of the value `x`.
+        setup: |
+          nums = [5, 7, 3, 7]
+          i = 0
+          x = 7
+        solution: |
+          del nums[i]
+          nums.remove(x)
+        check: |
+          assert nums == [3, 7], f"nums = {nums!r}"
+
+  - id: lists.search
+    name: in, index, count, min/max/sum
+    teach: |
+      ```python
+      a = [3, 1, 3]
+      # x in a -> bool, O(n)
+      3 in a                    # True
+      # a.index(x) -> int: first position of x (ValueError if absent)
+      a.index(3)                # 0
+      # a.count(x) -> int: how many x
+      a.count(3)                # 2
+      # min(a) / max(a) / sum(a): smallest / largest / total
+      min(a), max(a), sum(a)    # (1, 3, 7)
+      ```
+      Pitfall: `x in a` scans the whole list; inside a loop that makes O(n²).
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums` (non-empty `list[int]`), `target` (`int`, present in `nums`).
+          - **Set** `res`: `bool`, whether `target` is in `nums` (one expression).
+          - **Set** `i`: `int`, the index of the first `target`.
+          - **Set** `n`: `int`, how many times `target` occurs.
+          - **Set** `lo`, `hi`, `total`: `int`s, the smallest item, the largest item and the sum.
+        setup: |
+          nums = [4, 9, 2, 9]
+          target = 9
+        solution: |
+          res = target in nums
+          i = nums.index(target)
+          n = nums.count(target)
+          lo, hi, total = min(nums), max(nums), sum(nums)
+        check: |
+          assert res is True, f"res = {res!r}"
+          assert i == 1, f"i = {i!r}"
+          assert n == 2, f"n = {n!r}"
+          assert (lo, hi, total) == (2, 9, 24), f"lo, hi, total = {lo!r}, {hi!r}, {total!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums`, a `list[int]` that contains `7`.
+          - **Set** `i`: `int`, the index of the first `7`.
+          - **Set** `n`: `int`, how many `7`s there are.
+        setup: |
+          nums = [1, 7, 3, 7, 7]
+        solution: |
+          i = nums.index(7)
+          n = nums.count(7)
+        check: |
+          assert i == 1, f"i = {i!r}"
+          assert n == 3, f"n = {n!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums`, a non-empty `list[int]`.
+          - **Set** `lo`, `hi`, `total`: `int`s, the smallest item, the largest item and the sum.
+        setup: |
+          nums = [5, 2, 8, 1]
+        solution: |
+          lo, hi, total = min(nums), max(nums), sum(nums)
+        check: |
+          assert (lo, hi, total) == (1, 8, 16), f"lo, hi, total = {lo!r}, {hi!r}, {total!r}"
+      - id: d
+        prompt: |
+          - **Given**: `nums`, a non-empty `list[int]`.
+          - **Set** `i`: `int`, the index of the largest value (its first occurrence), in one line.
+        setup: |
+          nums = [5, 2, 8, 1]
+        solution: |
+          i = nums.index(max(nums))
+        check: |
+          assert i == 2, f"i = {i!r}"
+
+  - id: lists.unpack-swap
+    name: unpack and swap
+    teach: |
+      ```python
+      # a, b = b, a: the right side is built first, so no temp variable is needed
+      a, b = 1, 2
+      a, b = b, a                  # a = 2, b = 1
+      # first, *rest = seq: the starred name gets the leftover items as a list
+      first, *rest = [1, 2, 3]     # first = 1, rest = [2, 3]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `a`, `b` (`int`s), `nums` (non-empty `list[int]`).
+          - **Swap** the values of `a` and `b`, in one line.
+          - **Set** `head` (the first item, `int`) and `tail` (`list[int]`, the remaining items in order), together in one line.
+        setup: |
+          a, b = 1, 2
+          nums = [3, 1, 4]
+        solution: |
+          a, b = b, a
+          head, *tail = nums
+        check: |
+          assert (a, b) == (2, 1), f"a, b = {a!r}, {b!r}"
+          assert head == 3, f"head = {head!r}"
+          assert tail == [1, 4], f"tail = {tail!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `i`, `j` (valid indices).
+          - **Change** `nums` in place: swap `nums[i]` and `nums[j]`, in one line.
+        setup: |
+          nums = [5, 6, 7, 8]
+          i, j = 0, 3
+        solution: |
+          nums[i], nums[j] = nums[j], nums[i]
+        check: |
+          assert nums == [8, 6, 7, 5], f"nums = {nums!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums`, a non-empty `list[int]`.
+          - **Set** `head` (the first item, `int`) and `tail` (`list[int]`, the remaining items in order), together in one line.
+        setup: |
+          nums = [3, 1, 4, 1]
+        solution: |
+          head, *tail = nums
+        check: |
+          assert head == 3, f"head = {head!r}"
+          assert tail == [1, 4, 1], f"tail = {tail!r}"
+      - id: d
+        prompt: |
+          - **Given**: `nums`, a non-empty `list[int]`.
+          - **Set** `last` (the last item, `int`) and `init` (`list[int]`, all the items before it, in order), together in one line.
+        setup: |
+          nums = [3, 1, 4, 1]
+        solution: |
+          *init, last = nums
+        check: |
+          assert last == 1, f"last = {last!r}"
+          assert init == [3, 1, 4], f"init = {init!r}"

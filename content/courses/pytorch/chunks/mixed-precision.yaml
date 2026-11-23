@@ -1,0 +1,131 @@
+id: mixed-precision
+title: Mixed precision (AMP)
+intro: |
+  "Add mixed precision to this training loop" has a standard answer: `torch.autocast` around the
+  forward pass, plus a `GradScaler` so float16 gradients don't underflow. Cards run on CPU with
+  bfloat16; the lesson comments give the CUDA float16 version.
+problems:
+  - Add mixed precision to this training loop
+  - Gradient clipping with AMP
+  - Why does float16 training need loss scaling?
+atoms: []
+skills:
+  - id: mixed-precision.autocast
+    name: torch.autocast for the forward pass
+    teach: |
+      ```python
+      # torch.autocast(device_type, dtype) -> context: matmuls / convs output dtype; params stay float32
+      with torch.autocast(device_type="cpu", dtype=torch.bfloat16):   # GPU: "cuda", torch.float16
+          logits = model(x)                   # logits.dtype == torch.bfloat16
+          loss = F.cross_entropy(logits, y)   # losses / reductions autocast to float32
+      loss.backward()                         # backward OUTSIDE the context
+      # enabled=False -> a nested region that runs in full precision
+      with torch.autocast(device_type="cpu", enabled=False):
+          p = logits.float().softmax(-1)      # float32
+      ```
+      Pitfall: don't `model.half()` for training; autocast keeps float32 master weights.
+    cards:
+      - id: a
+        prompt: |
+          Under CPU bfloat16 autocast, set `out = model(x)` and `loss = F.cross_entropy(out, y)`, then call `loss.backward()`
+          outside the context. Finally set `p = out.float().softmax(-1)` inside a region with autocast **disabled**.
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          model = nn.Linear(4, 3)
+          x, y = torch.randn(2, 4), torch.tensor([0, 2])
+        solution: |
+          with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+              out = model(x)
+              loss = F.cross_entropy(out, y)
+          loss.backward()
+          with torch.autocast(device_type="cpu", enabled=False):
+              p = out.float().softmax(-1)
+        check: |
+          assert out.dtype == torch.bfloat16, f"out.dtype = {out.dtype}"
+          assert model.weight.dtype == torch.float32, f"weights became {model.weight.dtype}"
+          assert loss.dtype == torch.float32, f"loss.dtype = {loss.dtype} (cross_entropy autocasts to float32)"
+          assert model.weight.grad is not None and model.weight.grad.dtype == torch.float32, "grads should exist and be float32"
+          assert p.dtype == torch.float32 and torch.allclose(p.sum(-1), torch.ones(2)), f"p.dtype = {p.dtype}"
+      - id: c
+        prompt: |
+          Attention in mixed precision. Under CPU bfloat16 autocast set `scores = q @ k.T`. Then, in a nested region with
+          autocast **disabled**, set `attn = scores.float().softmax(-1)` and `out = attn @ v`, both in float32.
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          q, k, v = torch.randn(3, 4), torch.randn(3, 4), torch.randn(3, 4)
+        solution: |
+          with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+              scores = q @ k.T
+              with torch.autocast(device_type="cpu", enabled=False):
+                  attn = scores.float().softmax(-1)
+                  out = attn @ v
+        check: |
+          assert scores.dtype == torch.bfloat16, f"scores.dtype = {scores.dtype} (compute it under autocast)"
+          assert attn.dtype == torch.float32 and torch.allclose(attn.sum(-1), torch.ones(3)), f"attn.dtype = {attn.dtype}"
+          assert out.dtype == torch.float32, f"out.dtype = {out.dtype} (autocast should be disabled here)"
+          assert torch.allclose(out, attn @ v), "out should be attn @ v"
+
+  - id: mixed-precision.grad-scaler
+    name: GradScaler, unscale_ and clipping
+    teach: |
+      ```python
+      # torch.amp.GradScaler("cuda") -> scales the loss so float16 grads don't underflow (bfloat16 needs none)
+      scaler = torch.amp.GradScaler("cuda")
+      scaler.scale(loss).backward()              # grads are multiplied by the scale
+      scaler.unscale_(opt)                       # only if you clip: grads are true values now
+      torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+      scaler.step(opt)                           # unscales if needed; SKIPS the step on inf/nan grads
+      scaler.update()                            # halves the scale after an overflow, slowly grows it otherwise
+      # scaler.get_scale() -> float: the current scale
+      scaler.get_scale()                         # 65536.0 (2**16) at start, 32768.0 after one overflow
+      ```
+      Pitfall: clipping before `unscale_` clips the **scaled** grads. Never call `opt.step()` directly.
+    cards:
+      - id: a
+        prompt: |
+          One scaled step with `scaler` and `opt`, **clipping** the grads to max-norm `1.0`: backward the scaled `loss`,
+          unscale, clip, step, update. Then set `scale = scaler.get_scale()`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          model = nn.Linear(3, 1)
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          scaler = torch.amp.GradScaler("cpu")
+          x, y = 10 * torch.randn(8, 3), 10 * torch.randn(8, 1)
+          loss = ((model(x) - y) ** 2).mean()
+          w0 = model.weight.detach().clone()
+        solution: |
+          scaler.scale(loss).backward()
+          scaler.unscale_(opt)
+          torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+          scaler.step(opt)
+          scaler.update()
+          scale = scaler.get_scale()
+        check: |
+          norm = torch.cat([p.grad.flatten() for p in model.parameters()]).norm().item()
+          assert abs(norm - 1.0) < 1e-3, f"grad norm after step = {norm:.6f}, expected 1.0 (unscale_ before clipping)"
+          assert torch.allclose(model.weight, w0 - 0.1 * model.weight.grad, atol=1e-6), "the step was not taken (scaler.step(opt))"
+          assert scale == 2.0 ** 16, f"scale = {scale!r}"
+      - id: c
+        prompt: The batch contains an `inf`. Do the scaled backward, step and update as usual, then set `new_scale = scaler.get_scale()`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Linear(2, 1)
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          scaler = torch.amp.GradScaler("cpu", init_scale=2.0 ** 16)
+          x = torch.tensor([[float("inf"), 1.0]])
+          loss = model(x).sum()
+          w0 = model.weight.detach().clone()
+        solution: |
+          scaler.scale(loss).backward()
+          scaler.step(opt)
+          scaler.update()
+          new_scale = scaler.get_scale()
+        check: |
+          assert torch.equal(model.weight.detach(), w0), "the step should have been skipped"
+          assert new_scale == 2.0 ** 15, f"new_scale = {new_scale}, expected the scale halved"

@@ -1,0 +1,504 @@
+id: stacks
+title: Stacks
+intro: |
+  A stack is just a Python list used from the end: last in, first out. It handles matching brackets,
+  "next greater element" (monotonic stack), and expression evaluation, all in O(n).
+problems:
+  - Valid Parentheses
+  - Min Stack
+  - Evaluate Reverse Polish Notation
+  - Daily Temperatures
+  - Next Greater Element I
+  - Largest Rectangle in Histogram
+atoms: [py-stack, py-lists]
+skills:
+  - id: stacks.ops
+    name: push / pop / peek / empty
+    teach: |
+      ```python
+      stack = [1]
+      # stack.append(x): push x on the end, O(1)
+      stack.append(3)     # [1, 3]
+      # stack[-1] -> the top, without removing it
+      stack[-1]           # 3
+      # stack.pop() -> removes and returns the top, O(1)
+      stack.pop()         # 3, stack == [1]
+      # an empty list is falsy
+      not []              # True
+      ```
+      Pitfall: `pop()` or `[-1]` on an empty list raises `IndexError`: check `if stack` first.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `stack` and `other` empty lists.
+
+          - **Modify** `stack`: push `1`, then `2`.
+          - **Set** `top`: the top item, without removing it.
+          - **Set** `res`: the top item, popped off `stack`.
+          - **Set** `empty`: bool, whether `other` is empty, without `len`.
+        setup: |
+          stack = []
+          other = []
+        solution: |
+          stack.append(1)
+          stack.append(2)
+          top = stack[-1]
+          res = stack.pop()
+          empty = not other
+        check: |
+          assert top == 2, f"top = {top!r}"
+          assert res == 2, f"res = {res!r}"
+          assert stack == [1], f"stack = {stack!r}"
+          assert empty is True, f"empty = {empty!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `s1` and `s2` lists used as stacks (one may be empty).
+
+          - **Set** `t1`: the top of `s1` without removing it, or `None` if `s1` is empty.
+          - **Set** `t2`: the top of `s2` without removing it, or `None` if `s2` is empty.
+        setup: |
+          s1 = [4, 8]
+          s2 = []
+        solution: |
+          t1 = s1[-1] if s1 else None
+          t2 = s2[-1] if s2 else None
+        check: |
+          assert t1 == 8, f"t1 = {t1!r}"
+          assert t2 is None, f"t2 = {t2!r}"
+          assert s1 == [4, 8], f"s1 changed: {s1!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `stack` a list; `out` an empty list.
+
+          - **Modify** `out`: pop items off `stack` one at a time (top first) and append each to `out`, until `stack` is empty.
+        setup: |
+          stack = [1, 2, 3]
+          out = []
+        solution: |
+          while stack:
+              out.append(stack.pop())
+        check: |
+          assert out == [3, 2, 1], f"out = {out!r}"
+          assert stack == [], f"stack = {stack!r}"
+
+  - id: stacks.matching
+    name: matching brackets
+    teach: |
+      ```python
+      pairs = {")": "(", "]": "[", "}": "{"}               # closer -> its opener
+      stack = []
+      for ch in s:
+          if ch in pairs:                                   # closer: the popped top must be its opener
+              if not stack or stack.pop() != pairs[ch]:
+                  return False
+          else:
+              stack.append(ch)                              # opener
+      return not stack                                      # leftover openers = invalid
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Write** `valid(s)` using a stack.
+
+          - **Given**: `s` a string made only of the characters `()[]{}` (may be empty).
+          - **Returns**: bool, `True` if every bracket is closed by the same type in the right order, else `False`.
+          - **Checked on**: empty string, nested and side-by-side pairs, a wrong type `(]`, crossed pairs `([)]`, unclosed openers `((`, a closer on an empty stack `)`, plus random strings.
+        solution: |
+          def valid(s):
+              pairs = {")": "(", "]": "[", "}": "{"}
+              stack = []
+              for ch in s:
+                  if ch in pairs:
+                      if not stack or stack.pop() != pairs[ch]:
+                          return False
+                  else:
+                      stack.append(ch)
+              return not stack
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(s):  # remove matched pairs until nothing changes
+              prev = None
+              while prev != s:
+                  prev, s = s, s.replace("()", "").replace("[]", "").replace("{}", "")
+              return s == ""
+
+          def _nested(r, n):  # a random correctly nested string of n pairs
+              if n == 0:
+                  return ""
+              k = r.randint(0, n - 1)
+              o, c = r.choice(["()", "[]", "{}"])
+              return o + _nested(r, k) + c + _nested(r, n - 1 - k)
+
+          def _gen(r):
+              s = list(_nested(r, r.randint(0, 4)))
+              kind = r.randint(0, 3)
+              if kind == 1 and s:  # change one bracket
+                  s[r.randrange(len(s))] = r.choice("()[]{}")
+              elif kind == 2 and s:  # drop one bracket
+                  s.pop(r.randrange(len(s)))
+              elif kind == 3:  # fully random
+                  s = [r.choice("()[]{}") for _ in range(r.randint(0, 8))]
+              return ("".join(s),)
+
+          _edge = ["()[]{}", "{[()]}", "", "([)]", "((", ")", "(]", "(", "]", "){", "())(", "(([]){})", "([]", "[])", "{{}}}", ")("]
+          against(valid, _ref, [(s,) for s in _edge] + rand_cases(_gen, 300), same=lambda got, want: got is want)
+      - id: b
+        prompt: |
+          **Given** (see setup): `pairs` a dict closer → opener; `s` a string of brackets; `stack` an empty list; `res = True`.
+
+          - Loop over `s`: push openers onto `stack`. On a closer, if the stack is empty or the popped top is not its opener, **set** `res = False` and stop the loop.
+        setup: |
+          pairs = {")": "(", "]": "[", "}": "{"}
+          s = "([)]"
+          stack = []
+          res = True
+        solution: |
+          for ch in s:
+              if ch in pairs:
+                  if not stack or stack.pop() != pairs[ch]:
+                      res = False
+                      break
+              else:
+                  stack.append(ch)
+        check: |
+          assert res is False, f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Fix** the last line of `valid(s)` so that unclosed openers like `"(("` are invalid.
+
+          - **Given**: `pairs` (see setup) a dict closer → opener; `s` a string made only of `()[]{}` (may be empty).
+          - **Returns**: bool, `True` if every bracket is closed by the same type in the right order, else `False`.
+          - **Checked on**: empty string, nested and side-by-side pairs, a wrong type `(]`, crossed pairs `([)]`, unclosed openers `((`, a closer on an empty stack `)`, plus random strings.
+        setup: |
+          pairs = {")": "(", "]": "[", "}": "{"}
+        starter: |
+          def valid(s):
+              stack = []
+              for ch in s:
+                  if ch in pairs:
+                      if not stack or stack.pop() != pairs[ch]:
+                          return False
+                  else:
+                      stack.append(ch)
+              return True
+        solution: |
+          def valid(s):
+              stack = []
+              for ch in s:
+                  if ch in pairs:
+                      if not stack or stack.pop() != pairs[ch]:
+                          return False
+                  else:
+                      stack.append(ch)
+              return not stack
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(s):  # remove matched pairs until nothing changes
+              prev = None
+              while prev != s:
+                  prev, s = s, s.replace("()", "").replace("[]", "").replace("{}", "")
+              return s == ""
+
+          def _nested(r, n):  # a random correctly nested string of n pairs
+              if n == 0:
+                  return ""
+              k = r.randint(0, n - 1)
+              o, c = r.choice(["()", "[]", "{}"])
+              return o + _nested(r, k) + c + _nested(r, n - 1 - k)
+
+          def _gen(r):
+              s = list(_nested(r, r.randint(0, 4)))
+              kind = r.randint(0, 3)
+              if kind == 1 and s:  # change one bracket
+                  s[r.randrange(len(s))] = r.choice("()[]{}")
+              elif kind == 2 and s:  # drop one bracket
+                  s.pop(r.randrange(len(s)))
+              elif kind == 3:  # fully random
+                  s = [r.choice("()[]{}") for _ in range(r.randint(0, 8))]
+              return ("".join(s),)
+
+          _edge = ["()[]{}", "{[()]}", "", "([)]", "((", ")", "(]", "(", "]", "){", "())(", "(([]){})", "([]", "[])", "{{}}}", ")("]
+          against(valid, _ref, [(s,) for s in _edge] + rand_cases(_gen, 300), same=lambda got, want: got is want)
+
+  - id: stacks.monotonic
+    name: monotonic stack (next greater)
+    teach: |
+      ```python
+      nge, stack = {}, []                   # stack stays decreasing
+      for x in nums:
+          while stack and stack[-1] < x:    # x is the next greater of every item it pops
+              nge[stack.pop()] = x
+          stack.append(x)
+      # each item is pushed and popped once: O(n); leftovers have no greater element
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Write** `next_greater(nums)` with a decreasing stack.
+
+          - **Given**: `nums` a list of distinct ints (may be empty).
+          - **Returns**: dict mapping each value `x` to the first value to its right that is greater than `x`. Values with no greater value to their right are left out.
+          - **Checked on**: empty list, one item, increasing and decreasing lists, negatives, plus random lists.
+        solution: |
+          def next_greater(nums):
+              nge, stack = {}, []
+              for x in nums:
+                  while stack and stack[-1] < x:
+                      nge[stack.pop()] = x
+                  stack.append(x)
+              return nge
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(nums):
+              out = {}
+              for i, x in enumerate(nums):
+                  for y in nums[i + 1:]:
+                      if y > x:
+                          out[x] = y
+                          break
+              return out
+
+          def _gen(r):
+              return (r.sample(range(-10, 11), r.randint(0, 10)),)
+
+          _edge = [[2, 1, 3, 0, 4], [9, 5, 3, 6], [3, 2, 1], [], [1, 2, 3], [5], [-1, -3, -2], [1, 3, 2, 4], [4, 1, 2, 3]]
+          against(next_greater, _ref, [(a,) for a in _edge] + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          **Given** (see setup): `nums` a list of distinct ints; `nge` an empty dict; `stack` an empty list.
+
+          - **Modify** `nge`: map each value to the first greater value to its right (values with none are left out), keeping `stack` decreasing.
+        setup: |
+          nums = [2, 1, 3, 0, 4]
+          nge = {}
+          stack = []
+        solution: |
+          for x in nums:
+              while stack and stack[-1] < x:
+                  nge[stack.pop()] = x
+              stack.append(x)
+        check: |
+          assert nge == {2: 3, 1: 3, 3: 4, 0: 4}, f"nge = {nge!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `nums` a list of distinct ints; `nse` an empty dict; `stack` an empty list.
+
+          - **Modify** `nse`: map each value to the first **smaller** value to its right (values with none are left out), keeping `stack` **increasing**.
+        setup: |
+          nums = [4, 2, 5, 1]
+          nse = {}
+          stack = []
+        solution: |
+          for x in nums:
+              while stack and stack[-1] > x:
+                  nse[stack.pop()] = x
+              stack.append(x)
+        check: |
+          assert nse == {4: 2, 2: 1, 5: 1}, f"nse = {nse!r}"
+
+  - id: stacks.indices
+    name: store indices for distances
+    teach: |
+      ```python
+      for i, t in enumerate(temps):             # stack holds INDICES
+          while stack and temps[stack[-1]] < t: # value at the top index
+              j = stack.pop()
+              res[j] = i - j                    # distance between two indices
+          stack.append(i)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Write** `daily(temps)` with a stack of **indices**.
+
+          - **Given**: `temps` a list of ints (may be empty, repeats allowed).
+          - **Returns**: list of ints, same length: `res[j] = i - j` for the first day `i > j` with `temps[i] > temps[j]` (strictly warmer), or `0` if there is none.
+          - **Checked on**: empty list, one day, increasing and decreasing lists, equal temperatures (not warmer), plus random lists.
+        solution: |
+          def daily(temps):
+              res = [0] * len(temps)
+              stack = []
+              for i, t in enumerate(temps):
+                  while stack and temps[stack[-1]] < t:
+                      j = stack.pop()
+                      res[j] = i - j
+                  stack.append(i)
+              return res
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(temps):
+              return [next((i - j for i in range(j + 1, len(temps)) if temps[i] > t), 0) for j, t in enumerate(temps)]
+
+          def _gen(r):
+              return ([r.randint(30, 36) for _ in range(r.randint(0, 10))],)
+
+          _edge = [[73, 74, 75, 71, 69, 72, 76, 73], [30, 40, 50], [50, 40, 30], [30, 30, 31], [], [55], [30, 30, 30],
+                   [34, 31, 33, 32, 35]]
+          against(daily, _ref, [(a,) for a in _edge] + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          **Given** (see setup): `temps` a list of ints; `res` a list of zeros of the same length; `stack` an empty list.
+
+          - **Modify** `res`: `res[j]` = how many days after day `j` a strictly warmer temperature comes (keep `0` if never), using `stack` as a stack of indices.
+        setup: |
+          temps = [73, 74, 75, 71, 69, 72, 76, 73]
+          res = [0] * len(temps)
+          stack = []
+        solution: |
+          for i, t in enumerate(temps):
+              while stack and temps[stack[-1]] < t:
+                  j = stack.pop()
+                  res[j] = i - j
+              stack.append(i)
+        check: |
+          assert res == [1, 1, 4, 2, 1, 1, 0, 0], f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `nums` a list of ints; `res` a list of `-1`s of the same length; `stack` an empty list.
+
+          - **Modify** `res`: `res[j]` = the first value to the right of index `j` that is greater than `nums[j]` (keep `-1` if none), using `stack` as a stack of indices.
+        setup: |
+          nums = [1, 3, 2, 4]
+          res = [-1] * len(nums)
+          stack = []
+        solution: |
+          for i, x in enumerate(nums):
+              while stack and nums[stack[-1]] < x:
+                  res[stack.pop()] = x
+              stack.append(i)
+        check: |
+          assert res == [3, 4, 4, -1], f"res = {res!r}"
+
+  - id: stacks.min-stack
+    name: min stack with (val, min) pairs
+    teach: |
+      ```python
+      # push (val, min_so_far) pairs: the top always knows the current min
+      cur = min(x, stack[-1][1]) if stack else x
+      stack.append((x, cur))
+      stack[-1][1]     # current minimum in O(1); after a pop() it rolls back by itself
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `nums` a list of ints; `stack` an empty list.
+
+          - **Modify** `stack`: push each value `x` of `nums` as a tuple `(x, min_so_far)`, where `min_so_far` is the smallest value pushed so far.
+          - **Set** `res`: the current minimum, read in O(1) from the top.
+          - Then pop once, and **set** `after`: the new current minimum.
+        setup: |
+          nums = [5, 3, 7, 2]
+          stack = []
+        solution: |
+          for x in nums:
+              cur = min(x, stack[-1][1]) if stack else x
+              stack.append((x, cur))
+          res = stack[-1][1]
+          stack.pop()
+          after = stack[-1][1]
+        check: |
+          assert stack == [(5, 5), (3, 3), (7, 3)], f"stack = {stack!r}"
+          assert res == 2, f"res = {res!r}"
+          assert after == 3, f"after = {after!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `nums` a list of ints; `stack` an empty list.
+
+          - **Modify** `stack`: push each value `x` of `nums` as a tuple `(x, min_so_far)`, where `min_so_far` is the smallest value pushed so far.
+        setup: |
+          nums = [5, 3, 7]
+          stack = []
+        solution: |
+          for x in nums:
+              cur = min(x, stack[-1][1]) if stack else x
+              stack.append((x, cur))
+        check: |
+          assert stack == [(5, 5), (3, 3), (7, 3)], f"stack = {stack!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `stack` a list of `(val, min_so_far)` tuples.
+
+          - **Modify** `stack`: pop twice.
+          - **Set** `res`: the current minimum, read from the new top.
+        setup: |
+          stack = [(5, 5), (3, 3), (7, 3)]
+        solution: |
+          stack.pop()
+          stack.pop()
+          res = stack[-1][1]
+        check: |
+          assert res == 5, f"res = {res!r}"
+
+  - id: stacks.eval
+    name: evaluate RPN
+    teach: |
+      ```python
+      # number token: push int(tok)  ("-13" is a number, not the "-" operator)
+      int("-13")                        # -13
+      # operator token: pop b (the right operand) FIRST, then a; push a op b
+      b, a = stack.pop(), stack.pop()
+      stack.append(a - b)
+      # int(a / b) truncates toward zero (what LeetCode wants); a // b floors
+      int(-7 / 2), -7 // 2              # (-3, -4)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `stack` a list of ints; `tok` a number token (a string, may be negative); ints `x`, `y`.
+
+          - **Modify** `stack`: pop the top two numbers (the top is the right operand `b`, the one below is `a`), push `a - b`, then push the int value of `tok`.
+          - **Set** `t`: int, `x / y` truncated toward zero.
+          - **Set** `f`: int, `x / y` floored.
+        setup: |
+          stack = [10, 3]
+          tok = "-13"
+          x, y = -7, 2
+        solution: |
+          b, a = stack.pop(), stack.pop()
+          stack.append(a - b)
+          stack.append(int(tok))
+          t = int(x / y)
+          f = x // y
+        check: |
+          assert stack == [7, -13], f"stack = {stack!r}"
+          assert t == -3 and isinstance(t, int), f"t = {t!r}"
+          assert f == -4, f"f = {f!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): ints `a` and `b`.
+
+          - **Set** `res`: int, `a / b` truncated **toward zero**.
+        setup: |
+          a, b = -7, 2
+        solution: |
+          res = int(a / b)
+        check: |
+          assert res == -3 and isinstance(res, int), f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `tokens` a list of strings, an expression in Reverse Polish Notation (numbers may be negative, like `"-13"`); `ops` a dict operator → function `(a, b) -> int`; `stack` an empty list.
+
+          - **Set** `res`: int, the value of the expression, evaluated with `stack` and `ops`.
+        setup: |
+          ops = {
+              "+": lambda a, b: a + b,
+              "-": lambda a, b: a - b,
+              "*": lambda a, b: a * b,
+              "/": lambda a, b: int(a / b),
+          }
+          tokens = ["4", "-13", "5", "/", "+"]
+          stack = []
+        solution: |
+          for tok in tokens:
+              if tok in ops:
+                  b, a = stack.pop(), stack.pop()
+                  stack.append(ops[tok](a, b))
+              else:
+                  stack.append(int(tok))
+          res = stack[0]
+        check: |
+          assert res == 2, f"res = {res!r}"

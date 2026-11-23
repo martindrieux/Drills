@@ -1,0 +1,15 @@
+id: python-toolkit
+title: Python toolkit
+domain: leetcode
+summary: The syntax and one-liners you need so the language never slows you down in a problem.
+sections:
+  - title: Core types
+    atoms: [py-lists, py-strings, py-numbers, py-iteration]
+  - title: Lookup containers
+    atoms: [py-dict-counter, py-sets]
+  - title: Ordering
+    atoms: [py-sorting, py-bisect]
+  - title: Stacks, queues, heaps
+    atoms: [py-stack, py-deque, py-heapq]
+  - title: Recursion helpers
+    atoms: [py-cache]

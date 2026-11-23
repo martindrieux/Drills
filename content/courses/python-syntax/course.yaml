@@ -1,0 +1,24 @@
+id: python-syntax
+title: Python syntax for LeetCode
+blob: python-toolkit
+summary: Every piece of syntax you need for the ~75 most common LeetCode problems, learned one page at a time and kept fresh with spaced drills.
+chunks:
+  - lists
+  - loops
+  - strings
+  - numbers
+  - grids
+  - dicts
+  - collections
+  - sets
+  - sorting
+  - stacks
+  - queues
+  - heaps
+  - binary-search
+  - functions
+  - classes
+  - linked-lists
+  - trees
+  - graphs
+  - itertools

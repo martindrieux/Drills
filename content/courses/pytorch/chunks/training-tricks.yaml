@@ -1,0 +1,464 @@
+id: training-tricks
+title: Training tricks
+intro: |
+  The standard additions to a plain loop: gradient clipping, learning-rate schedules with warmup,
+  gradient accumulation, weight decay done right and early stopping. Each one is a few lines,
+  but where those lines go in the loop is the thing interviewers check.
+problems:
+  - Add gradient clipping and a cosine schedule with warmup to this loop
+  - Train with an effective batch size larger than fits in memory
+  - Exclude biases and LayerNorm weights from weight decay
+  - Add early stopping that restores the best model
+atoms: []
+skills:
+  - id: training-tricks.grad-clip
+    name: clip_grad_norm_
+    teach: |
+      ```python
+      # clip_grad_norm_(params, max_norm) -> total norm BEFORE clipping; rescales grads in place to norm <= max_norm
+      loss.backward()
+      total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)   # after backward, before step
+      opt.step()
+      ```
+      Pitfall: clipping after `opt.step()` does nothing for the step that just ran.
+    cards:
+      - id: a
+        prompt: Do one training step of `model` / `opt` on `(X, y)` with the gradient **norm** clipped to `1.0`; keep the returned (pre-clip) norm in `total_norm`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          X = torch.randn(64, 3)
+          y = 10 * (X @ torch.tensor([[1.0], [-2.0], [0.5]]))
+          model = nn.Linear(3, 1)
+          loss_fn = nn.MSELoss()
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          before = [p.detach().clone() for p in model.parameters()]
+        solution: |
+          loss = loss_fn(model(X), y)
+          opt.zero_grad()
+          loss.backward()
+          total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+          opt.step()
+        check: |
+          assert float(total_norm) > 1.0, f"total_norm = {float(total_norm):.3f} (should be the pre-clip norm)"
+          delta = torch.cat([(b - p.detach()).flatten() for b, p in zip(before, model.parameters())])
+          assert delta.norm() > 0, "weights did not change: call opt.step()"
+          assert delta.norm() <= 0.1 * 1.0 + 1e-5, f"step size {delta.norm():.3f} > lr * max_norm: clip before opt.step()"
+      - id: c
+        prompt: Train for 50 full-batch steps with `max_norm=1.0` clipping, appending each step's pre-clip norm (float) to `norms`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          X = torch.randn(64, 3)
+          y = 10 * (X @ torch.tensor([[1.0], [-2.0], [0.5]]))
+          model = nn.Linear(3, 1)
+          loss_fn = nn.MSELoss()
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          norms = []
+        solution: |
+          for step in range(50):
+              loss = loss_fn(model(X), y)
+              opt.zero_grad()
+              loss.backward()
+              norms.append(torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item())
+              opt.step()
+        check: |
+          assert len(norms) == 50, f"len(norms) = {len(norms)}"
+          assert all(isinstance(n, float) for n in norms), "append floats (.item())"
+          assert norms[0] > 1.0 and norms[-1] < norms[0], f"norms[0] = {norms[0]:.2f}, norms[-1] = {norms[-1]:.2f}"
+          g = torch.cat([p.grad.flatten() for p in model.parameters()]).norm().item()
+          assert g <= 1.0 + 1e-5, f"grad norm left after the loop = {g:.3f} > 1.0"
+
+  - id: training-tricks.schedulers
+    name: StepLR / CosineAnnealingLR
+    teach: |
+      ```python
+      from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
+      # StepLR(opt, step_size, gamma) -> multiplies the lr by gamma every step_size sched.step() calls
+      sched = StepLR(opt, step_size=10, gamma=0.1)     # lr 0.1 -> 0.01 after 10 steps
+      # CosineAnnealingLR(opt, T_max) -> cosine curve from the base lr down to 0 over T_max steps
+      sched = CosineAnnealingLR(opt, T_max=100)         # lr 0.1 -> 0.05 after 50 steps
+      # sched.step() AFTER opt.step(), once per epoch (or per batch); get_last_lr() -> list, one lr per group
+      sched.step()
+      sched.get_last_lr()                               # [0.05] for the cosine sched after 50 steps
+      ```
+      Pitfall: for a per-batch schedule, `T_max` must be the number of **steps**, `epochs * len(loader)`.
+    cards:
+      - id: a
+        prompt: |
+          Set: `sched` = a StepLR on `opt` multiplying the lr by `0.1` every `10` epochs; run 25 "epochs" (each just `opt.step()` then `sched.step()`) ·
+          `sched2` = a CosineAnnealingLR on `opt2` with `T_max=60`, stepped 20 times the same way ·
+          `lr_mid` = the current lr of `sched2` (a float) from `get_last_lr()`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Linear(3, 1)
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          opt2 = torch.optim.SGD(model.parameters(), lr=0.1)
+        solution: |
+          from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
+          sched = StepLR(opt, step_size=10, gamma=0.1)
+          for epoch in range(25):
+              opt.step()
+              sched.step()
+          sched2 = CosineAnnealingLR(opt2, T_max=60)
+          for step in range(20):
+              opt2.step()
+              sched2.step()
+          lr_mid = sched2.get_last_lr()[0]
+        check: |
+          assert isinstance(sched, torch.optim.lr_scheduler.StepLR), f"sched is {type(sched).__name__}"
+          lr = opt.param_groups[0]["lr"]
+          assert abs(lr - 1e-3) < 1e-9, f"lr after 25 epochs = {lr}, expected 0.001"
+          assert isinstance(sched2, torch.optim.lr_scheduler.CosineAnnealingLR), f"sched2 is {type(sched2).__name__}"
+          assert isinstance(lr_mid, float), f"lr_mid is {type(lr_mid).__name__}: get_last_lr() returns a list"
+          assert abs(lr_mid - 0.075) < 1e-6, f"lr_mid = {lr_mid}, expected 0.1 * (1 + cos(pi / 3)) / 2 = 0.075"
+      - id: c
+        prompt: Train 3 epochs over `loader` with a **per-batch** cosine schedule `sched` that reaches 0 at the very last step. Append the lr after each scheduler step to `lrs`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          from torch.utils.data import TensorDataset, DataLoader
+          torch.manual_seed(0)
+          X = torch.randn(64, 3)
+          y = X @ torch.tensor([[1.0], [-2.0], [0.5]])
+          loader = DataLoader(TensorDataset(X, y), batch_size=16, shuffle=True)
+          model = nn.Linear(3, 1)
+          loss_fn = nn.MSELoss()
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          lrs = []
+        solution: |
+          from torch.optim.lr_scheduler import CosineAnnealingLR
+          epochs = 3
+          sched = CosineAnnealingLR(opt, T_max=epochs * len(loader))
+          for epoch in range(epochs):
+              for xb, yb in loader:
+                  loss = loss_fn(model(xb), yb)
+                  opt.zero_grad()
+                  loss.backward()
+                  opt.step()
+                  sched.step()
+                  lrs.append(sched.get_last_lr()[0])
+        check: |
+          assert len(lrs) == 12, f"len(lrs) = {len(lrs)}, expected 3 epochs x 4 batches"
+          assert all(a > b for a, b in zip(lrs, lrs[1:])), f"lrs not decreasing: {lrs}"
+          assert abs(lrs[-1]) < 1e-9, f"last lr = {lrs[-1]}, expected 0 (T_max = total steps)"
+
+  - id: training-tricks.warmup
+    name: linear warmup + cosine with LambdaLR
+    teach: |
+      ```python
+      # LambdaLR(opt, lr_lambda) -> lr = base_lr * lr_lambda(step); step it every batch
+      def lr_lambda(step):                        # linear warmup, then cosine decay to 0 at `total`
+          if step < warmup:
+              return (step + 1) / warmup
+          progress = (step - warmup) / (total - warmup)
+          return 0.5 * (1 + math.cos(math.pi * progress))
+      sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
+      ```
+      Pitfall: the lambda returns a **factor**, not an lr.
+    cards:
+      - id: a
+        prompt: |
+          Write `lr_lambda(step)`: linear warmup over `warmup = 10` steps (factor `(step + 1) / warmup`), then cosine decay to 0 at `total = 100`.
+          Set `sched` = a LambdaLR on `opt` using it.
+        setup: |
+          import math
+          import torch
+          import torch.nn as nn
+          model = nn.Linear(3, 1)
+          opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+          warmup, total = 10, 100
+        starter: |
+          def lr_lambda(step):
+              pass
+        solution: |
+          def lr_lambda(step):
+              if step < warmup:
+                  return (step + 1) / warmup
+              progress = (step - warmup) / (total - warmup)
+              return 0.5 * (1 + math.cos(math.pi * progress))
+
+          sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
+        check: |
+          got = {s: lr_lambda(s) for s in (0, 4, 9, 10, 55, 100)}
+          exp = {0: 0.1, 4: 0.5, 9: 1.0, 10: 1.0, 55: 0.5, 100: 0.0}
+          assert all(got[s] is not None and abs(got[s] - exp[s]) < 1e-9 for s in exp), f"lr_lambda = {got}, expected {exp}"
+          assert isinstance(sched, torch.optim.lr_scheduler.LambdaLR), f"sched is {type(sched).__name__}"
+          assert abs(opt.param_groups[0]["lr"] - 1e-4) < 1e-12, f"initial lr of opt = {opt.param_groups[0]['lr']}"
+      - id: c
+        prompt: |
+          Warmup then **constant**: build a LambdaLR `sched` on `opt` with linear warmup over `warmup = 5` steps, then factor 1.
+          Run 10 training steps on `(X, y)`, appending the lr used by each step (`get_last_lr()`, read **before** `sched.step()`) to `lrs`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          X = torch.randn(64, 3)
+          y = X @ torch.tensor([[1.0], [-2.0], [0.5]])
+          model = nn.Linear(3, 1)
+          loss_fn = nn.MSELoss()
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          warmup = 5
+          lrs = []
+        solution: |
+          sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda step: min(1.0, (step + 1) / warmup))
+          for step in range(10):
+              loss = loss_fn(model(X), y)
+              opt.zero_grad()
+              loss.backward()
+              opt.step()
+              lrs.append(sched.get_last_lr()[0])
+              sched.step()
+        check: |
+          assert isinstance(sched, torch.optim.lr_scheduler.LambdaLR), f"sched is {type(sched).__name__}"
+          exp = [0.02, 0.04, 0.06, 0.08, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+          assert len(lrs) == 10 and all(abs(a - b) < 1e-9 for a, b in zip(lrs, exp)), f"lrs = {lrs}, expected {exp}"
+
+  - id: training-tricks.grad-accum
+    name: gradient accumulation
+    teach: |
+      ```python
+      # big batch = accum_steps micro-batches: backward() each time (grads add up), step + zero every accum_steps
+      opt.zero_grad()
+      for i, (xb, yb) in enumerate(loader):
+          loss = loss_fn(model(xb), yb) / accum_steps
+          loss.backward()
+          if (i + 1) % accum_steps == 0:
+              opt.step()
+              opt.zero_grad()
+      ```
+      Pitfall: without the division the summed gradient is `accum_steps` times too large.
+    cards:
+      - id: a
+        prompt: One epoch over `loader` (batches of 8) with `accum_steps = 4`, so each update matches a batch of 32.
+        setup: |
+          import copy
+          import torch
+          import torch.nn as nn
+          from torch.utils.data import TensorDataset, DataLoader
+          torch.manual_seed(0)
+          X = torch.randn(64, 3)
+          y = X @ torch.tensor([[1.0], [-2.0], [0.5]])
+          loader = DataLoader(TensorDataset(X, y), batch_size=8)
+          model = nn.Linear(3, 1)
+          init = copy.deepcopy(model.state_dict())
+          loss_fn = nn.MSELoss()
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          accum_steps = 4
+        solution: |
+          opt.zero_grad()
+          for i, (xb, yb) in enumerate(loader):
+              loss = loss_fn(model(xb), yb) / accum_steps
+              loss.backward()
+              if (i + 1) % accum_steps == 0:
+                  opt.step()
+                  opt.zero_grad()
+        check: |
+          ref = nn.Linear(3, 1)
+          ref.load_state_dict(init)
+          ref_opt = torch.optim.SGD(ref.parameters(), lr=0.1)
+          for xb, yb in DataLoader(TensorDataset(X, y), batch_size=32):
+              l = loss_fn(ref(xb), yb)
+              ref_opt.zero_grad()
+              l.backward()
+              ref_opt.step()
+          assert torch.allclose(model.weight, ref.weight, atol=1e-6), f"weight {model.weight.data} != big-batch {ref.weight.data}"
+          assert torch.allclose(model.bias, ref.bias, atol=1e-6), f"bias {model.bias.data} != big-batch {ref.bias.data}"
+      - id: c
+        prompt: "`loader` has 6 micro-batches and `accum_steps = 4`. Accumulate as usual (divide by `accum_steps`) but also step + zero on the **last** batch so no gradient is left over."
+        setup: |
+          import copy
+          import torch
+          import torch.nn as nn
+          from torch.utils.data import TensorDataset, DataLoader
+          torch.manual_seed(0)
+          X = torch.randn(48, 3)
+          y = X @ torch.tensor([[1.0], [-2.0], [0.5]])
+          loader = DataLoader(TensorDataset(X, y), batch_size=8)
+          model = nn.Linear(3, 1)
+          init = copy.deepcopy(model.state_dict())
+          loss_fn = nn.MSELoss()
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          accum_steps = 4
+        solution: |
+          opt.zero_grad()
+          for i, (xb, yb) in enumerate(loader):
+              loss = loss_fn(model(xb), yb) / accum_steps
+              loss.backward()
+              if (i + 1) % accum_steps == 0 or (i + 1) == len(loader):
+                  opt.step()
+                  opt.zero_grad()
+        check: |
+          ref = nn.Linear(3, 1)
+          ref.load_state_dict(init)
+          ref_opt = torch.optim.SGD(ref.parameters(), lr=0.1)
+          for lo, hi in ((0, 32), (32, 48)):
+              ref_opt.zero_grad()
+              for j in range(lo, hi, 8):
+                  (loss_fn(ref(X[j:j + 8]), y[j:j + 8]) / 4).backward()
+              ref_opt.step()
+          leftover = [p.grad for p in model.parameters() if p.grad is not None and p.grad.abs().sum() > 0]
+          assert not leftover, "gradients left over after the loop: step + zero_grad on the last batch"
+          assert torch.allclose(model.weight, ref.weight, atol=1e-6), f"weight {model.weight.data} != expected {ref.weight.data}"
+
+  - id: training-tricks.dropout-weight-decay
+    name: nn.Dropout and weight decay on weights only
+    teach: |
+      ```python
+      # nn.Dropout(p): train mode zeroes each unit with prob p and scales the rest by 1/(1-p); eval mode = identity
+      nn.Dropout(0.5)(torch.ones(4))       # train: e.g. tensor([2., 0., 2., 0.]); after .eval(): tensor([1., 1., 1., 1.])
+      # weight decay only on the 2-D weights, not on biases / norm params (p.ndim < 2), via two AdamW param groups
+      decay = [p for p in model.parameters() if p.ndim >= 2]
+      no_decay = [p for p in model.parameters() if p.ndim < 2]
+      opt = torch.optim.AdamW([{"params": decay, "weight_decay": 0.1},
+                               {"params": no_decay, "weight_decay": 0.0}], lr=3e-4)
+      ```
+      Pitfall: `Adam(weight_decay=...)` is L2 in the gradient, not decoupled decay. Use `AdamW`.
+    cards:
+      - id: a
+        prompt: |
+          Set: `y_train` / `y_eval` = `drop(x)` in train / eval mode, with `drop = nn.Dropout(0.5)` ·
+          `opt` = AdamW (lr `3e-4`) over `model` with two param groups: decay `0.1` for the 2-D weights, `0.0` for the rest.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.ones(1000)
+          model = nn.Sequential(nn.Linear(8, 16), nn.LayerNorm(16), nn.GELU(), nn.Linear(16, 4))
+        solution: |
+          drop = nn.Dropout(0.5)
+          drop.train()
+          y_train = drop(x)
+          drop.eval()
+          y_eval = drop(x)
+          decay = [p for p in model.parameters() if p.ndim >= 2]
+          no_decay = [p for p in model.parameters() if p.ndim < 2]
+          opt = torch.optim.AdamW([{"params": decay, "weight_decay": 0.1},
+                                   {"params": no_decay, "weight_decay": 0.0}], lr=3e-4)
+        check: |
+          assert torch.equal(y_eval, x), "in eval mode dropout must be the identity"
+          vals = set(y_train.unique().tolist())
+          assert vals == {0.0, 2.0}, f"train-mode values = {vals}, expected {{0.0, 2.0}}"
+          frac = (y_train == 0).float().mean().item()
+          assert 0.4 < frac < 0.6, f"fraction zeroed = {frac}"
+          assert isinstance(opt, torch.optim.AdamW), f"opt is {type(opt).__name__}, expected AdamW"
+          assert all(g["lr"] == 3e-4 for g in opt.param_groups), f"lrs = {[g['lr'] for g in opt.param_groups]}"
+          by_wd = {g["weight_decay"]: {id(p) for p in g["params"]} for g in opt.param_groups}
+          want_decay = {id(model[0].weight), id(model[3].weight)}
+          assert by_wd.get(0.1) == want_decay, "the 0.1 group must hold exactly the two Linear weights"
+          assert by_wd.get(0.0) == {id(p) for p in model.parameters()} - want_decay, "the 0.0 group must hold the biases and LayerNorm params"
+      - id: c
+        prompt: |
+          `model` contains a Dropout. Set `out1`, `out2` = two forward passes of `x` that must be **identical** (right mode, no graph) ·
+          `opt` = AdamW (lr `1e-3`) with weight decay `0.05` on the 2-D weights and `0.0` on biases and LayerNorm params.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.randn(4, 8)
+          model = nn.Sequential(nn.Linear(8, 32), nn.LayerNorm(32), nn.ReLU(), nn.Dropout(0.3), nn.Linear(32, 2))
+        solution: |
+          model.eval()
+          with torch.no_grad():
+              out1 = model(x)
+              out2 = model(x)
+          decay = [p for p in model.parameters() if p.ndim >= 2]
+          no_decay = [p for p in model.parameters() if p.ndim < 2]
+          opt = torch.optim.AdamW([{"params": decay, "weight_decay": 0.05},
+                                   {"params": no_decay, "weight_decay": 0.0}], lr=1e-3)
+        check: |
+          assert not model.training, "call model.eval() so dropout is off"
+          assert torch.equal(out1, out2), "out1 != out2: dropout still active?"
+          assert not out1.requires_grad, "run the passes under torch.no_grad()"
+          assert isinstance(opt, torch.optim.AdamW), f"opt is {type(opt).__name__}"
+          by_wd = {g["weight_decay"]: {id(p) for p in g["params"]} for g in opt.param_groups}
+          want_decay = {id(model[0].weight), id(model[4].weight)}
+          assert by_wd.get(0.05) == want_decay, "the 0.05 group must hold exactly the two Linear weights"
+          assert by_wd.get(0.0) == {id(p) for p in model.parameters()} - want_decay, "the 0.0 group must hold the biases and LayerNorm params"
+          assert all(g["lr"] == 1e-3 for g in opt.param_groups), "lr should be 1e-3"
+
+  - id: training-tricks.early-stopping
+    name: early stopping with patience + best weights
+    teach: |
+      ```python
+      # track the best val loss, count epochs without improvement, stop at patience, restore a COPY of the best weights
+      best, bad, best_state = float("inf"), 0, None
+      for epoch in range(max_epochs):
+          val = run_epoch()
+          if val < best:
+              best, bad = val, 0
+              best_state = copy.deepcopy(model.state_dict())
+          else:
+              bad += 1
+              if bad >= patience:
+                  break
+      model.load_state_dict(best_state)
+      ```
+      Pitfall: `best_state = model.state_dict()` holds references to the live tensors, which keep changing.
+    cards:
+      - id: a
+        prompt: |
+          Call `run_epoch(epoch)` for up to 9 epochs (it trains `model` in place and returns the val loss) with `patience = 3`.
+          Set `best` = best loss seen, `stop_epoch` = the epoch where you break, keep a real copy of the best `state_dict` (`copy.deepcopy`) and load it back into `model` at the end.
+        setup: |
+          import copy
+          import torch
+          import torch.nn as nn
+          model = nn.Linear(2, 1)
+          val_losses = [1.0, 0.8, 0.7, 0.72, 0.69, 0.71, 0.70, 0.73, 0.6]
+          def run_epoch(epoch):
+              with torch.no_grad():
+                  model.weight.fill_(float(epoch))
+              return val_losses[epoch]
+          patience = 3
+        solution: |
+          best, bad, best_state = float("inf"), 0, None
+          for epoch in range(9):
+              val = run_epoch(epoch)
+              if val < best:
+                  best, bad = val, 0
+                  best_state = copy.deepcopy(model.state_dict())
+              else:
+                  bad += 1
+                  if bad >= patience:
+                      stop_epoch = epoch
+                      break
+          model.load_state_dict(best_state)
+        check: |
+          assert best == 0.69, f"best = {best}"
+          assert stop_epoch == 7, f"stop_epoch = {stop_epoch}, expected 7"
+          w = model.weight.detach()
+          assert torch.all(w == 4.0), f"model.weight = {w.tolist()}, expected the epoch-4 weights (all 4.0); did you copy the state_dict?"
+      - id: c
+        prompt: "Same `run_epoch`, up to 20 epochs, `patience = 2`. Stop early, record the epoch you stopped at in `stopped_at`, and restore the best weights."
+        setup: |
+          import copy
+          import torch
+          import torch.nn as nn
+          model = nn.Linear(2, 1)
+          losses = [0.9, 0.5, 0.3, 0.32, 0.25, 0.27, 0.26, 0.2] + [0.1] * 12
+          def run_epoch(epoch):
+              with torch.no_grad():
+                  model.weight.fill_(float(epoch))
+              return losses[epoch]
+          patience = 2
+        solution: |
+          best, bad, best_state = float("inf"), 0, None
+          for epoch in range(20):
+              val = run_epoch(epoch)
+              if val < best:
+                  best, bad = val, 0
+                  best_state = copy.deepcopy(model.state_dict())
+              else:
+                  bad += 1
+                  if bad >= patience:
+                      stopped_at = epoch
+                      break
+          model.load_state_dict(best_state)
+        check: |
+          assert stopped_at == 6, f"stopped_at = {stopped_at}, expected 6"
+          w = model.weight.detach()
+          assert torch.all(w == 4.0), f"model.weight = {w.tolist()}, expected the epoch-4 weights (all 4.0)"

@@ -1,0 +1,427 @@
+id: itertools
+title: Handy one-liners & itertools
+intro: |
+  Small tools that replace whole loops: prefix sums, all pairs or orderings, nested loops in one line,
+  compact conditions, pre-sized lists, and `max`/`min` with a `key`.
+problems:
+  - Best Time to Buy and Sell Stock
+  - Subarray Sum Equals K
+  - Subsets
+  - Permutations
+  - Letter Combinations of a Phone Number
+  - K Closest Points to Origin
+atoms: [py-iteration]
+skills:
+  - id: itertools.accumulate
+    name: accumulate for prefix sums / running max
+    teach: |
+      ```python
+      from itertools import accumulate
+      # accumulate(it) -> iterator of running sums
+      list(accumulate([3, 1, 4]))              # [3, 4, 8]
+      # initial=0 prepends a 0, so sum(a[i:j]) == p[j] - p[i]
+      list(accumulate([3, 1, 4], initial=0))   # [0, 3, 4, 8]
+      # accumulate(it, f) -> running f instead of +  (max, min, ...)
+      list(accumulate([3, 1, 4], max))         # [3, 3, 4]
+      ```
+      Pitfall: it returns an iterator: wrap it in `list(...)` before indexing.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `nums` a list of ints; `accumulate` imported. One line each.
+
+          - **Set** `prefix`: list of the running sums of `nums` (`prefix[i] = sum(nums[:i+1])`).
+          - **Set** `p`: list of the running sums with a leading 0 (`len(nums) + 1` items, `p[i] = sum(nums[:i])`).
+          - **Set** `highs`: list of the running max of `nums` (`highs[i] = max(nums[:i+1])`).
+        setup: |
+          from itertools import accumulate
+          nums = [2, 4, 1, 3]
+        solution: |
+          prefix = list(accumulate(nums))
+          p = list(accumulate(nums, initial=0))
+          highs = list(accumulate(nums, max))
+        check: |
+          assert prefix == [2, 6, 7, 10], f"prefix = {prefix!r}"
+          assert p == [0, 2, 6, 7, 10], f"p = {p!r}"
+          assert highs == [2, 4, 4, 4], f"highs = {highs!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `nums` a list of ints; ints `i <= j`; `accumulate` imported.
+
+          - **Set** `p`: list of the prefix sums of `nums` with a leading 0 (`p[i] = sum(nums[:i])`).
+          - **Set** `res`: int, `sum(nums[i:j])`, computed from `p` only.
+        setup: |
+          from itertools import accumulate
+          nums = [2, 4, 1, 3]
+          i, j = 1, 3
+        solution: |
+          p = list(accumulate(nums, initial=0))
+          res = p[j] - p[i]
+        check: |
+          assert p == [0, 2, 6, 7, 10], f"p = {p!r}"
+          assert res == 5, f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `prices` a list of ints; `accumulate` imported.
+
+          - **Set** `lows`: list, `lows[i] = min(prices[:i+1])` (the cheapest price seen so far), in one line.
+        setup: |
+          from itertools import accumulate
+          prices = [7, 1, 5, 3, 6, 4]
+        solution: |
+          lows = list(accumulate(prices, min))
+        check: |
+          assert lows == [7, 1, 1, 1, 1, 1], f"lows = {lows!r}"
+
+  - id: itertools.combinations
+    name: combinations / permutations
+    teach: |
+      ```python
+      from itertools import combinations, permutations
+      # combinations(it, r) -> every r-tuple, order ignored
+      list(combinations([1, 2, 3], 2))   # [(1, 2), (1, 3), (2, 3)]
+      # permutations(it, r) -> every ordered r-tuple (no r: full-length orderings)
+      list(permutations([1, 2, 3], 2))   # [(1, 2), (1, 3), (2, 1), (2, 3), (3, 1), (3, 2)]
+      ```
+      Pitfall: items are **tuples**: `[list(p) for p in ...]` when lists are expected.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `nums` a list of distinct ints; `combinations` and `permutations` imported.
+
+          - **Set** `res`: list of tuples, every pair of `nums` with order ignored, in the order `combinations` gives.
+          - **Set** `ordered`: list of tuples, every ordered pair of `nums`, in the order `permutations` gives.
+          - **Set** `full`: list of **lists**, every full-length ordering of `nums` (any order).
+        setup: |
+          from itertools import combinations, permutations
+          nums = [1, 2, 3]
+        solution: |
+          res = list(combinations(nums, 2))
+          ordered = list(permutations(nums, 2))
+          full = [list(p) for p in permutations(nums)]
+        check: |
+          assert res == [(1, 2), (1, 3), (2, 3)], f"res = {res!r}"
+          assert ordered == [(1, 2), (1, 3), (2, 1), (2, 3), (3, 1), (3, 2)], f"ordered = {ordered!r}"
+          assert all(type(x) is list for x in full) and sorted(full) == [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]], f"full = {full!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `nums` a list of distinct ints; `permutations` imported.
+
+          - **Set** `res`: list of **lists**, every ordering of all of `nums` (any order).
+        setup: |
+          from itertools import combinations, permutations
+          nums = [1, 2, 3]
+        solution: |
+          res = [list(p) for p in permutations(nums)]
+        check: |
+          assert len(res) == 6 and all(type(p) is list for p in res), f"res = {res!r}"
+          assert sorted(res) == [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]], f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `nums` a list of distinct ints; `combinations` imported.
+
+          - **Set** `res`: list of **lists**, all subsets of `nums` of every size from 0 (`[]`) to `len(nums)`, any order. Use `combinations` for each size.
+        setup: |
+          from itertools import combinations, permutations
+          nums = [1, 2, 3]
+        solution: |
+          res = [list(c) for k in range(len(nums) + 1) for c in combinations(nums, k)]
+        check: |
+          assert all(type(s) is list for s in res), f"res = {res!r} (want lists)"
+          assert sorted(res) == [[], [1], [1, 2], [1, 2, 3], [1, 3], [2], [2, 3], [3]], f"res = {res!r}"
+
+  - id: itertools.product
+    name: product = nested loops in one line
+    teach: |
+      ```python
+      from itertools import product
+      # product(it1, it2, ...) -> tuples, like nested for loops (last one varies fastest)
+      list(product([1, 2], 'xy'))       # [(1, 'x'), (1, 'y'), (2, 'x'), (2, 'y')]
+      # repeat=n -> the same iterable n times
+      list(product('ab', repeat=2))     # [('a', 'a'), ('a', 'b'), ('b', 'a'), ('b', 'b')]
+      ```
+      Pitfall: `product('ab', 2)` fails: `repeat=` must be a keyword.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): ints `R`, `C`; `product` imported. Use `product` for each.
+
+          - **Set** `cells`: list of `(r, c)` tuples, every cell of an `R x C` grid, row by row (`(0, 0)`, `(0, 1)`, ...).
+          - **Set** `pairs`: list of tuples, every tuple of 2 letters from `'ab'` (`('a', 'a')`, `('a', 'b')`, ...), in that order.
+        setup: |
+          from itertools import product
+          R, C = 2, 3
+        solution: |
+          cells = list(product(range(R), range(C)))
+          pairs = list(product('ab', repeat=2))
+        check: |
+          assert cells == [(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)], f"cells = {cells!r}"
+          assert pairs == [('a', 'a'), ('a', 'b'), ('b', 'a'), ('b', 'b')], f"pairs = {pairs!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `product` imported.
+
+          - **Set** `res`: list of strings, every binary string of length 3, from `'000'` to `'111'` in increasing order.
+        setup: |
+          from itertools import product
+        solution: |
+          res = [''.join(p) for p in product('01', repeat=3)]
+        check: |
+          assert res == ['000', '001', '010', '011', '100', '101', '110', '111'], f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `phone` a dict digit → string of letters; `digits` a string of digits; `product` imported.
+
+          - **Set** `res`: list of strings, every combination of one letter per digit of `digits` (letters in digit order), any order. Hint: `product(*xs)` passes each item of `xs` as a separate argument.
+        setup: |
+          from itertools import product
+          phone = {'2': 'abc', '3': 'def'}
+          digits = '23'
+        solution: |
+          res = [''.join(p) for p in product(*(phone[d] for d in digits))]
+        check: |
+          assert sorted(res) == ['ad', 'ae', 'af', 'bd', 'be', 'bf', 'cd', 'ce', 'cf'], f"res = {res!r}"
+
+  - id: itertools.ternary-chained
+    name: x if c else y, chained comparisons, `or` default
+    teach: |
+      ```python
+      # a if cond else b -> a when cond is true, else b
+      1 if -3 >= 0 else -1     # -1
+      # a < b < c -> a < b and b < c
+      0 <= 5 < 4               # False
+      # x or y -> x if x is truthy, else y
+      [] or [7]                # [7]
+      ```
+      Pitfall: `or` treats `0`, `''` and `[]` as missing too.
+    cards:
+      - id: a
+        prompt: |
+          **Given**: `R`, `C` (see setup) the grid size, read as globals; ints `x`, `r`, `c`; `a`, `b` lists or strings. Each body is one expression.
+
+          - **Write** `parity(x)` → `'even'` or `'odd'` (conditional expression).
+          - **Write** `inside(r, c)` → bool, whether `0 <= r < R` and `0 <= c < C` (one chained comparison per coordinate).
+          - **Write** `rest(a, b)` → `a` if it is non-empty, else `b` (use `or`).
+          - **Checked on**: negative and positive `x`; every cell around a 3 x 4 grid and other grid sizes (`R`, `C` are changed by the check); empty and non-empty `a` (`[0]` counts as non-empty), lists and strings.
+        setup: |
+          R, C = 3, 4
+        solution: |
+          def parity(x):
+              return 'even' if x % 2 == 0 else 'odd'
+          def inside(r, c):
+              return 0 <= r < R and 0 <= c < C
+          def rest(a, b):
+              return a or b
+        check: |
+          from cardtest import against, rand_cases
+
+          def _parity(x):
+              return 'odd' if x % 2 else 'even'
+
+          against(parity, _parity, [(x,) for x in range(-6, 7)] + rand_cases(lambda r: (r.randint(-1000, 1000),), 200))
+
+          def _inside_at(R_, C_, r, c):  # calls your inside(r, c) with the grid size R, C set to R_, C_
+              global R, C
+              R, C = R_, C_
+              return inside(r, c)
+
+          def _inside_ref(R_, C_, r, c):
+              return 0 <= r and r < R_ and 0 <= c and c < C_
+
+          def _gen_inside(g):
+              return (g.randint(1, 5), g.randint(1, 5), g.randint(-2, 6), g.randint(-2, 6))
+
+          _grid_edge = [(3, 4, r, c) for r in range(-1, 5) for c in range(-1, 6)]
+          _grid_edge += [(1, 1, 0, 0), (1, 1, 1, 0), (1, 1, 0, 1), (2, 5, 1, 4), (5, 2, 4, 1), (2, 5, 4, 1)]
+          against(_inside_at, _inside_ref, _grid_edge + rand_cases(_gen_inside, 300), name="inside",
+                  show=lambda R_, C_, r, c: f"({r}, {c}) with R, C = {R_}, {C_}")
+          R, C = 3, 4
+
+          def _rest(a, b):
+              return a if len(a) > 0 else b
+
+          def _gen_rest(r):
+              if r.random() < 0.3:
+                  return ("".join(r.choice("xy") for _ in range(r.randint(0, 2))), "".join(r.choice("xy") for _ in range(r.randint(0, 2))))
+              return ([r.randint(0, 3) for _ in range(r.randint(0, 3))], [r.randint(0, 3) for _ in range(r.randint(0, 3))])
+
+          _edge = [([], [4, 5]), ([1], [2]), ([1], []), ([], []), ([0], [5]), ([0, 0], []), ("", "x"), ("ab", "x"), ("0", "x")]
+          against(rest, _rest, _edge + rand_cases(_gen_rest, 200))
+      - id: b
+        prompt: |
+          **Write** `inside(r, c)` with one chained comparison per coordinate.
+
+          - **Given**: `R`, `C` (see setup) the grid size, read as globals; ints `r`, `c`.
+          - **Returns**: bool, `True` if `0 <= r < R` and `0 <= c < C`, else `False`.
+          - **Checked on**: every cell around a 3 x 4 grid (negative, on the edge, one past the edge) and other grid sizes (`R`, `C` are changed by the check).
+        setup: |
+          R, C = 3, 4
+        solution: |
+          def inside(r, c):
+              return 0 <= r < R and 0 <= c < C
+        check: |
+          from cardtest import against, rand_cases
+
+          def _inside_at(R_, C_, r, c):  # calls your inside(r, c) with the grid size R, C set to R_, C_
+              global R, C
+              R, C = R_, C_
+              return inside(r, c)
+
+          def _inside_ref(R_, C_, r, c):
+              return 0 <= r and r < R_ and 0 <= c and c < C_
+
+          def _gen_inside(g):
+              return (g.randint(1, 5), g.randint(1, 5), g.randint(-2, 6), g.randint(-2, 6))
+
+          _grid_edge = [(3, 4, r, c) for r in range(-1, 5) for c in range(-1, 6)]
+          _grid_edge += [(1, 1, 0, 0), (1, 1, 1, 0), (1, 1, 0, 1), (2, 5, 1, 4), (5, 2, 4, 1), (2, 5, 4, 1)]
+          against(_inside_at, _inside_ref, _grid_edge + rand_cases(_gen_inside, 300), name="inside",
+                  show=lambda R_, C_, r, c: f"({r}, {c}) with R, C = {R_}, {C_}")
+          R, C = 3, 4
+      - id: c
+        prompt: |
+          **Write** `rest(a, b)` using `or`.
+
+          - **Given**: `a`, `b` two lists, or two strings.
+          - **Returns**: `a` if it is non-empty, otherwise `b`.
+          - **Checked on**: empty and non-empty `a` and `b`, `a = [0]` (non-empty), lists and strings.
+        solution: |
+          def rest(a, b):
+              return a or b
+        check: |
+          from cardtest import against, rand_cases
+
+          def _rest(a, b):
+              return a if len(a) > 0 else b
+
+          def _gen_rest(r):
+              if r.random() < 0.3:
+                  return ("".join(r.choice("xy") for _ in range(r.randint(0, 2))), "".join(r.choice("xy") for _ in range(r.randint(0, 2))))
+              return ([r.randint(0, 3) for _ in range(r.randint(0, 3))], [r.randint(0, 3) for _ in range(r.randint(0, 3))])
+
+          _edge = [([], [4, 5]), ([1], [2]), ([1], []), ([], []), ([0], [5]), ([0, 0], []), ("", "x"), ("ab", "x"), ("0", "x")]
+          against(rest, _rest, _edge + rand_cases(_gen_rest, 200))
+
+  - id: itertools.repeat-mult
+    name: "['.'] * n and the [[]] * n trap"
+    teach: |
+      ```python
+      # [x] * n -> list of n copies of x;  s * n -> s repeated n times
+      [0] * 3                           # [0, 0, 0]
+      '-' * 5                           # '-----'
+      # list of lists: a comprehension builds a new row each time
+      [['.'] * 2 for _ in range(2)]     # [['.', '.'], ['.', '.']]
+      ```
+      Pitfall: `[[]] * 3` is 3 references to ONE list: appending to one row shows up in all.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): ints `n`, `R`, `C`.
+
+          - **Set** `dp`: list of `n + 1` zeros, then set `dp[0] = 1`.
+          - **Set** `line`: str of `n` dashes `'-'`.
+          - **Set** `grid`: list of `R` rows, each a list of `C` strings `'.'`, rows independent; then set `grid[0][1] = 'Q'`.
+        setup: |
+          n = 4
+          R, C = 2, 3
+        solution: |
+          dp = [0] * (n + 1)
+          dp[0] = 1
+          line = '-' * n
+          grid = [['.'] * C for _ in range(R)]
+          grid[0][1] = 'Q'
+        check: |
+          assert dp == [1, 0, 0, 0, 0], f"dp = {dp!r}"
+          assert line == '----', f"line = {line!r}"
+          assert grid == [['.', 'Q', '.'], ['.', '.', '.']], f"grid = {grid!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): an int `n`.
+
+          - **Set** `board`: list of `n` rows, each a list of `n` strings `'.'`, rows independent; then set `board[0][1] = 'Q'`.
+        setup: |
+          n = 3
+        solution: |
+          board = [['.'] * n for _ in range(n)]
+          board[0][1] = 'Q'
+        check: |
+          assert board == [['.', 'Q', '.'], ['.', '.', '.'], ['.', '.', '.']], f"board = {board!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): an int `n`.
+
+          - **Set** `buckets`: list of `n + 1` **independent** empty lists; then append `'x'` to `buckets[2]`.
+        setup: |
+          n = 3
+        solution: |
+          buckets = [[] for _ in range(n + 1)]
+          buckets[2].append('x')
+        check: |
+          assert buckets == [[], [], ['x'], []], f"buckets = {buckets!r}"
+
+  - id: itertools.max-key
+    name: max / min with key= and default=
+    teach: |
+      ```python
+      # max(it, key=f) / min(it, key=f) -> the item with the largest / smallest f(item), first on ties
+      max(["kiwi", "fig", "apple"], key=len)   # 'apple'
+      # default=v -> v instead of a ValueError when it is empty
+      max([], default=0)                       # 0
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `count` a dict letter → frequency; `words` a list of strings; `scores` an empty list. One call each.
+
+          - **Set** `res`: the letter with the highest frequency (`max` over a dict loops over its keys; `count.get(k)` is the value of `k`).
+          - **Set** `short`: the shortest word of `words`.
+          - **Set** `best`: the largest value of `scores`, or `0` since it is empty.
+        setup: |
+          count = {'a': 2, 'b': 5, 'c': 1}
+          words = ['kiwi', 'fig', 'apple']
+          scores = []
+        solution: |
+          res = max(count, key=count.get)
+          short = min(words, key=len)
+          best = max(scores, default=0)
+        check: |
+          assert res == 'b', f"res = {res!r}"
+          assert short == 'fig', f"short = {short!r}"
+          assert best == 0, f"best = {best!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `points` a list of `[x, y]` lists.
+
+          - **Set** `res`: the point of `points` (the `[x, y]` list itself) closest to the origin `(0, 0)`, i.e. with the smallest `x**2 + y**2`.
+        setup: |
+          points = [[3, 3], [1, -2], [-2, 2]]
+        solution: |
+          res = min(points, key=lambda p: p[0]**2 + p[1]**2)
+        check: |
+          assert res == [1, -2], f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Write** `longest_a(words)` with one `max` call.
+
+          - **Given**: `words` a list of non-empty strings (the list may be empty).
+          - **Returns**: int, the length of the longest word starting with a lowercase `'a'`, or `0` if there is none.
+          - **Checked on**: empty list, no word starting with `'a'`, words with `'a'` elsewhere, uppercase `'A'` (does not count), plus random lists.
+        solution: |
+          def longest_a(words):
+              return max((len(w) for w in words if w.startswith('a')), default=0)
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(words):
+              best = 0
+              for w in words:
+                  if w[0] == 'a':
+                      best = max(best, len(w))
+              return best
+
+          def _gen(r):
+              return ([''.join(r.choice('abA') for _ in range(r.randint(1, 5))) for _ in range(r.randint(0, 6))],)
+
+          _edge = [['apple', 'kiwi', 'ax'], ['kiwi'], [], ['a'], ['banana', 'a'], ['Apple', 'ax'], ['ba', 'ab'],
+                   ['axe', 'apple', 'kiwis'], ['Aaaaa']]
+          against(longest_a, _ref, [(w,) for w in _edge] + rand_cases(_gen, 300))

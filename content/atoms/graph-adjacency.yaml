@@ -1,0 +1,222 @@
+id: graph-adjacency
+title: Adjacency lists and grids
+summary: Turn an edge list (or a grid) into something you can traverse. Every graph problem starts here.
+links:
+  - to: py-dict-counter
+    kind: uses
+    note: defaultdict(list) is the one-line adjacency builder for arbitrary node labels.
+  - to: py-lists
+    kind: uses
+    note: When nodes are 0..n-1, a list of lists is faster and simpler than a dict.
+lesson: |
+  LeetCode hands you graphs as an **edge list** (`[[u, v], ...]`), an **n + edges** pair,
+  or a **grid**. Before any traversal you build an **adjacency list**: node → list of neighbors.
+
+  **Edge list → adjacency (any labels)**
+
+  ```python
+  from collections import defaultdict
+
+  adj = defaultdict(list)
+  for u, v in edges:
+      adj[u].append(v)
+      adj[v].append(u)        # undirected: add both ways. Directed: drop this line.
+  ```
+
+  **Weighted:** store `(neighbor, weight)` tuples.
+
+  ```python
+  for u, v, w in edges:
+      adj[u].append((v, w))   # later: for v, w in adj[u]: ...
+  ```
+
+  **Nodes are 0..n-1:** use a list of lists. Every node exists, even isolated ones.
+
+  ```python
+  adj = [[] for _ in range(n)]   # NOT [[]] * n
+  for u, v in edges:
+      adj[u].append(v)
+      adj[v].append(u)
+  ```
+
+  **Grid = implicit graph.** Cell `(r, c)` is a node; its neighbors are the 4 adjacent cells.
+  Don't build anything, just generate neighbors on the fly:
+
+  ```python
+  R, C = len(grid), len(grid[0])
+  DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+  def inside(r, c):
+      return 0 <= r < R and 0 <= c < C
+
+  for dr, dc in DIRS:
+      nr, nc = r + dr, c + dc
+      if inside(nr, nc) and grid[nr][nc] == "1":
+          ...
+  ```
+
+  8 directions (diagonals too): `for dr in (-1, 0, 1): for dc in (-1, 0, 1):` and skip `(0, 0)`.
+
+  **In-degree** (number of incoming edges, directed graphs; needed for topological sort):
+
+  ```python
+  indeg = [0] * n
+  for u, v in edges:          # edge u -> v
+      indeg[v] += 1
+  ```
+
+  Read the direction carefully: in Course Schedule, `[a, b]` means "b before a", i.e. edge `b -> a`.
+
+  **Pitfalls**
+  - `[[]] * n` creates n references to **the same** list. Appending to one appends to all.
+  - `defaultdict` only contains nodes that appear in an edge. For "count components among n nodes",
+    loop over `range(n)`, not over `adj`.
+  - Reading `adj[x]` on a defaultdict **inserts** `x`. Looping `for u in adj:` while touching new keys
+    raises `RuntimeError: dictionary changed size during iteration`.
+  - Undirected graph: forgetting the reverse edge is the #1 silent bug.
+  - Grids: `grid[r][c]` is row then column; LeetCode grids are often strings (`"1"`, not `1`).
+
+  **Complexity:** building is O(V + E) time and space. An adjacency **matrix** costs O(V²);
+  only worth it for dense graphs or O(1) "is there an edge u-v?" queries.
+drills:
+  - id: undirected
+    prompt: |
+      Build `adj`, a `defaultdict(list)` adjacency list for the **undirected** graph in `edges`.
+    setup: |
+      from collections import defaultdict
+      edges = [["a", "b"], ["b", "c"], ["c", "a"], ["c", "d"]]
+    solution: |
+      adj = defaultdict(list)
+      for u, v in edges:
+          adj[u].append(v)
+          adj[v].append(u)
+    check: |
+      assert sorted(adj["c"]) == ["a", "b", "d"], f"adj['c'] = {adj['c']!r}"
+      assert adj["d"] == ["c"], f"adj['d'] = {adj['d']!r} (missing the reverse edge?)"
+      assert sorted(adj["a"]) == ["b", "c"], f"adj['a'] = {adj['a']!r}"
+  - id: weighted-directed
+    prompt: |
+      `edges` holds directed weighted edges `[u, v, w]`. Build `adj` (a `defaultdict(list)`)
+      where `adj[u]` is a list of `(v, w)` tuples.
+    setup: |
+      from collections import defaultdict
+      edges = [[0, 1, 4], [0, 2, 1], [2, 1, 2]]
+    solution: |
+      adj = defaultdict(list)
+      for u, v, w in edges:
+          adj[u].append((v, w))
+    check: |
+      assert sorted(adj[0]) == [(1, 4), (2, 1)], f"adj[0] = {adj[0]!r}"
+      assert adj[2] == [(1, 2)], f"adj[2] = {adj[2]!r}"
+      assert adj[1] == [], f"adj[1] = {adj[1]!r} (directed: no reverse edge)"
+  - id: list-of-lists
+    prompt: |
+      Nodes are `0..n-1`. Build `adj` as a **list of lists** for the undirected graph in `edges`.
+      Node 4 is isolated: it must still have an (empty) entry.
+    setup: |
+      n = 5
+      edges = [[0, 1], [1, 2], [3, 1]]
+    solution: |
+      adj = [[] for _ in range(n)]
+      for u, v in edges:
+          adj[u].append(v)
+          adj[v].append(u)
+    check: |
+      assert isinstance(adj, list) and len(adj) == 5, f"adj = {adj!r}"
+      assert sorted(adj[1]) == [0, 2, 3], f"adj[1] = {adj[1]!r}"
+      assert adj[0] == [1] and adj[4] == [], f"adj = {adj!r} (did you use [[]] * n?)"
+  - id: grid-neighbors
+    prompt: |
+      Put into `nbrs` the list of in-bounds 4-direction neighbors `(nr, nc)` of cell `(r, c)` in `grid`.
+    setup: |
+      grid = [["1", "0", "1"],
+              ["0", "1", "1"]]
+      r, c = 0, 2
+    solution: |
+      R, C = len(grid), len(grid[0])
+      nbrs = []
+      for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+          nr, nc = r + dr, c + dc
+          if 0 <= nr < R and 0 <= nc < C:
+              nbrs.append((nr, nc))
+    check: |
+      assert sorted(nbrs) == [(0, 1), (1, 2)], f"nbrs = {nbrs!r}"
+  - id: indegree
+    prompt: |
+      `edges` are directed `u -> v` over nodes `0..n-1`. Build `indeg`, a list where `indeg[v]`
+      is the number of edges pointing into `v`.
+    setup: |
+      n = 4
+      edges = [[0, 1], [0, 2], [1, 3], [2, 3]]
+    solution: |
+      indeg = [0] * n
+      for u, v in edges:
+          indeg[v] += 1
+    check: |
+      assert indeg == [0, 1, 1, 2], f"indeg = {indeg!r}"
+classics:
+  - id: path-exists
+    title: Find if Path Exists in Graph
+    url: https://leetcode.com/problems/find-if-path-exists-in-graph/
+    difficulty: Easy
+    prompt: |
+      There are `n` nodes `0..n-1` and an undirected edge list `edges`.
+      Return `True` if there is a path from `source` to `destination`, else `False`.
+    starter: |
+      def validPath(n, edges, source, destination):
+          pass
+    hints:
+      - Build `adj = [[] for _ in range(n)]` and add each edge both ways.
+      - Then any traversal from `source` works. A stack plus a `seen` set is enough.
+    solution: |
+      def validPath(n, edges, source, destination):
+          adj = [[] for _ in range(n)]
+          for u, v in edges:
+              adj[u].append(v)
+              adj[v].append(u)
+          seen = {source}
+          stack = [source]
+          while stack:
+              u = stack.pop()
+              if u == destination:
+                  return True
+              for v in adj[u]:
+                  if v not in seen:
+                      seen.add(v)
+                      stack.append(v)
+          return False
+    check: |
+      res = validPath(3, [[0, 1], [1, 2], [2, 0]], 0, 2)
+      assert res is True, f"triangle 0->2: res = {res!r}"
+      res = validPath(6, [[0, 1], [0, 2], [3, 5], [5, 4], [4, 3]], 0, 5)
+      assert res is False, f"two components: res = {res!r}"
+      res = validPath(1, [], 0, 0)
+      assert res is True, f"source == destination: res = {res!r}"
+      res = validPath(4, [[1, 0], [2, 1], [3, 2]], 0, 3)
+      assert res is True, f"edges given 'backwards' (undirected!): res = {res!r}"
+    takeaway: Undirected edge list → add both directions, then any traversal with a seen set answers reachability.
+  - id: star-center
+    title: Find Center of Star Graph
+    url: https://leetcode.com/problems/find-center-of-star-graph/
+    difficulty: Easy
+    prompt: |
+      An undirected **star** graph has one center connected to every other node (and no other edges).
+      Given its `edges`, return the center.
+    starter: |
+      def findCenter(edges):
+          pass
+    hints:
+      - The center is the only node with degree n - 1. You could count degrees...
+      - "...but the center appears in **every** edge, so the first two edges are enough: O(1)."
+    solution: |
+      def findCenter(edges):
+          a, b = edges[0]
+          return a if a in edges[1] else b
+    check: |
+      res = findCenter([[1, 2], [2, 3], [4, 2]])
+      assert res == 2, f"res = {res!r}"
+      res = findCenter([[1, 2], [5, 1], [1, 3], [1, 4]])
+      assert res == 1, f"res = {res!r}"
+      res = findCenter([[3, 1], [2, 1]])
+      assert res == 1, f"center listed second in both edges: res = {res!r}"
+    takeaway: Degree = len(adj[u]); but look for structure first. The node shared by any two edges of a star is its center.

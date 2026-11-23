@@ -1,0 +1,353 @@
+id: training-loop
+title: The training loop
+intro: |
+  The loop every interviewer asks for: forward, loss, `zero_grad`, `backward`, `step`, wrapped in
+  epochs over a `DataLoader`, followed by an `eval` pass under `no_grad`. Write it cleanly from
+  memory and the rest of the interview goes faster.
+problems:
+  - Write a training loop for this model
+  - Train an MLP classifier and report validation accuracy
+  - Why is my validation accuracy random from run to run?
+  - Implement fit() that returns a loss history
+atoms: []
+skills:
+  - id: training-loop.step
+    name: one optimization step
+    teach: |
+      ```python
+      model.train()                    # training mode (dropout / batchnorm active)
+      loss = loss_fn(model(xb), yb)    # forward + loss
+      opt.zero_grad()                  # clear old grads
+      loss.backward()                  # new grads
+      opt.step()                       # opt.step() -> updates every param from its .grad
+      ```
+      Pitfall: `backward()` ADDS to `.grad`; without `zero_grad()` each step also uses all the old gradients.
+    cards:
+      - id: a
+        prompt: "`model` was left in eval mode and still holds stale gradients. Do **one** training step of `model` on `(X, y)` with `loss_fn` and `opt` (training mode first). Keep the loss tensor in `loss`."
+        setup: |
+          import copy
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          X = torch.randn(64, 3)
+          y = X @ torch.tensor([[1.0], [-2.0], [0.5]]) + 0.3
+          model = nn.Linear(3, 1)
+          model.eval()
+          loss_fn = nn.MSELoss()
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+          for p in model.parameters():
+              p.grad = torch.full_like(p, 100.0)
+          ref = copy.deepcopy(model)
+        solution: |
+          model.train()
+          loss = loss_fn(model(X), y)
+          opt.zero_grad()
+          loss.backward()
+          opt.step()
+        check: |
+          assert model.training, "model is still in eval mode: call model.train()"
+          ropt = torch.optim.SGD(ref.parameters(), lr=0.1)
+          ropt.zero_grad()
+          l = loss_fn(ref(X), y)
+          l.backward()
+          ropt.step()
+          assert torch.allclose(loss, l), f"loss = {loss}, expected {l} (loss before the update)"
+          assert torch.allclose(model.weight, ref.weight), f"weight = {model.weight.data}, expected {ref.weight.data} (did you zero the grads, then step?)"
+          assert torch.allclose(model.bias, ref.bias), f"bias = {model.bias.data}, expected {ref.bias.data}"
+      - id: b
+        prompt: Write `train_step(xb, yb)` doing one step and returning the loss as a Python float.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          X = torch.randn(64, 3)
+          y = X @ torch.tensor([[1.0], [-2.0], [0.5]]) + 0.3
+          model = nn.Linear(3, 1)
+          loss_fn = nn.MSELoss()
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+        starter: |
+          def train_step(xb, yb):
+              pass
+        solution: |
+          def train_step(xb, yb):
+              model.train()
+              loss = loss_fn(model(xb), yb)
+              opt.zero_grad()
+              loss.backward()
+              opt.step()
+              return loss.item()
+        check: |
+          first = train_step(X, y)
+          assert isinstance(first, float), f"train_step returned {type(first).__name__}, expected float"
+          for _ in range(100):
+              last = train_step(X, y)
+          assert last < 0.01 < first, f"loss {first:.3f} -> {last:.4f}"
+
+  - id: training-loop.epochs
+    name: epochs over a DataLoader
+    teach: |
+      ```python
+      for epoch in range(epochs):
+          model.train(); total = 0.0
+          for xb, yb in loader:                     # one step per batch
+              loss = loss_fn(model(xb), yb)
+              opt.zero_grad(); loss.backward(); opt.step()
+              total += loss.item() * len(xb)        # size-weighted: the last batch can be smaller
+          # len(loader.dataset) -> number of samples (len(loader) is the number of batches)
+          epoch_loss = total / len(loader.dataset)
+      ```
+    cards:
+      - id: a
+        prompt: "Train `model` for 20 epochs over `loader` (one step per batch; batches of 24, 24, 16). After each epoch set `epoch_loss` to the size-weighted mean batch loss (a float)."
+        setup: |
+          import copy
+          import torch
+          import torch.nn as nn
+          from torch.utils.data import TensorDataset, DataLoader
+          torch.manual_seed(0)
+          X = torch.randn(64, 3)
+          y = X @ torch.tensor([[1.0], [-2.0], [0.5]]) + 0.3
+          loader = DataLoader(TensorDataset(X, y), batch_size=24, shuffle=False)
+          model = nn.Linear(3, 1)
+          init = copy.deepcopy(model.state_dict())
+          loss_fn = nn.MSELoss()
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+        solution: |
+          for epoch in range(20):
+              model.train()
+              total = 0.0
+              for xb, yb in loader:
+                  loss = loss_fn(model(xb), yb)
+                  opt.zero_grad()
+                  loss.backward()
+                  opt.step()
+                  total += loss.item() * len(xb)
+              epoch_loss = total / len(loader.dataset)
+        check: |
+          with torch.no_grad():
+              full = loss_fn(model(X), y).item()
+          assert full < 0.01, f"loss on all data = {full:.4f} (20 epochs, one step per batch?)"
+          ref = nn.Linear(3, 1)
+          ref.load_state_dict(init)
+          ref_opt = torch.optim.SGD(ref.parameters(), lr=0.1)
+          for _ in range(20):
+              tot = 0.0
+              for xb, yb in loader:
+                  l = loss_fn(ref(xb), yb)
+                  ref_opt.zero_grad()
+                  l.backward()
+                  ref_opt.step()
+                  tot += l.item() * len(xb)
+          expected = tot / 64
+          assert isinstance(epoch_loss, float), f"epoch_loss is {type(epoch_loss).__name__}: use loss.item()"
+          assert abs(epoch_loss - expected) < 1e-6, f"epoch_loss = {epoch_loss:.6f}, expected {expected:.6f} (size-weighted, last epoch)"
+      - id: c
+        prompt: Train for 10 epochs over `loader` and append each epoch's mean loss (float, size-weighted) to `history`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          from torch.utils.data import TensorDataset, DataLoader
+          torch.manual_seed(0)
+          X = torch.randn(64, 3)
+          y = X @ torch.tensor([[1.0], [-2.0], [0.5]]) + 0.3
+          loader = DataLoader(TensorDataset(X, y), batch_size=16, shuffle=True)
+          model = nn.Linear(3, 1)
+          loss_fn = nn.MSELoss()
+          opt = torch.optim.SGD(model.parameters(), lr=0.05)
+          history = []
+        solution: |
+          for epoch in range(10):
+              model.train()
+              total = 0.0
+              for xb, yb in loader:
+                  loss = loss_fn(model(xb), yb)
+                  opt.zero_grad()
+                  loss.backward()
+                  opt.step()
+                  total += loss.item() * len(xb)
+              history.append(total / len(loader.dataset))
+        check: |
+          assert len(history) == 10, f"len(history) = {len(history)}"
+          assert all(isinstance(h, float) for h in history), "history must hold floats (loss.item())"
+          assert history[-1] < 0.1 * history[0], f"history = {[round(h, 3) for h in history]}"
+
+  - id: training-loop.eval
+    name: eval mode + no_grad validation
+    teach: |
+      ```python
+      model.eval()                       # dropout off, batchnorm on running stats
+      correct = 0
+      with torch.no_grad():              # no graph
+          for xb, yb in val_loader:
+              # (preds == yb).sum().item() -> number of correct predictions in the batch
+              correct += (model(xb).argmax(1) == yb).sum().item()
+      acc = correct / len(val_loader.dataset)
+      ```
+      Pitfall: without `model.eval()` dropout stays on, so accuracy changes run to run.
+    cards:
+      - id: a
+        prompt: Evaluate `model` over `val_loader` (eval mode, no graph). Count the correct predictions in `correct` (an int) and set `acc` = `correct` / number of samples.
+        setup: |
+          import torch
+          import torch.nn as nn
+          from torch.utils.data import TensorDataset, DataLoader
+          torch.manual_seed(0)
+          Xv = torch.randn(50, 2)
+          yv = torch.randint(0, 3, (50,))
+          val_loader = DataLoader(TensorDataset(Xv, yv), batch_size=16)
+          model = nn.Sequential(nn.Linear(2, 16), nn.ReLU(), nn.Dropout(0.5), nn.Linear(16, 3))
+          model.train()
+        solution: |
+          model.eval()
+          correct = 0
+          with torch.no_grad():
+              for xb, yb in val_loader:
+                  correct += (model(xb).argmax(1) == yb).sum().item()
+          acc = correct / len(val_loader.dataset)
+        check: |
+          assert not model.training, "call model.eval()"
+          with torch.no_grad():
+              exp = (model(Xv).argmax(1) == yv).sum().item()
+          assert isinstance(correct, int) and correct == exp, f"correct = {correct!r}, expected {exp} (use .sum().item())"
+          assert isinstance(acc, float) and abs(acc - exp / 50) < 1e-9, f"acc = {acc}, expected {exp / 50}"
+      - id: c
+        prompt: Collect the predicted class ids for every batch of `val_loader` into one tensor `preds` (use `torch.cat`), in eval mode without grad.
+        setup: |
+          import torch
+          import torch.nn as nn
+          from torch.utils.data import TensorDataset, DataLoader
+          torch.manual_seed(0)
+          Xv = torch.randn(50, 2)
+          yv = torch.randint(0, 3, (50,))
+          val_loader = DataLoader(TensorDataset(Xv, yv), batch_size=16)
+          model = nn.Sequential(nn.Linear(2, 16), nn.ReLU(), nn.Dropout(0.5), nn.Linear(16, 3))
+        solution: |
+          model.eval()
+          batches = []
+          with torch.no_grad():
+              for xb, _ in val_loader:
+                  batches.append(model(xb).argmax(1))
+          preds = torch.cat(batches)
+        check: |
+          assert not model.training, "call model.eval()"
+          with torch.no_grad():
+              exp = model(Xv).argmax(1)
+          assert preds.shape == (50,), f"preds.shape = {tuple(preds.shape)}"
+          assert torch.equal(preds, exp), f"preds = {preds[:8]}..., expected {exp[:8]}..."
+
+  - id: training-loop.full
+    name: a complete fit() with train + eval epochs
+    teach: |
+      Each epoch = the train pass (skill *epochs*) + the validation pass (skill *eval*), then log both.
+
+      ```python
+      history = []
+      for epoch in range(epochs):
+          model.train()      # every epoch: the eval pass below switched it off
+          ...                # train pass over train_loader -> tr (size-weighted loss sum)
+          model.eval()
+          with torch.no_grad():
+              ...            # eval pass over val_loader -> va
+          history.append({"train_loss": tr / len(train_loader.dataset),
+                          "val_loss": va / len(val_loader.dataset)})
+      ```
+    cards:
+      - id: a
+        prompt: 'Implement `fit(model, train_loader, val_loader, loss_fn, opt, epochs)` returning a list of `{"train_loss": float, "val_loss": float}` dicts, one per epoch.'
+        setup: |
+          import torch
+          import torch.nn as nn
+          from torch.utils.data import TensorDataset, DataLoader
+          torch.manual_seed(0)
+          w = torch.tensor([[1.0], [-2.0], [0.5]])
+          X, Xv = torch.randn(64, 3), torch.randn(32, 3)
+          y, yv = X @ w + 0.3, Xv @ w + 0.3
+          train_loader = DataLoader(TensorDataset(X, y), batch_size=16, shuffle=True)
+          val_loader = DataLoader(TensorDataset(Xv, yv), batch_size=16)
+          model = nn.Linear(3, 1)
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+        starter: |
+          def fit(model, train_loader, val_loader, loss_fn, opt, epochs):
+              history = []
+              return history
+        solution: |
+          def fit(model, train_loader, val_loader, loss_fn, opt, epochs):
+              history = []
+              for epoch in range(epochs):
+                  model.train()
+                  tr = 0.0
+                  for xb, yb in train_loader:
+                      loss = loss_fn(model(xb), yb)
+                      opt.zero_grad()
+                      loss.backward()
+                      opt.step()
+                      tr += loss.item() * len(xb)
+                  model.eval()
+                  va = 0.0
+                  with torch.no_grad():
+                      for xb, yb in val_loader:
+                          va += loss_fn(model(xb), yb).item() * len(xb)
+                  history.append({"train_loss": tr / len(train_loader.dataset),
+                                  "val_loss": va / len(val_loader.dataset)})
+              return history
+        check: |
+          h = fit(model, train_loader, val_loader, nn.MSELoss(), opt, 15)
+          assert len(h) == 15, f"len(history) = {len(h)}"
+          assert set(h[0]) == {"train_loss", "val_loss"}, f"keys = {set(h[0])}"
+          with torch.no_grad():
+              true_val = nn.MSELoss()(model(Xv), yv).item()
+          assert abs(h[-1]["val_loss"] - true_val) < 1e-5, f"last val_loss = {h[-1]['val_loss']:.5f}, real {true_val:.5f}"
+          assert h[-1]["val_loss"] < 0.01 < h[0]["train_loss"], f"first/last = {h[0]}, {h[-1]}"
+      - id: c
+        prompt: "Classification `fit`: train for `epochs` and append `{\"train_loss\", \"val_loss\", \"val_acc\"}` (floats) per epoch to the returned list."
+        setup: |
+          import torch
+          import torch.nn as nn
+          from torch.utils.data import TensorDataset, DataLoader
+          torch.manual_seed(0)
+          centers = torch.tensor([[0.0, 3.0], [3.0, -2.0], [-3.0, -2.0]])
+          def blobs(n):
+              lab = torch.arange(3).repeat(n)
+              return centers[lab] + 0.7 * torch.randn(3 * n, 2), lab
+          X, y = blobs(30)
+          Xv, yv = blobs(10)
+          train_loader = DataLoader(TensorDataset(X, y), batch_size=16, shuffle=True)
+          val_loader = DataLoader(TensorDataset(Xv, yv), batch_size=16)
+          model = nn.Linear(2, 3)
+          opt = torch.optim.SGD(model.parameters(), lr=0.1)
+        starter: |
+          def fit(model, train_loader, val_loader, loss_fn, opt, epochs):
+              history = []
+              return history
+        solution: |
+          def fit(model, train_loader, val_loader, loss_fn, opt, epochs):
+              history = []
+              for epoch in range(epochs):
+                  model.train()
+                  tr = 0.0
+                  for xb, yb in train_loader:
+                      loss = loss_fn(model(xb), yb)
+                      opt.zero_grad()
+                      loss.backward()
+                      opt.step()
+                      tr += loss.item() * len(xb)
+                  model.eval()
+                  va, correct = 0.0, 0
+                  with torch.no_grad():
+                      for xb, yb in val_loader:
+                          logits = model(xb)
+                          va += loss_fn(logits, yb).item() * len(xb)
+                          correct += (logits.argmax(1) == yb).sum().item()
+                  n = len(val_loader.dataset)
+                  history.append({"train_loss": tr / len(train_loader.dataset),
+                                  "val_loss": va / n, "val_acc": correct / n})
+              return history
+        check: |
+          h = fit(model, train_loader, val_loader, nn.CrossEntropyLoss(), opt, 10)
+          assert len(h) == 10, f"len(history) = {len(h)}"
+          assert set(h[-1]) == {"train_loss", "val_loss", "val_acc"}, f"keys = {set(h[-1])}"
+          with torch.no_grad():
+              real_acc = (model(Xv).argmax(1) == yv).float().mean().item()
+          assert abs(h[-1]["val_acc"] - real_acc) < 1e-6, f"val_acc = {h[-1]['val_acc']}, real {real_acc}"
+          assert real_acc >= 0.95, f"val_acc = {real_acc}"

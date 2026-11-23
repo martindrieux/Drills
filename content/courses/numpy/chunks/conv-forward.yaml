@@ -1,0 +1,235 @@
+id: conv-forward
+title: Conv2D forward with loops
+intro: |
+  The output-size formula and zero padding, then a Conv2D forward pass with explicit loops, validated against
+  `torch.nn.functional.conv2d`. NCHW: `x` (B, Cin, H, W), `w` (Cout, Cin, Kh, Kw), `b` (Cout,), no kernel flip.
+problems:
+  - Implement a Conv2D forward pass from scratch in NumPy
+  - Compute the output shape of a conv layer with padding, stride and dilation
+  - Implement "same" padding
+  - Explain a Conv1D as the same linear map applied at every position
+atoms: []
+skills:
+  - id: conv-forward.out-shape
+    name: output size with pad / stride / dilation, zero padding with np.pad
+    teach: |
+      ```python
+      # output size along one axis (same rule for W): number of windows that fit in the padded input
+      H_out = (H + 2*pad - dil*(K - 1) - 1) // stride + 1   # dil*(K-1)+1 = span of a dilated kernel
+      # H=5, K=3, pad=1, stride=2: dil=1 -> (5+2-2-1)//2+1 = 3 ; dil=2 -> (5+2-4-1)//2+1 = 2
+      # np.pad(x, widths) -> zero-padded copy; widths = one (before, after) pair per axis
+      np.pad(x, ((0, 0), (0, 0), (1, 1), (2, 2)))          # (B, C, H, W) -> (B, C, H+2, W+4)
+      # one (1, 2) plane [[1, 2]] padded (1, 1) on both axes -> [[0,0,0,0], [0,1,2,0], [0,0,0,0]]
+      ```
+      Pitfall: `np.pad(x, p)` with an int pads every axis, B and C too.
+    cards:
+      - id: a
+        prompt: |
+          Compute how many output positions a convolution has along one axis.
+          - `H` (int): input length; `K` (int): kernel size
+          - `stride` (int), `pad` (int, zeros added on each side), `dil` (int, dilation: spacing between kernel taps)
+          - returns `out_size(H, K, stride, pad, dil)` (int): number of positions where the (dilated) kernel fits in the padded input
+        setup: |
+          import numpy as np
+        solution: |
+          def out_size(H, K, stride, pad, dil):
+              span = dil * (K - 1) + 1                  # input pixels covered by one dilated window
+              return (H + 2 * pad - span) // stride + 1  # floor: a last partial window is dropped
+          # Key idea: count window start positions 0, stride, 2*stride, ... with start + span <= H + 2*pad.
+          # Follow-up: which pad keeps H_out = H for stride 1? pad = dil*(K-1)/2 (odd K).
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(H, K, stride, pad, dil):
+              x = torch.zeros(1, 1, H, 1, dtype=torch.float64)
+              w = torch.zeros(1, 1, K, 1, dtype=torch.float64)
+              return F.conv2d(x, w, stride=(stride, 1), padding=(pad, 0), dilation=(dil, 1)).shape[2]
+
+          def _gen(r):
+              while True:
+                  H, pad, dil, stride = r.randint(1, 9), r.randint(0, 3), r.randint(1, 3), r.randint(1, 4)
+                  K = r.randint(1, 5)
+                  if dil * (K - 1) + 1 <= H + 2 * pad:
+                      return (H, K, stride, pad, dil)
+
+          _same = lambda got, exp: isinstance(got, (int, np.integer)) and got == exp
+          against(out_size, _ref, [(1, 1, 1, 0, 1), (5, 3, 1, 0, 1), (5, 3, 2, 1, 1), (6, 3, 2, 0, 1), (7, 3, 3, 0, 1),
+                                   (4, 6, 1, 1, 1), (3, 3, 2, 0, 1), (5, 3, 1, 0, 2), (6, 3, 2, 1, 2), (8, 2, 3, 2, 3)]
+                  + rand_cases(_gen, 300), same=_same)
+      - id: b
+        prompt: |
+          Pad a batch of images so that a stride-1 convolution keeps its spatial size ("same" padding).
+          - `x` (B, C, H, W): images; `Kh`, `Kw` (ints): kernel height and width, may be even
+          - returns `pad_same(x, Kh, Kw)` (B, C, H + Kh − 1, W + Kw − 1): `x` with zeros added on H and W only,
+            `(K − 1) // 2` before and the rest after, on each axis
+          - don't modify `x`
+        setup: |
+          import numpy as np
+        solution: |
+          def pad_same(x, Kh, Kw):
+              th, tw = Kh - 1, Kw - 1                    # total padding per axis
+              return np.pad(x, ((0, 0), (0, 0), (th // 2, th - th // 2), (tw // 2, tw - tw // 2)))
+          # (B, C, H, W) -> (B, C, H+Kh-1, W+Kw-1): out_size(H + Kh-1, Kh, 1, 0, 1) = H.
+          # Even K: the extra zero goes after (bottom / right), like PyTorch.
+          # Follow-up: why does 'same' not exist for stride > 1 in PyTorch? (H_out = ceil(H/stride) is ambiguous)
+        check: |
+          import torch
+          import warnings
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+          warnings.simplefilter("ignore", UserWarning)
+
+          def _ref(x, Kh, Kw):
+              B, C, H, W = x.shape
+              out = np.zeros((B, C, H + Kh - 1, W + Kw - 1))
+              t, l = (Kh - 1) // 2, (Kw - 1) // 2
+              for bi in range(B):
+                  for c in range(C):
+                      for i in range(H):
+                          for j in range(W):
+                              out[bi, c, t + i, l + j] = x[bi, c, i, j]
+              return out
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp)
+
+          def _gen(r):
+              rs = np.random.RandomState(r.randrange(10**6))
+              B, C, H, W = r.randint(1, 2), r.randint(1, 3), r.randint(1, 6), r.randint(1, 6)
+              return (rs.randn(B, C, H, W), r.randint(1, 5), r.randint(1, 5))
+
+          rs = np.random.RandomState(0)
+          cases = [(rs.randn(1, 1, 3, 3), 3, 3), (rs.randn(1, 1, 3, 3), 1, 1), (rs.randn(2, 1, 4, 5), 2, 2),
+                   (rs.randn(1, 2, 3, 4), 4, 1), (rs.randn(1, 1, 2, 5), 1, 4), (rs.randn(1, 3, 1, 1), 5, 2)]
+          _show = lambda x, Kh, Kw: f"(x {x.shape}, Kh={Kh}, Kw={Kw})"
+          against(pad_same, _ref, cases + rand_cases(_gen, 250), same=_same, show=_show)
+          # x not modified
+          _x = rs.randn(1, 2, 3, 3); _x0 = _x.copy(); pad_same(_x, 3, 2)
+          assert np.array_equal(_x, _x0), "pad_same modified x"
+          # used for a conv: stride-1 conv on the padded input == PyTorch padding='same'
+          for Kh, Kw in [(3, 3), (2, 4), (1, 5)]:
+              _x = rs.randn(2, 2, 5, 6); _w = rs.randn(3, 2, Kh, Kw)
+              got = F.conv2d(torch.from_numpy(pad_same(_x, Kh, Kw)), torch.from_numpy(_w)).numpy()
+              exp = F.conv2d(torch.from_numpy(_x), torch.from_numpy(_w), padding='same').numpy()
+              assert got.shape == exp.shape and np.allclose(got, exp), f"conv on pad_same(x, {Kh}, {Kw}) differs from padding='same'"
+
+  - id: conv-forward.loops
+    name: Conv2D forward with explicit loops
+    teach: |
+      ```python
+      # each output pixel = bias + dot product of the kernel with one window of the padded input xp
+      out[b, co, y, x] = bias[co] + sum over ci, i, j of  w[co, ci, i, j] * xp[b, ci, y*stride + i, x*stride + j]
+      # x (B, Cin, H, W), w (Cout, Cin, Kh, Kw), bias (Cout,) -> out (B, Cout, H_out, W_out), H_out with dil = 1
+      # B = Cin = Cout = 1: x = [[1, 2, 3, 4]] (1, 4), w = [[1, -1]] (1, 2), bias 0, stride 2, pad 0
+      # -> windows [1, 2], [3, 4] -> out = [[-1, -1]] (1, 2)
+      # cross-correlation like PyTorch: the kernel is NOT flipped
+      ```
+      Pitfall: the window starts at `y*stride`, not at `y`.
+    cards:
+      - id: a
+        prompt: |
+          Implement the forward pass of a 2D convolution (cross-correlation, as in PyTorch) with loops.
+          - `x` (B, Cin, H, W): input; `w` (Cout, Cin, Kh, Kw): weights; `b` (Cout,): bias
+          - `stride` (int); `pad` (int): zeros added on each side of H and W, giving `xp`
+          - returns `conv2d_forward(x, w, b, stride, pad)` (B, Cout, H_out, W_out):
+            `out[n, co, r, c] = b[co] + Σ_{ci, i, j} w[co, ci, i, j] · xp[n, ci, r·stride + i, c·stride + j]`
+          - loops allowed
+        setup: |
+          import numpy as np
+        solution: |
+          def conv2d_forward(x, w, b, stride, pad):
+              B, Cin, H, W = x.shape
+              Cout, _, Kh, Kw = w.shape
+              Ho, Wo = (H + 2 * pad - Kh) // stride + 1, (W + 2 * pad - Kw) // stride + 1
+              xp = np.pad(x, ((0, 0), (0, 0), (pad, pad), (pad, pad)))   # (B, Cin, H+2p, W+2p)
+              out = np.zeros((B, Cout, Ho, Wo))
+              for n in range(B):
+                  for co in range(Cout):
+                      for y in range(Ho):
+                          for xx in range(Wo):
+                              win = xp[n, :, y * stride:y * stride + Kh, xx * stride:xx * stride + Kw]  # (Cin, Kh, Kw)
+                              out[n, co, y, xx] = np.sum(win * w[co]) + b[co]
+              return out
+          # Cost: B*Cout*Ho*Wo*Cin*Kh*Kw multiply-adds.
+          # Faster: loop only over (i, j) and add x-slices times w[:, :, i, j] (Kh*Kw big matmuls), or im2col.
+          # Follow-up: how does dilation change the window? xp[..., y*s + i*dil, x*s + j*dil].
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(x, w, b, stride, pad):
+              return F.conv2d(torch.from_numpy(x), torch.from_numpy(w), torch.from_numpy(b), stride=stride, padding=pad).numpy()
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp)
+
+          def _mk(rs, B, Cin, H, W, Cout, Kh, Kw, s, p):
+              return (rs.randn(B, Cin, H, W), rs.randn(Cout, Cin, Kh, Kw), rs.randn(Cout), s, p)
+
+          def _gen(r):
+              rs = np.random.RandomState(r.randrange(10**6))
+              while True:
+                  H, W, p = r.randint(1, 6), r.randint(1, 6), r.randint(0, 2)
+                  Kh, Kw = r.randint(1, 3), r.randint(1, 3)
+                  if Kh <= H + 2 * p and Kw <= W + 2 * p:
+                      return _mk(rs, r.randint(1, 2), r.randint(1, 3), H, W, r.randint(1, 3), Kh, Kw, r.randint(1, 3), p)
+
+          rs = np.random.RandomState(0)
+          cases = [_mk(rs, 1, 1, 3, 3, 1, 1, 1, 1, 0),   # K = 1
+                   _mk(rs, 1, 1, 4, 4, 1, 4, 4, 1, 0),   # K = H
+                   _mk(rs, 1, 1, 5, 5, 1, 3, 3, 2, 0),   # stride 2
+                   _mk(rs, 1, 1, 6, 6, 1, 3, 3, 2, 0),   # stride not dividing
+                   _mk(rs, 2, 2, 4, 5, 3, 2, 3, 1, 1),   # pad, non-square, Cout > Cin
+                   _mk(rs, 1, 3, 5, 4, 2, 3, 2, 3, 2),   # big stride + pad
+                   _mk(rs, 1, 2, 2, 2, 1, 4, 4, 1, 1)]   # K = H + 2p
+          _show = lambda x, w, b, s, p: f"(x {x.shape}, w {w.shape}, b {b.shape}, stride={s}, pad={p})"
+          against(conv2d_forward, _ref, cases + rand_cases(_gen, 220), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Implement a 1D convolution on a channels-last sequence (stride 1, no padding).
+          - `x` (L, Cin): sequence; `w` (K, Cin, Cout): kernel
+          - returns `conv1d(x, w)` (L − K + 1, Cout): `out[t, co] = Σ_{i, ci} x[t + i, ci] · w[i, ci, co]`
+        setup: |
+          import numpy as np
+        solution: |
+          def conv1d(x, w):
+              L, Cin = x.shape
+              K, _, Cout = w.shape
+              W2 = w.reshape(K * Cin, Cout)                    # same linear map K*Cin -> Cout at every position
+              out = np.zeros((L - K + 1, Cout))
+              for t in range(L - K + 1):
+                  out[t] = x[t:t + K].reshape(K * Cin) @ W2    # window (K, Cin) flattened row-major, like w
+              return out
+          # K = 1: a Linear layer applied to each position, x @ w[0].
+          # K = L: one window = the whole input -> out = x.reshape(1, L*Cin) @ W2, a plain matmul (dense layer).
+          # Follow-up: stacking all windows into a (L-K+1, K*Cin) matrix is im2col: then one matmul does everything.
+        check: |
+          import torch
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _ref(x, w):
+              xt = torch.from_numpy(x).T[None]                  # (1, Cin, L)
+              wt = torch.from_numpy(w).permute(2, 1, 0)         # (Cout, Cin, K)
+              return F.conv1d(xt, wt)[0].T.numpy()
+
+          def _same(got, exp):
+              return isinstance(got, np.ndarray) and got.shape == exp.shape and np.allclose(got, exp)
+
+          def _gen(r):
+              rs = np.random.RandomState(r.randrange(10**6))
+              L, Cin = r.randint(1, 7), r.randint(1, 3)
+              return (rs.randn(L, Cin), rs.randn(r.randint(1, L), Cin, r.randint(1, 3)))
+
+          rs = np.random.RandomState(0)
+          cases = [(rs.randn(1, 1), rs.randn(1, 1, 1)),        # L = K = 1
+                   (rs.randn(5, 1), rs.randn(1, 1, 3)),        # K = 1, Cin = 1
+                   (rs.randn(4, 2), rs.randn(4, 2, 3)),        # K = L: plain matmul
+                   (rs.randn(6, 2), rs.randn(3, 2, 4)),        # Cout > Cin
+                   (rs.randn(5, 3), rs.randn(2, 3, 1))]
+          cases += rand_cases(_gen, 250)
+          _show = lambda x, w: f"(x {x.shape}, w {w.shape})"
+          against(conv1d, _ref, cases, same=_same, show=_show)

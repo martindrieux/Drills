@@ -1,0 +1,566 @@
+id: idx-topk
+title: Top-k sampling, step by step
+intro: |
+  Top-k sampling is four small indexing steps: take the k best logits, sample a **position** among them,
+  map that position back to a **vocab id**, append it. Drill each step on its own, plus the "undo a sort" trick
+  that top-p needs, then assemble the full sampler.
+problems:
+  - Implement top-k sampling for a language model
+  - Implement nucleus (top-p) sampling
+  - Sparse top-k attention
+  - Retrieve the k nearest neighbours of each query
+atoms: []
+skills:
+  - id: idx-topk.topk
+    name: torch.topk (values and positions)
+    teach: |
+      ```python
+      # torch.topk(t, k, dim=-1, largest=True) -> (values, indices), each (..., k): k largest along dim, descending
+      # indices = int64 POSITIONS along dim; largest=False: k smallest, ascending
+      t = torch.tensor([[1., 5., 3., 4.], [9., 0., 7., 2.]])  # (2, 4)
+      v, ix = torch.topk(t, 2)                 # (2, 2): v [[5., 4.], [9., 7.]], ix [[1, 3], [0, 2]]
+      torch.topk(t, 1, largest=False).indices  # (2, 1): [[0], [1]]
+      torch.topk(t, 1, dim=0).values           # (1, 4): [[9., 5., 7., 4.]], down each column
+      ```
+      Pitfall: `ix` holds positions in `t`, not values.
+    cards:
+      - id: a
+        prompt: |
+          Use `torch.topk` to find the largest and smallest entries of `scores` (3, 5) and their positions.
+          - `v, ix` (3, 3): the 3 largest entries of each row and their column positions (int64), largest first
+          - `lo_ix` (3, 2) int64: column positions of the 2 smallest entries of each row, smallest first
+          - `col_best` (1, 5): the largest entry of each **column**
+        setup: |
+          import torch
+          scores = torch.tensor([[0.3, 2.5, -1.0, 1.7, 0.9],
+                                 [4.0, -0.5, 3.1, 0.2, 2.2],
+                                 [-2.0, 1.1, 0.6, -0.7, 1.4]])
+        solution: |
+          v, ix = torch.topk(scores, 3)
+          lo_ix = torch.topk(scores, 2, largest=False).indices
+          col_best = torch.topk(scores, 1, dim=0).values
+        check: |
+          _rows = scores.tolist()
+          _ix = [sorted(range(5), key=lambda j: -r[j])[:3] for r in _rows]
+          _lo = [sorted(range(5), key=lambda j: r[j])[:2] for r in _rows]
+          _col = [[max(r[j] for r in _rows) for j in range(5)]]
+          assert tuple(v.shape) == (3, 3) and tuple(ix.shape) == (3, 3), f"v.shape = {tuple(v.shape)}, ix.shape = {tuple(ix.shape)}, expected (3, 3)"
+          assert ix.dtype == torch.int64, f"ix.dtype = {ix.dtype}"
+          assert ix.tolist() == _ix, f"ix = {ix.tolist()}, expected {_ix} (positions, largest first)"
+          assert torch.allclose(v, scores.gather(1, torch.tensor(_ix))), f"v = {v.tolist()}"
+          assert tuple(lo_ix.shape) == (3, 2) and lo_ix.dtype == torch.int64, f"lo_ix: shape {tuple(lo_ix.shape)}, dtype {lo_ix.dtype}"
+          assert lo_ix.tolist() == _lo, f"lo_ix = {lo_ix.tolist()}, expected {_lo} (smallest first)"
+          assert tuple(col_best.shape) == (1, 5), f"col_best.shape = {tuple(col_best.shape)}, expected (1, 5)"
+          assert torch.allclose(col_best, torch.tensor(_col)), f"col_best = {col_best.tolist()}, expected {_col}"
+      - id: b
+        prompt: |
+          Write `nearest(dists, doc_ids, k)`: the `k` closest documents to each query.
+          - `dists` (Q, N) float: query-to-document distances (smaller = closer); `doc_ids` (N,) int64: external id of each document; `k` (int, 1 ≤ k ≤ N)
+          - returns `(d, ids)`: `d` (Q, k): the k smallest distances of each row, closest first; `ids` (Q, k) int64: the **`doc_ids` entry** (not the position) of each of those documents
+          - no `sort` / `argsort`
+        setup: |
+          import torch
+        starter: |
+          def nearest(dists, doc_ids, k):
+              raise NotImplementedError
+        solution: |
+          def nearest(dists, doc_ids, k):
+              d, pos = torch.topk(dists, k, dim=-1, largest=False)    # (Q, k), (Q, k) positions
+              return d, doc_ids[pos]                                  # (Q, k) external ids
+        check: |
+          from cardtest import against, rand_cases
+          _code = nearest.__code__.co_names
+          assert not {"sort", "argsort"} & set(_code), "don't use sort / argsort: use topk"
+
+          def _ref(dists, doc_ids, k):
+              d, ids = [], []
+              for row in dists.tolist():
+                  order = sorted(range(len(row)), key=lambda j: row[j])[:k]
+                  d.append([row[j] for j in order])
+                  ids.append([doc_ids[j].item() for j in order])
+              return torch.tensor(d, dtype=dists.dtype).reshape(len(d), k), torch.tensor(ids, dtype=torch.int64).reshape(len(d), k)
+
+          def _same(got, exp):
+              if not isinstance(got, tuple) or len(got) != 2:
+                  return False
+              (gd, gi), (ed, ei) = got, exp
+              return (gd.shape == ed.shape and gi.shape == ei.shape and gi.dtype == torch.int64
+                      and torch.allclose(gd, ed) and torch.equal(gi, ei))
+
+          def _gen(r):
+              q, n = r.randint(1, 4), r.randint(1, 8)
+              d = torch.tensor([[x / 10 for x in r.sample(range(100), n)] for _ in range(q)])
+              return d, torch.tensor(r.sample(range(1000), n)), r.randint(1, n)
+
+          _show = lambda d, ids, k: f"(dists {tuple(d.shape)} = {d.tolist()}, doc_ids = {ids.tolist()}, k = {k})"
+          cases = [(torch.tensor([[0.5]]), torch.tensor([42]), 1),
+                   (torch.tensor([[3.0, 1.0, 2.0]]), torch.tensor([10, 20, 30]), 1),
+                   (torch.tensor([[3.0, 1.0, 2.0]]), torch.tensor([10, 20, 30]), 3),
+                   (torch.tensor([[0.2, 0.9, 0.1, 0.5], [0.8, 0.3, 0.6, 0.0]]), torch.tensor([7, 3, 9, 1]), 2)]
+          against(nearest, _ref, cases + rand_cases(_gen, 300), same=_same, show=_show)
+
+  - id: idx-topk.threshold
+    name: Keep only the top k of each row
+    teach: |
+      ```python
+      # t.masked_fill(mask, value) -> copy of t with value where mask is True (mask broadcasts)
+      # t.scatter(dim, index, src) -> copy of t with out[b][index[b][j]] = src[b][j]
+      logits = torch.tensor([[1., 5., 3., 4.], [9., 0., 7., 2.]])  # (2, 4), k = 2
+      v, ix = torch.topk(logits, 2)                           # (2, 2), (2, 2)
+      kth = v[..., -1:]                                       # (2, 1): each row's k-th largest, [[4.], [7.]]
+      logits.masked_fill(logits < kth, float("-inf"))         # (2, 4): [[-inf, 5., -inf, 4.], [9., -inf, 7., -inf]]
+      torch.full_like(logits, float("-inf")).scatter(-1, ix, v)  # same (2, 4) result
+      ```
+      Pitfall: `v[:, -1]` is `(B,)`: it broadcasts against V, not per row.
+    cards:
+      - id: a
+        prompt: |
+          Keep only the top `k = 3` logits of each row of `logits` (3, 6), two ways.
+          - `v, ix` (3, 3): the top-k values of each row and their column positions
+          - `kth` (3, 1): each row's k-th largest value
+          - `masked` (3, 6): `logits` with the entries below their row's `kth` set to `-inf`, with `masked_fill`
+          - `sparse` (3, 6): **zeros** except each row's top k, which keep their logit, with `scatter`
+        setup: |
+          import torch
+          logits = torch.tensor([[2.0, -1.0, 0.5, 3.0, 1.0, 0.0],
+                                 [0.1, 0.4, -0.3, 0.2, 0.9, 0.6],
+                                 [-2.0, -0.5, -1.5, -1.0, -3.0, -0.2]])
+          k = 3
+        solution: |
+          v, ix = torch.topk(logits, k)
+          kth = v[..., -1:]
+          masked = logits.masked_fill(logits < kth, float("-inf"))
+          sparse = torch.zeros_like(logits).scatter(-1, ix, v)
+        check: |
+          inf = float("-inf")
+          _rows = logits.tolist()
+          _top = [set(sorted(range(6), key=lambda j: -r[j])[:3]) for r in _rows]
+          _kth = [[min(r[j] for j in t)] for r, t in zip(_rows, _top)]
+          _masked = [[r[j] if j in t else inf for j in range(6)] for r, t in zip(_rows, _top)]
+          _sparse = [[r[j] if j in t else 0.0 for j in range(6)] for r, t in zip(_rows, _top)]
+          assert tuple(v.shape) == (3, 3) and tuple(ix.shape) == (3, 3), f"v.shape = {tuple(v.shape)}, ix.shape = {tuple(ix.shape)}"
+          assert [set(r) for r in ix.tolist()] == _top, f"ix = {ix.tolist()}"
+          assert tuple(kth.shape) == (3, 1), f"kth.shape = {tuple(kth.shape)}, expected (3, 1) (keep the dim)"
+          assert torch.allclose(kth, torch.tensor(_kth)), f"kth = {kth.tolist()}, expected {_kth}"
+          assert tuple(masked.shape) == (3, 6), f"masked.shape = {tuple(masked.shape)}"
+          assert masked.tolist() == _masked, f"masked = {masked.tolist()}\n expected {_masked}"
+          assert tuple(sparse.shape) == (3, 6), f"sparse.shape = {tuple(sparse.shape)}"
+          assert sparse.tolist() == _sparse, f"sparse = {sparse.tolist()}\n expected {_sparse}"
+      - id: b
+        prompt: |
+          Write `topk_attention_weights(scores, k)`: top-k sparse attention weights.
+          - `scores` (B, H, T, S) float: attention scores of each query over `S` keys; `k` (int, 1 ≤ k ≤ S)
+          - returns (B, H, T, S): for each query row `scores[b, h, t]`, the softmax over its k largest scores at those keys, exactly `0` at the other keys
+        setup: |
+          import torch
+        starter: |
+          def topk_attention_weights(scores, k):
+              raise NotImplementedError
+        solution: |
+          def topk_attention_weights(scores, k):
+              kth = torch.topk(scores, k, dim=-1).values[..., -1:]               # (B, H, T, 1)
+              masked = scores.masked_fill(scores < kth, float("-inf"))           # (B, H, T, S)
+              return torch.softmax(masked, dim=-1)
+        check: |
+          import math
+          from cardtest import against, rand_cases
+
+          def _ref(scores, k):
+              B, H, T, S = scores.shape
+              out = torch.zeros(B, H, T, S)
+              for b in range(B):
+                  for h in range(H):
+                      for t in range(T):
+                          row = scores[b, h, t].tolist()
+                          top = sorted(range(S), key=lambda j: -row[j])[:k]
+                          m = max(row)
+                          z = sum(math.exp(row[j] - m) for j in top)
+                          for j in top:
+                              out[b, h, t, j] = math.exp(row[j] - m) / z
+              return out
+
+          _same = lambda got, exp: isinstance(got, torch.Tensor) and got.shape == exp.shape and torch.allclose(got, exp, atol=1e-6)
+
+          def _gen(r):
+              B, H, T, S = r.randint(1, 2), r.randint(1, 2), r.randint(1, 4), r.randint(1, 5)
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              return torch.randn(B, H, T, S, generator=g) * 2, r.randint(1, S)
+
+          _show = lambda s, k: f"(scores of shape {tuple(s.shape)} = {s.tolist()}, k = {k})"
+          _x = torch.tensor([[[[0.5, 2.0, -1.0], [1.0, 0.0, 3.0], [-2.0, -1.0, 0.0]]]])     # T == S
+          cases = [(torch.tensor([[[[1.0, 3.0, 2.0, 0.0]]]]), 1), (torch.tensor([[[[1.0, 3.0, 2.0, 0.0]]]]), 4),
+                   (torch.tensor([[[[1.0, 3.0, 2.0, 0.0]]]]), 2), (_x, 2), (_x, 1),
+                   (torch.tensor([[[[0.1, 0.4, 0.2, 0.9, 0.5], [2.0, 1.0, 0.0, -1.0, -2.0]]]]), 3)]
+          against(topk_attention_weights, _ref, cases + rand_cases(_gen, 300), same=_same, show=_show)
+
+  - id: idx-topk.sample-pos
+    name: Sample a position among the k kept values
+    teach: |
+      ```python
+      # F.softmax(v / temperature, dim=-1) -> (B, k) probs; temperature < 1 sharpens, > 1 flattens
+      # torch.multinomial(probs, 1, generator=g) -> (B, 1) int64: a POSITION j in 0..k-1, drawn with prob probs[b, j]
+      # t.argmax(-1, keepdim=True) -> (B, 1) int64: position of each row's max
+      v = torch.tensor([[5., 4.], [9., 7.]])    # (B, k) = (2, 2), from topk (descending)
+      probs = F.softmax(v / 0.5, dim=-1)        # (2, 2): [[0.881, 0.119], [0.982, 0.018]]
+      g = torch.Generator().manual_seed(0)      # seeded: reproducible draws
+      torch.multinomial(probs, 1, generator=g)  # (2, 1): [[0], [0]]
+      probs.argmax(-1, keepdim=True)            # (2, 1): [[0], [0]], greedy (always 0 after topk)
+      ```
+      Pitfall: a sampled position indexes the k kept values, not the vocab (map it back through `ix`, next skill).
+    cards:
+      - id: a
+        prompt: |
+          Turn the top-k logits `v` (3, 4) into probabilities, then sample a position and take the greedy one.
+          - `probs` (3, 4): softmax of `v / temperature` along each row
+          - `pos` (3, 1) int64: one position per row drawn from `probs` with `torch.multinomial`, `generator=g`
+          - `greedy_pos` (3, 1) int64: position of each row's largest value
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          v = torch.tensor([[3.0, 2.5, 1.0, -0.5],
+                            [1.2, 1.1, 1.0, 0.9],
+                            [6.0, 2.0, 1.5, 0.0]])
+          temperature = 0.7
+          g = torch.Generator().manual_seed(42)
+        solution: |
+          probs = F.softmax(v / temperature, dim=-1)
+          pos = torch.multinomial(probs, num_samples=1, generator=g)
+          greedy_pos = probs.argmax(dim=-1, keepdim=True)
+        check: |
+          _probs = torch.softmax(v / 0.7, dim=-1)
+          _pos = torch.multinomial(_probs, 1, generator=torch.Generator().manual_seed(42))
+          assert tuple(probs.shape) == (3, 4), f"probs.shape = {tuple(probs.shape)}"
+          assert torch.allclose(probs, _probs), f"probs = {probs.tolist()}\n expected {_probs.tolist()} (divide v by the temperature first)"
+          assert tuple(pos.shape) == (3, 1) and pos.dtype == torch.int64, f"pos: shape {tuple(pos.shape)}, dtype {pos.dtype}, expected (3, 1) int64"
+          assert torch.equal(pos, _pos), f"pos = {pos.tolist()}, expected {_pos.tolist()} (sample from probs with generator=g)"
+          assert tuple(greedy_pos.shape) == (3, 1), f"greedy_pos.shape = {tuple(greedy_pos.shape)}, expected (3, 1)"
+          assert greedy_pos.dtype == torch.int64 and greedy_pos.tolist() == [[0], [0], [0]], f"greedy_pos = {greedy_pos.tolist()} ({greedy_pos.dtype})"
+      - id: b
+        prompt: |
+          Write `pick_positions(v, temperature, g)`: choose one of the k kept logits per row, greedily or by sampling.
+          - `v` (B, k) float: top-k logits, each row sorted descending; `temperature` (float ≥ 0); `g` (`torch.Generator`)
+          - returns (B, 1) int64 positions in `0..k-1`: if `temperature == 0`, each row's largest value; else one draw per row from `softmax(v / temperature)` with `torch.multinomial(probs, 1, generator=g)`
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def pick_positions(v, temperature, g):
+              raise NotImplementedError
+        solution: |
+          def pick_positions(v, temperature, g):
+              if temperature == 0:
+                  return torch.zeros(v.shape[0], 1, dtype=torch.int64)
+              probs = F.softmax(v / temperature, dim=-1)
+              return torch.multinomial(probs, num_samples=1, generator=g)
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(v, T, seed):
+              B, k = v.shape
+              if T == 0:
+                  return torch.tensor([[max(range(k), key=lambda j: v[b, j].item())] for b in range(B)], dtype=torch.int64)
+              return torch.multinomial(torch.softmax(v / T, dim=-1), 1, generator=torch.Generator().manual_seed(seed))
+
+          _fn = lambda v, T, seed: pick_positions(v, T, torch.Generator().manual_seed(seed))
+          _same = lambda got, exp: (isinstance(got, torch.Tensor) and got.shape == exp.shape
+                                    and got.dtype == torch.int64 and torch.equal(got, exp))
+
+          def _gen(r):
+              B, k = r.randint(1, 4), r.randint(1, 6)
+              v = torch.tensor([sorted((x / 4 for x in r.sample(range(-20, 20), k)), reverse=True) for _ in range(B)])
+              return v, r.choice([0, 0.5, 1.0, 2.0]), r.randint(0, 10**6)
+
+          _show = lambda v, T, seed: f"(v = {v.tolist()}, temperature = {T}, g seeded with {seed})"
+          cases = [(torch.tensor([[1.0]]), 1.0, 0), (torch.tensor([[1.0]]), 0, 0),
+                   (torch.tensor([[2.0, 1.9, 1.8]]), 0, 1), (torch.tensor([[2.0, 1.9, 1.8]]), 2.0, 1),
+                   (torch.tensor([[0.0, -1.0], [3.0, 2.0]]), 0.5, 7)]
+          against(_fn, _ref, cases + rand_cases(_gen, 300), same=_same, show=_show, name="pick_positions")
+          _p = pick_positions(torch.tensor([[1.0, 0.5, 0.0]]).expand(2000, 3), 1.0, torch.Generator().manual_seed(3))
+          assert 0 <= _p.min() and _p.max() <= 2, f"positions must lie in 0..k-1, got min {_p.min()}, max {_p.max()}"
+
+  - id: idx-topk.map-back
+    name: Map positions back to vocab ids and append
+    teach: |
+      ```python
+      # t.gather(-1, index) -> shape of index: out[b][j] = t[b][index[b][j]]
+      # t.squeeze(-1) -> drops the last dim if its size is 1
+      # torch.cat([a, b], dim) -> a and b joined along dim (other dims must match)
+      ix = torch.tensor([[1, 3], [0, 2]])    # (2, 2) vocab ids from topk
+      pos = torch.tensor([[1], [0]])         # (2, 1) positions from multinomial
+      next_id = ix.gather(-1, pos)           # (2, 1): [[3], [0]]
+      next_id.squeeze(-1)                    # (2,): [3, 0]
+      seq = torch.tensor([[7, 7], [8, 8]])   # (2, 2) tokens so far
+      torch.cat([seq, next_id], dim=1)       # (2, 3): [[7, 7, 3], [8, 8, 0]]
+      ```
+      Pitfall: `ix[:, pos.squeeze()]` is (B, B); `gather` pairs row b with `pos[b]`.
+    cards:
+      - id: a
+        prompt: |
+          Map sampled positions back to vocab ids and append them to the sequences.
+          - `next_id` (3, 1) int64: the vocab id at position `pos[b]` of row `b` of `ix`: `next_id[b, 0] = ix[b, pos[b, 0]]`
+          - `next_flat` (3,): `next_id` without its last dim
+          - `seq2` (3, 3): `seq` with `next_id` appended as a last column
+        setup: |
+          import torch
+          ix = torch.tensor([[12, 5, 40, 7],
+                             [3, 99, 18, 0],
+                             [8, 21, 2, 64]])
+          pos = torch.tensor([[2], [0], [3]])
+          seq = torch.tensor([[1, 2], [3, 4], [5, 6]])
+        solution: |
+          next_id = ix.gather(-1, pos)
+          next_flat = next_id.squeeze(-1)
+          seq2 = torch.cat([seq, next_id], dim=1)
+        check: |
+          assert tuple(next_id.shape) == (3, 1), f"next_id.shape = {tuple(next_id.shape)}, expected (3, 1)"
+          assert next_id.tolist() == [[40], [3], [64]], f"next_id = {next_id.tolist()}, expected [[40], [3], [64]] (vocab ids, not positions)"
+          assert tuple(next_flat.shape) == (3,), f"next_flat.shape = {tuple(next_flat.shape)}, expected (3,)"
+          assert next_flat.tolist() == [40, 3, 64], f"next_flat = {next_flat.tolist()}"
+          assert tuple(seq2.shape) == (3, 3), f"seq2.shape = {tuple(seq2.shape)}, expected (3, 3)"
+          assert seq2.tolist() == [[1, 2, 40], [3, 4, 3], [5, 6, 64]], f"seq2 = {seq2.tolist()}"
+          assert next_id.dtype == next_flat.dtype == seq2.dtype == torch.int64, "all three must be int64"
+      - id: b
+        prompt: |
+          Write `rerank_append(history, cand_ids, scores)`: append each row's best candidate to its history.
+          - `history` (B, T) int64: item ids so far (`T` may be 0); `cand_ids` (B, k) int64: candidate ids; `scores` (B, k) float: their scores, distinct per row
+          - returns (B, T + 1) int64: `history` with the **id** of each row's highest-scoring candidate appended
+        setup: |
+          import torch
+        starter: |
+          def rerank_append(history, cand_ids, scores):
+              raise NotImplementedError
+        solution: |
+          def rerank_append(history, cand_ids, scores):
+              best = scores.argmax(dim=-1, keepdim=True)          # (B, 1) positions
+              return torch.cat([history, cand_ids.gather(-1, best)], dim=1)
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(history, cand_ids, scores):
+              rows = []
+              for b in range(cand_ids.shape[0]):
+                  s = scores[b].tolist()
+                  j = max(range(len(s)), key=lambda i: s[i])
+                  rows.append(history[b].tolist() + [cand_ids[b, j].item()])
+              return torch.tensor(rows, dtype=torch.int64).reshape(cand_ids.shape[0], history.shape[1] + 1)
+
+          _same = lambda got, exp: (isinstance(got, torch.Tensor) and got.shape == exp.shape
+                                    and got.dtype == torch.int64 and torch.equal(got, exp))
+
+          def _gen(r):
+              B, T, k = r.randint(1, 4), r.randint(0, 5), r.randint(1, 6)
+              hist = torch.tensor([[r.randint(0, 99) for _ in range(T)] for _ in range(B)], dtype=torch.int64).reshape(B, T)
+              cand = torch.tensor([[r.randint(0, 9) for _ in range(k)] for _ in range(B)])
+              sc = torch.tensor([[x / 10 for x in r.sample(range(-50, 50), k)] for _ in range(B)])
+              return hist, cand, sc
+
+          _show = lambda h, c, s: f"(history {tuple(h.shape)} = {h.tolist()}, cand_ids = {c.tolist()}, scores = {s.tolist()})"
+          _e = torch.zeros(2, 0, dtype=torch.int64)
+          cases = [(torch.tensor([[5]]), torch.tensor([[7]]), torch.tensor([[0.3]])),
+                   (_e, torch.tensor([[4, 9, 2], [6, 6, 1]]), torch.tensor([[0.1, 0.5, 0.2], [0.9, 0.0, -1.0]])),
+                   (torch.tensor([[1, 2]]), torch.tensor([[0, 3, 1, 2]]), torch.tensor([[0.1, 0.2, 0.9, 0.3]])),
+                   (torch.tensor([[1], [2], [3]]), torch.tensor([[2, 0], [1, 0], [0, 2]]), torch.tensor([[0.0, 1.0], [1.0, 0.0], [0.5, -0.5]]))]
+          against(rerank_append, _ref, cases + rand_cases(_gen, 300), same=_same, show=_show)
+
+  - id: idx-topk.unsort
+    name: Undo a sort (scatter or inverse permutation)
+    teach: |
+      ```python
+      # torch.sort(x, dim=-1, descending=False) -> (vals, ix), shape of x: vals[b, j] = x[b, ix[b, j]]
+      # t.argsort(dim=-1, descending=False) -> int64 positions that sort t; argsort of a permutation = its inverse
+      x = torch.tensor([[0.2, 0.9, 0.5]])                # (1, 3)
+      vals, ix = torch.sort(x, descending=True, dim=-1)  # [[0.9, 0.5, 0.2]], [[1, 2, 0]]
+      # undo the sort, two ways:
+      torch.empty_like(x).scatter(-1, ix, vals)          # (1, 3): [[0.2, 0.9, 0.5]]
+      vals.gather(-1, ix.argsort(dim=-1))                # inverse [[2, 0, 1]] -> (1, 3): [[0.2, 0.9, 0.5]]
+      ```
+      Pitfall: `vals.gather(-1, ix)` applies the permutation again instead of undoing it.
+    cards:
+      - id: a
+        prompt: |
+          Sort each row of `x` (2, 5) descending, keep the top 2, and put the result back in the original order, two ways.
+          - `sorted_vals, sorted_ix` (2, 5): `x` sorted descending per row, and the original column of each sorted value
+          - `ranked` (2, 5): a copy of `sorted_vals` with the sorted positions `j >= 2` set to `-inf`
+          - `back_scatter` (2, 5): `ranked` put back in `x`'s column order, with `scatter`
+          - `inv` (2, 5) int64: the inverse permutation of `sorted_ix` (`inv[b, sorted_ix[b, j]] = j`)
+          - `back_gather` (2, 5): the same result as `back_scatter`, with `gather` and `inv`
+        setup: |
+          import torch
+          x = torch.tensor([[0.1, 0.7, 0.3, 0.9, 0.5],
+                            [2.0, 4.0, -1.0, 0.0, 3.0]])
+        solution: |
+          sorted_vals, sorted_ix = torch.sort(x, descending=True, dim=-1)
+          ranked = sorted_vals.clone()
+          ranked[:, 2:] = float("-inf")
+          back_scatter = torch.empty_like(x).scatter(-1, sorted_ix, ranked)
+          inv = sorted_ix.argsort(dim=-1)
+          back_gather = ranked.gather(-1, inv)
+        check: |
+          inf = float("-inf")
+          _rows = x.tolist()
+          _six = [sorted(range(5), key=lambda j: -r[j]) for r in _rows]
+          _inv = [[s.index(i) for i in range(5)] for s in _six]
+          _back = [[r[i] if s.index(i) < 2 else inf for i in range(5)] for r, s in zip(_rows, _six)]
+          assert sorted_ix.tolist() == _six, f"sorted_ix = {sorted_ix.tolist()}, expected {_six} (descending)"
+          assert torch.allclose(sorted_vals, x.gather(-1, torch.tensor(_six))), f"sorted_vals = {sorted_vals.tolist()}"
+          _r = [[r[j] if p < 2 else inf for p, j in enumerate(s)] for r, s in zip(_rows, _six)]
+          assert ranked.tolist() == _r, f"ranked = {ranked.tolist()}\n expected {_r}"
+          assert tuple(back_scatter.shape) == (2, 5), f"back_scatter.shape = {tuple(back_scatter.shape)}"
+          assert back_scatter.tolist() == _back, f"back_scatter = {back_scatter.tolist()}\n expected {_back}"
+          assert inv.dtype == torch.int64 and inv.tolist() == _inv, f"inv = {inv.tolist()}, expected {_inv}"
+          assert back_gather.tolist() == _back, f"back_gather = {back_gather.tolist()}\n expected {_back}"
+      - id: b
+        prompt: |
+          Write `ranks(scores)`: the rank of each item within its row by descending score.
+          - `scores` (B, N) float, distinct within each row
+          - returns (B, N) int64: `out[b, i]` = rank of item `i` in row `b` (0 = highest score)
+        setup: |
+          import torch
+        starter: |
+          def ranks(scores):
+              raise NotImplementedError
+        solution: |
+          def ranks(scores):
+              order = scores.argsort(dim=-1, descending=True)     # (B, N): items, best first
+              return order.argsort(dim=-1)                        # inverse permutation = rank of each item
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(scores):
+              out = []
+              for row in scores.tolist():
+                  out.append([sum(1 for y in row if y > v) for v in row])
+              return torch.tensor(out, dtype=torch.int64).reshape(scores.shape)
+
+          _same = lambda got, exp: (isinstance(got, torch.Tensor) and got.shape == exp.shape
+                                    and got.dtype == torch.int64 and torch.equal(got, exp))
+
+          def _gen(r):
+              B, N = r.randint(1, 4), r.randint(1, 8)
+              return torch.tensor([[x / 10 for x in r.sample(range(-50, 50), N)] for _ in range(B)])
+
+          _show = lambda s: f"(scores {tuple(s.shape)} = {s.tolist()})"
+          cases = [torch.tensor([[0.5]]), torch.tensor([[3.0, 2.0, 1.0]]), torch.tensor([[1.0, 2.0, 3.0]]),
+                   torch.tensor([[0.2, 0.9, 0.5, 0.1]]), torch.tensor([[0.1, 0.7, 0.3, 0.9, 0.5], [2.0, 4.0, -1.0, 0.0, 3.0]])]
+          against(ranks, _ref, cases + rand_cases(_gen, 300), same=_same, show=_show)
+
+  - id: idx-topk.sampler
+    name: The full top-k sampler
+    teach: |
+      ```python
+      # logits (B, V) -> (B,) int64 vocab ids, drawn from softmax(top-k logits / temperature)
+      def sample_top_k(logits, k, temperature, g):
+          v, ix = torch.topk(logits, k, dim=-1)           # (B, k) values, (B, k) vocab ids
+          probs = F.softmax(v / temperature, dim=-1)      # (B, k)
+          pos = torch.multinomial(probs, 1, generator=g)  # (B, 1) positions 0..k-1
+          return ix.gather(-1, pos).squeeze(-1)           # (B,) vocab ids
+      # [[1., 5., 3., 4.]], k = 2: v [[5., 4.]], ix [[1, 3]], probs [[0.73, 0.27]], pos [[1]] -> [3]
+      ```
+      Pitfall: returning `pos` gives ids in `0..k-1`; map it back through `ix`.
+    cards:
+      - id: a
+        prompt: |
+          Implement top-k sampling: per row, keep the k largest logits, sample one from the softmax of those logits / `temperature`, and return its vocab id.
+          - `logits` (B, V) float; `k` (int, 1 ≤ k ≤ V); `temperature` (float > 0); `g` (`torch.Generator`)
+          - returns (B,) int64: the sampled vocab id of each row
+          - draw with one `torch.multinomial(probs, 1, generator=g)` on the (B, k) probs of the top-k logits, largest first (the check replays `g`)
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def sample_top_k(logits, k, temperature, g):
+              raise NotImplementedError
+        solution: |
+          def sample_top_k(logits, k, temperature, g):
+              v, ix = torch.topk(logits, k, dim=-1)
+              probs = F.softmax(v / temperature, dim=-1)
+              pos = torch.multinomial(probs, num_samples=1, generator=g)
+              return ix.gather(-1, pos).squeeze(-1)
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(logits, k, T, seed):
+              B, V = logits.shape
+              rows = logits.tolist()
+              ix = [sorted(range(V), key=lambda j: -row[j])[:k] for row in rows]
+              v = torch.tensor([[rows[b][j] for j in ix[b]] for b in range(B)], dtype=logits.dtype)
+              pos = torch.multinomial(torch.softmax(v / T, dim=-1), 1, generator=torch.Generator().manual_seed(seed))
+              return torch.tensor([ix[b][pos[b, 0].item()] for b in range(B)], dtype=torch.int64)
+
+          _fn = lambda logits, k, T, seed: sample_top_k(logits, k, T, torch.Generator().manual_seed(seed))
+          _same = lambda got, exp: (isinstance(got, torch.Tensor) and got.shape == exp.shape
+                                    and got.dtype == torch.int64 and torch.equal(got, exp))
+
+          def _gen(r):
+              B, V = r.randint(1, 4), r.randint(1, 8)
+              lg = torch.tensor([[x / 4 for x in r.sample(range(-20, 20), V)] for _ in range(B)])
+              return lg, r.randint(1, V), r.choice([0.5, 1.0, 2.0]), r.randint(0, 10**6)
+
+          _show = lambda lg, k, T, seed: f"(logits {tuple(lg.shape)} = {lg.tolist()}, k = {k}, temperature = {T}, g seeded with {seed})"
+          _l = torch.tensor([[1.0, 5.0, 3.0, 4.0], [9.0, 0.0, 7.0, 2.0]])
+          cases = [(torch.tensor([[0.3]]), 1, 1.0, 0), (_l, 1, 1.0, 1), (_l, 4, 1.0, 2), (_l, 2, 0.5, 3), (_l, 3, 2.0, 4),
+                   (torch.tensor([[0.0, 0.1, 0.2, 0.3, 0.4, 0.5]]), 2, 1.0, 5)]
+          against(_fn, _ref, cases + rand_cases(_gen, 300), same=_same, show=_show, name="sample_top_k")
+
+          _gl = torch.Generator().manual_seed(0)
+          _big = torch.randn(500, 10, generator=_gl)
+          _ids = sample_top_k(_big, 3, 1.0, torch.Generator().manual_seed(1))
+          _top = torch.topk(_big, 3).indices
+          assert (_top == _ids[:, None]).any(-1).all(), "some sampled id is not in its row's top k (map positions back through ix)"
+          _ids1 = sample_top_k(_big, 1, 1.0, torch.Generator().manual_seed(2))
+          assert torch.equal(_ids1, _big.argmax(-1)), "k = 1 must equal argmax"
+
+          _row = torch.tensor([[0.5, 2.0, -1.0, 1.0, 0.0, 1.5]])
+          for k, T in [(6, 1.0), (3, 0.7)]:
+              n = 20000
+              ids = sample_top_k(_row.expand(n, 6), k, T, torch.Generator().manual_seed(9))
+              freq = torch.bincount(ids, minlength=6).float() / n
+              keep = torch.topk(_row[0], k).indices
+              want = torch.zeros(6)
+              want[keep] = torch.softmax(_row[0, keep] / T, -1)
+              assert (freq - want).abs().max() < 0.02, f"k = {k}, T = {T}: frequencies {[round(f, 3) for f in freq.tolist()]}, expected {[round(w, 3) for w in want.tolist()]}"
+      - id: b
+        prompt: |
+          Implement top-k sampling by masking, with no mapping back: per row, set the logits outside the top k to `-inf`, divide by `temperature`, take the softmax over all V and draw one vocab id.
+          - `logits` (B, V) float; `k` (int, 1 ≤ k ≤ V); `temperature` (float > 0); `g` (`torch.Generator`)
+          - returns (B,) int64: the sampled vocab id of each row
+          - draw with one `torch.multinomial(probs, 1, generator=g)` on the (B, V) probs (the check replays `g`)
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def sample_top_k_masked(logits, k, temperature, g):
+              raise NotImplementedError
+        solution: |
+          def sample_top_k_masked(logits, k, temperature, g):
+              kth = torch.topk(logits, k, dim=-1).values[..., -1:]                 # (B, 1)
+              masked = logits.masked_fill(logits < kth, float("-inf"))             # (B, V)
+              probs = F.softmax(masked / temperature, dim=-1)                      # (B, V)
+              return torch.multinomial(probs, num_samples=1, generator=g).squeeze(-1)
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(logits, k, T, seed):
+              B, V = logits.shape
+              rows = logits.tolist()
+              masked = []
+              for row in rows:
+                  top = set(sorted(range(V), key=lambda j: -row[j])[:k])
+                  masked.append([row[j] if j in top else float("-inf") for j in range(V)])
+              probs = torch.softmax(torch.tensor(masked, dtype=logits.dtype) / T, dim=-1)
+              return torch.multinomial(probs, 1, generator=torch.Generator().manual_seed(seed)).squeeze(-1)
+
+          _fn = lambda logits, k, T, seed: sample_top_k_masked(logits, k, T, torch.Generator().manual_seed(seed))
+          _same = lambda got, exp: (isinstance(got, torch.Tensor) and got.shape == exp.shape
+                                    and got.dtype == torch.int64 and torch.equal(got, exp))
+
+          def _gen(r):
+              B, V = r.randint(1, 4), r.randint(1, 8)
+              lg = torch.tensor([[x / 4 for x in r.sample(range(-20, 20), V)] for _ in range(B)])
+              return lg, r.randint(1, V), r.choice([0.5, 1.0, 2.0]), r.randint(0, 10**6)
+
+          _show = lambda lg, k, T, seed: f"(logits {tuple(lg.shape)} = {lg.tolist()}, k = {k}, temperature = {T}, g seeded with {seed})"
+          _l = torch.tensor([[1.0, 5.0, 3.0, 4.0], [9.0, 0.0, 7.0, 2.0]])
+          cases = [(torch.tensor([[0.3]]), 1, 1.0, 0), (_l, 1, 1.0, 1), (_l, 4, 1.0, 2), (_l, 2, 0.5, 3), (_l, 3, 2.0, 4),
+                   (torch.tensor([[0.0, 0.1, 0.2, 0.3, 0.4, 0.5]]), 2, 1.0, 5)]
+          against(_fn, _ref, cases + rand_cases(_gen, 300), same=_same, show=_show, name="sample_top_k_masked")

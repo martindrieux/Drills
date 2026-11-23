@@ -1,0 +1,275 @@
+id: data
+title: Datasets & DataLoaders
+intro: |
+  Training loops consume batches from a `DataLoader` wrapped around a `Dataset`. In interviews you
+  wrap tensors with `TensorDataset`, write a small custom `Dataset`, pad variable-length sequences
+  in a `collate_fn`, and split data reproducibly.
+problems:
+  - Write a training loop over mini-batches
+  - Implement a Dataset that reads samples from a list or file
+  - Batch variable-length token sequences for an RNN or transformer
+  - Make a reproducible train / validation split
+atoms: []
+skills:
+  - id: data.tensor-dataset
+    name: TensorDataset(X, y)
+    teach: |
+      ```python
+      # TensorDataset(*tensors) -> dataset zipping them along dim 0 (same first dim)
+      ds = TensorDataset(torch.randn(10, 3), torch.arange(10))
+      len(ds)                 # 10
+      # ds[i] -> tuple, one item per tensor;  ds[a:b] -> tuple of batched slices
+      xi, yi = ds[3]          # xi: shape (3,), yi: tensor(3)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Set: `ds` = `X` and `y` wrapped in a `TensorDataset` · `n` = its number of samples ·
+          `xi, yi` = sample `3` · `xb, yb` = the first 4 samples as two batched tensors, in one line.
+        setup: |
+          import torch
+          from torch.utils.data import TensorDataset
+          torch.manual_seed(0)
+          X = torch.randn(10, 3)
+          y = torch.arange(10)
+        solution: |
+          ds = TensorDataset(X, y)
+          n = len(ds)
+          xi, yi = ds[3]
+          xb, yb = ds[:4]
+        check: |
+          assert isinstance(ds, TensorDataset), f"ds is {type(ds).__name__}"
+          assert n == 10, f"n = {n}"
+          assert torch.equal(xi, X[3]) and yi.item() == 3, f"xi = {xi}, yi = {yi}"
+          assert xb.shape == (4, 3) and torch.equal(xb, X[:4]), f"xb.shape = {tuple(xb.shape)}"
+          assert torch.equal(yb, torch.arange(4)), f"yb = {yb}"
+      - id: b
+        prompt: |
+          Weighted training data: wrap features `X`, labels `y` and per-sample weights `w` in one dataset `ds`,
+          then unpack its **last** sample into `xi, yi, wi`.
+        setup: |
+          import torch
+          from torch.utils.data import TensorDataset
+          torch.manual_seed(0)
+          X = torch.randn(10, 3)
+          y = torch.arange(10) * 10
+          w = torch.linspace(0.1, 1.0, 10)
+        solution: |
+          ds = TensorDataset(X, y, w)
+          xi, yi, wi = ds[-1]
+        check: |
+          assert isinstance(ds, TensorDataset) and len(ds.tensors) == 3, "ds should wrap X, y and w"
+          assert torch.equal(xi, X[-1]), f"xi = {xi}"
+          assert yi.item() == 90, f"yi = {yi}"
+          assert abs(wi.item() - 1.0) < 1e-6, f"wi = {wi}"
+
+  - id: data.dataloader
+    name: DataLoader(batch_size, shuffle, drop_last)
+    teach: |
+      ```python
+      # DataLoader(ds, batch_size=1, shuffle=False, drop_last=False) -> iterable of stacked batches
+      loader = DataLoader(ds, batch_size=4, shuffle=True)    # N = 10 samples of shape (3,)
+      for xb, yb in loader: ...       # xb: (4, 3), (4, 3), then (2, 3)
+      # len(loader) -> number of batches: ceil(N / bs), or N // bs with drop_last=True
+      len(loader)                     # 3
+      ```
+      Pitfall: shuffle the training loader only, not validation.
+    cards:
+      - id: a
+        prompt: |
+          Set: `loader` = a shuffling loader over `ds` (10 samples) with batch size `4` · `n` = its number of batches ·
+          `sizes` = list of the batch sizes, by iterating `loader` · `dropper` = same loader but dropping the last incomplete batch.
+        setup: |
+          import torch
+          from torch.utils.data import TensorDataset, DataLoader, RandomSampler
+          ds = TensorDataset(torch.randn(10, 3), torch.arange(10))
+        solution: |
+          loader = DataLoader(ds, batch_size=4, shuffle=True)
+          n = len(loader)
+          sizes = [xb.shape[0] for xb, yb in loader]
+          dropper = DataLoader(ds, batch_size=4, shuffle=True, drop_last=True)
+        check: |
+          assert loader.batch_size == 4, f"batch_size = {loader.batch_size}"
+          assert isinstance(loader.sampler, RandomSampler), "loader does not shuffle"
+          assert n == 3, f"n = {n}"
+          assert sizes == [4, 4, 2], f"sizes = {sizes}"
+          assert dropper.drop_last and len(dropper) == 2, f"dropper: drop_last = {dropper.drop_last}, len = {len(dropper)}"
+      - id: b
+        prompt: |
+          Set `train_loader` over `train_ds` (batch size `8`, shuffled, last incomplete batch dropped) and
+          `val_loader` over `val_ds` (batch size `8`, every sample kept, in order) · `n_val` = number of samples
+          `val_loader` yields in one epoch, by iterating it.
+        setup: |
+          import torch
+          from torch.utils.data import TensorDataset, DataLoader
+          train_ds = TensorDataset(torch.randn(30, 3), torch.arange(30))
+          val_ds = TensorDataset(torch.randn(13, 3), torch.arange(13))
+        solution: |
+          train_loader = DataLoader(train_ds, batch_size=8, shuffle=True, drop_last=True)
+          val_loader = DataLoader(val_ds, batch_size=8)
+          n_val = sum(xb.shape[0] for xb, yb in val_loader)
+        check: |
+          from torch.utils.data import RandomSampler, SequentialSampler
+          assert train_loader.batch_size == 8 and val_loader.batch_size == 8, "use batch_size=8"
+          assert isinstance(train_loader.sampler, RandomSampler), "train_loader should shuffle"
+          assert train_loader.drop_last and len(train_loader) == 3, f"train_loader: drop_last = {train_loader.drop_last}, len = {len(train_loader)}"
+          assert isinstance(val_loader.sampler, SequentialSampler), "val_loader should not shuffle"
+          assert not val_loader.drop_last, "val_loader must keep every sample"
+          assert n_val == 13, f"n_val = {n_val}"
+
+  - id: data.custom-dataset
+    name: Dataset subclass (__len__ / __getitem__)
+    teach: |
+      ```python
+      # Dataset subclass -> __len__() = number of samples, __getitem__(i) = sample i
+      class MyDataset(Dataset):
+          def __init__(self, X, y):
+              self.X, self.y = X, y
+          def __len__(self):
+              return len(self.X)
+          def __getitem__(self, i):
+              return self.X[i], self.y[i]
+      ```
+    cards:
+      - id: a
+        prompt: Write `SquaresDataset(n)` of length `n` whose item `i` is `(torch.tensor(float(i)), torch.tensor(float(i * i)))`.
+        setup: |
+          import torch
+          from torch.utils.data import Dataset
+        solution: |
+          class SquaresDataset(Dataset):
+              def __init__(self, n):
+                  self.n = n
+
+              def __len__(self):
+                  return self.n
+
+              def __getitem__(self, i):
+                  return torch.tensor(float(i)), torch.tensor(float(i * i))
+        check: |
+          ds = SquaresDataset(5)
+          assert isinstance(ds, Dataset), "subclass Dataset"
+          assert len(ds) == 5, f"len = {len(ds)}"
+          x, y = ds[3]
+          assert x.item() == 3.0 and y.item() == 9.0, f"ds[3] = {ds[3]}"
+      - id: c
+        prompt: Write `TextDataset(texts, vocab)` whose item `i` is a LongTensor of the token ids `[vocab[w] for w in texts[i].split()]`.
+        setup: |
+          import torch
+          from torch.utils.data import Dataset
+          vocab = {"the": 0, "cat": 1, "sat": 2, "dog": 3}
+          texts = ["the cat sat", "the dog"]
+        solution: |
+          class TextDataset(Dataset):
+              def __init__(self, texts, vocab):
+                  self.texts, self.vocab = texts, vocab
+
+              def __len__(self):
+                  return len(self.texts)
+
+              def __getitem__(self, i):
+                  return torch.tensor([self.vocab[w] for w in self.texts[i].split()], dtype=torch.long)
+        check: |
+          ds = TextDataset(texts, vocab)
+          assert len(ds) == 2, f"len = {len(ds)}"
+          assert torch.equal(ds[0], torch.tensor([0, 1, 2])), f"ds[0] = {ds[0]}"
+          assert ds[1].dtype == torch.long, f"dtype = {ds[1].dtype}"
+
+  - id: data.collate
+    name: collate_fn with pad_sequence
+    teach: |
+      ```python
+      # pad_sequence(seqs, batch_first=True, padding_value=0) -> 1-D seqs padded and stacked to (B, T_max)
+      pad_sequence([torch.tensor([1, 2]), torch.tensor([3])], batch_first=True, padding_value=-1)   # [[1, 2], [3, -1]]
+      # DataLoader(..., collate_fn=f) -> f gets the LIST of samples and returns the batch
+      def collate(batch):                  # batch = [(seq, label), ...]
+          seqs, labels = zip(*batch)
+          return pad_sequence(seqs, batch_first=True), torch.tensor(labels)
+      loader = DataLoader(ds, batch_size=8, collate_fn=collate)
+      ```
+      Pitfall: the default `batch_first=False` returns `(T_max, B)`.
+    cards:
+      - id: a
+        prompt: "Samples of `ds` are `(seq, label)` pairs. Write `collate(batch)` returning `(x, y)`: `x` the sequences padded with `-1` to `(B, T_max)`, `y` a tensor of the labels. Then build `loader` (batch size `3`) using it."
+        setup: |
+          import torch
+          from torch.utils.data import DataLoader
+          from torch.nn.utils.rnn import pad_sequence
+          ds = [(torch.tensor([5, 6]), 0), (torch.tensor([7]), 1), (torch.tensor([8, 9, 10]), 1)]
+        solution: |
+          def collate(batch):
+              seqs, labels = zip(*batch)
+              return pad_sequence(seqs, batch_first=True, padding_value=-1), torch.tensor(labels)
+
+          loader = DataLoader(ds, batch_size=3, collate_fn=collate)
+        check: |
+          assert loader.collate_fn is collate, "pass collate_fn=collate to the DataLoader"
+          x, y = next(iter(loader))
+          assert torch.equal(x, torch.tensor([[5, 6, -1], [7, -1, -1], [8, 9, 10]])), f"x = {x}"
+          assert torch.equal(y, torch.tensor([0, 1, 1])), f"y = {y}"
+      - id: c
+        prompt: Write `collate(batch)` (list of 1-D LongTensors) returning `(x, mask)`, with `x` padded with `PAD` and `mask` a bool `(B, T_max)` tensor that is True on real tokens.
+        setup: |
+          import torch
+          from torch.nn.utils.rnn import pad_sequence
+          PAD = 99
+        solution: |
+          def collate(batch):
+              x = pad_sequence(batch, batch_first=True, padding_value=PAD)
+              lengths = torch.tensor([len(s) for s in batch])
+              mask = torch.arange(x.shape[1])[None, :] < lengths[:, None]
+              return x, mask
+        check: |
+          x, mask = collate([torch.tensor([1, 2]), torch.tensor([3, 4, 5]), torch.tensor([6])])
+          assert torch.equal(x, torch.tensor([[1, 2, 99], [3, 4, 5], [6, 99, 99]])), f"x = {x}"
+          exp = torch.tensor([[True, True, False], [True, True, True], [True, False, False]])
+          assert mask.dtype == torch.bool and torch.equal(mask, exp), f"mask = {mask}"
+
+  - id: data.split
+    name: random_split (train / val split)
+    teach: |
+      ```python
+      # random_split(ds, lengths, generator=g) -> list of datasets; lengths = counts summing to len(ds), or fractions
+      g = torch.Generator().manual_seed(0)
+      train_ds, val_ds = random_split(ds, [0.8, 0.2], generator=g)   # len(ds) = 10 -> 8 and 2 samples
+      ```
+      Pitfall: without `generator`, the split changes every run.
+    cards:
+      - id: a
+        prompt: |
+          `ds` has 10 samples. Set `train_ds, val_ds` = an 80/20 split **by fractions**, seeded via `torch.Generator().manual_seed(0)` ·
+          `small, rest` = a split into 3 and 7 samples **by counts**, also seeded with `0`.
+        setup: |
+          import torch
+          from torch.utils.data import TensorDataset, random_split
+          ds = TensorDataset(torch.arange(10))
+        solution: |
+          train_ds, val_ds = random_split(ds, [0.8, 0.2], generator=torch.Generator().manual_seed(0))
+          small, rest = random_split(ds, [3, 7], generator=torch.Generator().manual_seed(0))
+        check: |
+          assert len(train_ds) == 8 and len(val_ds) == 2, f"lengths = {len(train_ds)}, {len(val_ds)}"
+          t, v = random_split(ds, [8, 2], generator=torch.Generator().manual_seed(0))
+          assert list(train_ds.indices) == list(t.indices) and list(val_ds.indices) == list(v.indices), "train/val split is not the seeded one"
+          assert len(small) == 3 and len(rest) == 7, f"lengths = {len(small)}, {len(rest)}"
+          s, _ = random_split(ds, [3, 7], generator=torch.Generator().manual_seed(0))
+          assert list(small.indices) == list(s.indices), "small/rest split is not the seeded one"
+      - id: b
+        prompt: |
+          Split `ds` (50 samples) 80/20 into `train_ds, val_ds`, seeded with generator seed `1`, then set
+          `train_loader` = a shuffled loader over `train_ds` with batch size `8`, and `n_batches = len(train_loader)`.
+        setup: |
+          import torch
+          from torch.utils.data import TensorDataset, DataLoader, random_split
+          ds = TensorDataset(torch.arange(50))
+        solution: |
+          train_ds, val_ds = random_split(ds, [0.8, 0.2], generator=torch.Generator().manual_seed(1))
+          train_loader = DataLoader(train_ds, batch_size=8, shuffle=True)
+          n_batches = len(train_loader)
+        check: |
+          from torch.utils.data import RandomSampler
+          assert len(train_ds) == 40 and len(val_ds) == 10, f"lengths = {len(train_ds)}, {len(val_ds)}"
+          t, _ = random_split(ds, [40, 10], generator=torch.Generator().manual_seed(1))
+          assert list(train_ds.indices) == list(t.indices), "use generator seed 1"
+          assert train_loader.dataset is train_ds, "train_loader should wrap train_ds"
+          assert isinstance(train_loader.sampler, RandomSampler), "train_loader should shuffle"
+          assert n_batches == 5, f"n_batches = {n_batches}"

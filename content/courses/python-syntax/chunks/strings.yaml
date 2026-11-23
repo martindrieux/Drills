@@ -1,0 +1,487 @@
+id: strings
+title: Strings
+intro: |
+  Strings index and slice like lists, but they are **immutable**. Build new strings with a list and
+  `join`, and lean on the built-in methods for splitting, testing and searching characters.
+problems:
+  - Valid Anagram
+  - Valid Palindrome
+  - Group Anagrams
+  - Longest Common Prefix
+  - Encode and Decode Strings
+  - Reverse Words in a String
+atoms: [py-strings]
+skills:
+  - id: strings.basics
+    name: index, slice, immutable
+    teach: |
+      ```python
+      s = "hello"
+      # len, indexing and slicing work exactly like on lists
+      len(s), s[0], s[1:3], s[::-1]   # (5, 'h', 'el', 'olleh')
+      # immutable: s[0] = "J" raises TypeError; build a new string with + instead
+      "J" + s[1:]                     # 'Jello'
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s`, a `str` of at least 3 characters.
+          - **Set** `n`: `int`, its length.
+          - **Set** `first`: `str`, its first character.
+          - **Set** `mid`: `str`, the characters at indices 1 and 2.
+          - **Set** `rev`: `str`, `s` reversed.
+          - **Set** `res`: `str`, a copy of `s` with its first character replaced by `'J'`.
+        setup: |
+          s = "python"
+        solution: |
+          n = len(s)
+          first = s[0]
+          mid = s[1:3]
+          rev = s[::-1]
+          res = "J" + s[1:]
+        check: |
+          assert n == 6, f"n = {n!r}"
+          assert first == "p", f"first = {first!r}"
+          assert mid == "yt", f"mid = {mid!r}"
+          assert rev == "nohtyp", f"rev = {rev!r}"
+          assert res == "Jython", f"res = {res!r}"
+      - id: b
+        prompt: |
+          - **Given**: `s`, a `str` of at least 3 characters.
+          - **Set** `res`: `str`, its last 3 characters.
+        setup: |
+          s = "python"
+        solution: |
+          res = s[-3:]
+        check: |
+          assert res == "hon", f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `s`, a non-empty `str`.
+          - **Set** `res`: `str`, a copy of `s` with its **last** character replaced by `'!'` (you cannot assign to `s[-1]`).
+        setup: |
+          s = "hello?"
+        solution: |
+          res = s[:-1] + "!"
+        check: |
+          assert res == "hello!", f"res = {res!r}"
+      - id: d
+        prompt: |
+          - **Given**: `s`, a `str` of at least 3 characters.
+          - **Set** `n`: `int`, its length.
+          - **Set** `first`: `str`, its first character.
+          - **Set** `mid`: `str`, the characters at indices 1 and 2.
+        setup: |
+          s = "python"
+        solution: |
+          n = len(s)
+          first = s[0]
+          mid = s[1:3]
+        check: |
+          assert n == 6, f"n = {n!r}"
+          assert first == "p", f"first = {first!r}"
+          assert mid == "yt", f"mid = {mid!r}"
+
+  - id: strings.build
+    name: build with a list + join
+    teach: |
+      ```python
+      # sep.join(strs) -> one string: the items glued with sep BETWEEN them (not at the ends)
+      " ".join(["a", "b"])            # 'a b'
+      # map(str, xs): turns each item into a str (join raises TypeError on ints)
+      ",".join(map(str, [1, 2, 3]))   # '1,2,3'
+      ```
+      Pitfall: `res += c` in a loop can be O(n²); append pieces to a list and `"".join` once.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s` (`str`), `words` (`list[str]`), `nums` (`list[int]`).
+          - **Set** `res`: `str`, `s` without its vowels `a e i o u` (lowercase), built by collecting the kept characters in a list, then joining.
+          - **Set** `line`: `str`, the `words` joined with single spaces (no space at either end).
+          - **Set** `csv`: `str`, the integers of `nums` joined with commas, no spaces (`[1, 2, 3]` → `'1,2,3'`).
+        setup: |
+          s = "leetcode"
+          words = ["the", "sky"]
+          nums = [1, 2, 3]
+        solution: |
+          parts = []
+          for c in s:
+              if c not in "aeiou":
+                  parts.append(c)
+          res = "".join(parts)
+          line = " ".join(words)
+          csv = ",".join(map(str, nums))
+        check: |
+          assert res == "ltcd", f"res = {res!r}"
+          assert line == "the sky", f"line = {line!r}"
+          assert csv == "1,2,3", f"csv = {csv!r}"
+      - id: b
+        prompt: |
+          - **Given**: `words`, a `list[str]`.
+          - **Set** `res`: `str`, the words joined with single spaces between them (no space at either end).
+        setup: |
+          words = ["the", "sky", "is", "blue"]
+        solution: |
+          res = " ".join(words)
+        check: |
+          assert res == "the sky is blue", f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Set** `res`: `str`, the integers joined with commas, no spaces (`[1, 2, 3]` → `'1,2,3'`).
+        setup: |
+          nums = [1, 2, 3]
+        solution: |
+          res = ",".join(map(str, nums))
+        check: |
+          assert res == "1,2,3", f"res = {res!r}"
+
+  - id: strings.split-strip
+    name: split, strip
+    teach: |
+      ```python
+      # s.split(sep) -> list of the pieces between each sep
+      "a,,b".split(",")      # ['a', '', 'b']
+      # s.split() (no arg) -> split on runs of whitespace, no empty pieces
+      "  a  b ".split()      # ['a', 'b']
+      # s.strip(chars=whitespace) -> copy with any of those chars removed from BOTH ends
+      "xyhixy".strip("xy")   # 'hi'
+      # s.lstrip(chars) / s.rstrip(chars): same, left end only / right end only
+      "  hi  ".rstrip()      # '  hi'
+      ```
+      Pitfall: `s.split(" ")` keeps empty strings for repeated spaces.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s`, `t`, `w`, `u` (`str`s, see setup).
+          - **Set** `words`: `list[str]`, the words of `s`, split on runs of whitespace (no empty strings).
+          - **Set** `parts`: `list[str]`, `t` split on every comma (empty pieces kept).
+          - **Set** `core`: `str`, `w` with every `'x'` and `'y'` removed from both ends.
+          - **Set** `left`: `str`, `u` with whitespace removed from the left end only.
+          - **Set** `right`: `str`, `u` with whitespace removed from the right end only.
+        setup: |
+          s = "  fly   me to  "
+          t = "a,,b"
+          w = "xyokyx"
+          u = "  hi  "
+        solution: |
+          words = s.split()
+          parts = t.split(",")
+          core = w.strip("xy")
+          left = u.lstrip()
+          right = u.rstrip()
+        check: |
+          assert words == ["fly", "me", "to"], f"words = {words!r}"
+          assert parts == ["a", "", "b"], f"parts = {parts!r}"
+          assert core == "ok", f"core = {core!r}"
+          assert left == "hi  ", f"left = {left!r}"
+          assert right == "  hi", f"right = {right!r}"
+      - id: b
+        prompt: |
+          - **Given**: `s`, a `str` of comma-separated names.
+          - **Set** `parts`: `list[str]`, the pieces of `s` between the commas, in order.
+        setup: |
+          s = "red,green,blue"
+        solution: |
+          parts = s.split(",")
+        check: |
+          assert parts == ["red", "green", "blue"], f"parts = {parts!r}"
+      - id: c
+        prompt: |
+          - **Given**: `s`, a `str`: a number with surrounding spaces and leading zeros.
+          - **Set** `res`: `str`, `s` with surrounding whitespace removed, then its leading `'0'`s removed (still a `str`, not an `int`).
+        setup: |
+          s = "  0042 "
+        solution: |
+          res = s.strip().lstrip("0")
+        check: |
+          assert res == "42", f"res = {res!r}"
+      - id: d
+        prompt: |
+          - **Given**: `s`, `t` (`str`s).
+          - **Set** `a`: `str`, `s` with whitespace removed from the **right end only**.
+          - **Set** `b`: `str`, `t` with every `'-'` and `'*'` removed from both ends.
+        setup: |
+          s = "  hi  "
+          t = "-*-ok*-"
+        solution: |
+          a = s.rstrip()
+          b = t.strip("-*")
+        check: |
+          assert a == "  hi", f"a = {a!r}"
+          assert b == "ok", f"b = {b!r}"
+
+  - id: strings.char-tests
+    name: isalnum, isdigit, lower...
+    teach: |
+      ```python
+      # s.isalpha() / isdigit() / isalnum() / isspace() -> bool: is EVERY char a
+      #   letter / digit 0-9 / letter-or-digit / whitespace (' ', '\t', '\n')?
+      "b7".isalpha(), "7".isdigit(), "b7".isalnum(), "\t ".isspace()   # (False, True, True, True)
+      # s.lower() / s.upper() -> new string with letters converted, other chars kept
+      "Hi 2!".lower(), "Hi 2!".upper()   # ('hi 2!', 'HI 2!')
+      ```
+      Pitfall: `"".isalpha()` is `False` (an empty string fails every `is...` test).
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s`, a `str`.
+          - **Set** `res`: `str`, only the letters and digits of `s`, in order, lowercased.
+          - **Set** `letters`: `int`, how many characters are letters.
+          - **Set** `digits`: `int`, how many are digits `0`-`9`.
+          - **Set** `spaces`: `int`, how many are whitespace (space, tab, newline).
+          - **Set** `up`: `str`, `s` in uppercase (non-letters kept).
+        setup: |
+          s = "Hi 2u!\t"
+        solution: |
+          res = "".join(c.lower() for c in s if c.isalnum())
+          letters = sum(1 for c in s if c.isalpha())
+          digits = sum(1 for c in s if c.isdigit())
+          spaces = sum(1 for c in s if c.isspace())
+          up = s.upper()
+        check: |
+          assert res == "hi2u", f"res = {res!r}"
+          assert letters == 3, f"letters = {letters!r}"
+          assert digits == 1, f"digits = {digits!r}"
+          assert spaces == 2, f"spaces = {spaces!r}"
+          assert up == "HI 2U!\t", f"up = {up!r}"
+      - id: b
+        prompt: |
+          - **Given**: `s`, a `str`.
+          - **Set** `res`: `int`, how many characters of `s` are digits `0`-`9`.
+        setup: |
+          s = "a1b22c333"
+        solution: |
+          res = sum(1 for c in s if c.isdigit())
+        check: |
+          assert res == 6, f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `s`, a `str`.
+          - **Set** `a`: `bool`, whether every character of `s` is a letter.
+          - **Set** `b`: `str`, `s` in uppercase.
+        setup: |
+          s = "Hello"
+        solution: |
+          a = s.isalpha()
+          b = s.upper()
+        check: |
+          assert a is True, f"a = {a!r}"
+          assert b == "HELLO", f"b = {b!r}"
+      - id: d
+        prompt: |
+          - **Given**: `s`, a `str`.
+          - **Set** `res`: `int`, how many whitespace characters (spaces, tabs, newlines) `s` contains.
+        setup: |
+          s = "a b\tc\nd e"
+        solution: |
+          res = sum(1 for c in s if c.isspace())
+        check: |
+          assert res == 4, f"res = {res!r}"
+
+  - id: strings.ord-chr
+    name: ord / chr, 26-slot counts
+    teach: |
+      ```python
+      # ord(c) -> int code of a 1-char string; chr(n) -> the 1-char string with code n
+      ord("a"), chr(98)          # (97, 'b')
+      # 'a'..'z' have consecutive codes, so ord(c) - ord("a") is the position 0..25
+      ord("e") - ord("a")        # 4
+      # 26-slot count: one counter per letter in count = [0] * 26
+      count[ord(c) - ord("a")] += 1
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `c` (one lowercase letter), `i` (`int`, 0–25), `s` (`str` of lowercase letters), `count` (`list[int]` of 26 zeros).
+          - **Set** `res`: `int`, the alphabet position of `c` (`'a'` → 0, `'z'` → 25).
+          - **Set** `letter`: `str`, the lowercase letter at position `i`.
+          - **Change** `count` in place: `count[p]` = how many times the letter at position `p` appears in `s`.
+        setup: |
+          c = "e"
+          i = 25
+          s = "abca"
+          count = [0] * 26
+        solution: |
+          res = ord(c) - ord("a")
+          letter = chr(ord("a") + i)
+          for ch in s:
+              count[ord(ch) - ord("a")] += 1
+        check: |
+          assert res == 4, f"res = {res!r}"
+          assert letter == "z", f"letter = {letter!r}"
+          assert count[:3] == [2, 1, 1] and sum(count) == 4, f"count[:3] = {count[:3]!r}, sum = {sum(count)}"
+      - id: b
+        prompt: |
+          - **Given**: `i`, an `int` from 0 to 25.
+          - **Set** `res`: `str`, the lowercase letter at alphabet position `i` (`0` → `'a'`).
+        setup: |
+          i = 25
+        solution: |
+          res = chr(ord("a") + i)
+        check: |
+          assert res == "z", f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `s` (`str` of lowercase letters), `count` (`list[int]` of 26 zeros).
+          - **Change** `count` in place: `count[p]` = how many times the letter at alphabet position `p` (`'a'` → 0) appears in `s`.
+        setup: |
+          s = "abca"
+          count = [0] * 26
+        solution: |
+          for c in s:
+              count[ord(c) - ord("a")] += 1
+        check: |
+          assert count[:3] == [2, 1, 1] and sum(count) == 4, f"count[:3] = {count[:3]!r}, sum = {sum(count)}"
+
+  - id: strings.search
+    name: in, find, startswith, replace
+    teach: |
+      ```python
+      s = "hello"
+      # sub in s -> bool: does sub appear somewhere in s?
+      "ell" in s                             # True
+      # s.find(sub) -> int: start index of the FIRST match, or -1
+      s.find("lo"), s.find("z")              # (3, -1)
+      # s.index(sub): like find, but raises ValueError when absent
+      s.index("lo")                          # 3
+      # s.startswith(x) / s.endswith(x) -> bool
+      s.startswith("he"), s.endswith("lo")   # (True, True)
+      # s.count(sub) -> int: number of NON-overlapping matches
+      "aaaa".count("aa")                     # 2
+      # s.replace(old, new) -> NEW string with every old swapped; new = "" deletes
+      s.replace("l", "")                     # 'heo'
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s`, a `str`.
+          - **Set** `has`: `bool`, whether `'nan'` appears in `s`, using `in`.
+          - **Set** `i`: `int`, the start index of the first `'an'`, using `find`.
+          - **Set** `j`: `int`, what `find` returns for `'zz'` (not in `s`).
+          - **Set** `k`: `int`, the start index of the first `'na'`, using `index`.
+          - **Set** `a`: `bool`, whether `s` starts with `'ba'`.
+          - **Set** `b`: `bool`, whether `s` ends with `'x'`.
+          - **Set** `n`: `int`, the number of non-overlapping `'an'` in `s`.
+          - **Set** `res`: `str`, `s` with every `'a'` deleted.
+        setup: |
+          s = "banana"
+        solution: |
+          has = "nan" in s
+          i = s.find("an")
+          j = s.find("zz")
+          k = s.index("na")
+          a = s.startswith("ba")
+          b = s.endswith("x")
+          n = s.count("an")
+          res = s.replace("a", "")
+        check: |
+          assert has is True, f"has = {has!r}"
+          assert i == 1, f"i = {i!r}"
+          assert j == -1, f"j = {j!r}"
+          assert k == 2, f"k = {k!r}"
+          assert a is True, f"a = {a!r}"
+          assert b is False, f"b = {b!r}"
+          assert n == 2, f"n = {n!r}"
+          assert res == "bnn", f"res = {res!r}"
+      - id: b
+        prompt: |
+          - **Given**: `s`, a `str`.
+          - **Set** `a`: `bool`, whether `s` starts with `'pre'`.
+          - **Set** `b`: `bool`, whether `s` ends with `'.py'`.
+        setup: |
+          s = "prefix.txt"
+        solution: |
+          a = s.startswith("pre")
+          b = s.endswith(".py")
+        check: |
+          assert a is True, f"a = {a!r}"
+          assert b is False, f"b = {b!r}"
+      - id: c
+        prompt: |
+          - **Given**: `s`, a `str`.
+          - **Set** `res`: `str`, `s` with every space removed.
+          - **Set** `n`: `int`, the number of `'a'` characters in `s`.
+        setup: |
+          s = "a cat a bat"
+        solution: |
+          res = s.replace(" ", "")
+          n = s.count("a")
+        check: |
+          assert res == "acatabat", f"res = {res!r}"
+          assert n == 4, f"n = {n!r}"
+      - id: d
+        prompt: |
+          - **Given**: `s`, a `str` that contains `'cat'`.
+          - **Set** `has`: `bool`, whether `'cat'` appears in `s`, using `in`.
+          - **Set** `i`: `int`, the start index of the first `'cat'`, using `s.index`.
+        setup: |
+          s = "concatenate"
+        solution: |
+          has = "cat" in s
+          i = s.index("cat")
+        check: |
+          assert has is True, f"has = {has!r}"
+          assert i == 3, f"i = {i!r}"
+
+  - id: strings.convert
+    name: int(), str(), list(), sorted key
+    teach: |
+      ```python
+      # int(s) -> int parsed from digits; str(x) -> x as a string
+      int("42"), str(42)        # (42, '42')
+      # list(s) -> list of the characters (mutable, unlike s)
+      list("abc")               # ['a', 'b', 'c']
+      # sorted(s) -> sorted LIST of characters; join it back to get a string key
+      "".join(sorted("cab"))    # 'abc'
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s` (a `str` of digits, e.g. `"41"`), `t` (`str`).
+          - **Set** `res`: `str`, the number in `s` plus one, as a **string**.
+          - **Set** `chars`: `list[str]`, the characters of `t`, in order.
+          - **Set** `key`: `str` (not a list), the characters of `t` in sorted order.
+        setup: |
+          s = "41"
+          t = "cab"
+        solution: |
+          res = str(int(s) + 1)
+          chars = list(t)
+          key = "".join(sorted(t))
+        check: |
+          assert res == "42", f"res = {res!r}"
+          assert chars == ["c", "a", "b"], f"chars = {chars!r}"
+          assert key == "abc", f"key = {key!r} (should be a str, not a list)"
+      - id: b
+        prompt: |
+          - **Given**: `s`, a `str` of at least 2 characters.
+          - **Set** `res`: `str`, `s` with its first and last characters swapped, via a list of characters joined back.
+        setup: |
+          s = "code"
+        solution: |
+          chars = list(s)
+          chars[0], chars[-1] = chars[-1], chars[0]
+          res = "".join(chars)
+        check: |
+          assert res == "eodc", f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `s`, a `str`.
+          - **Set** `res`: `str` (not a list), the characters of `s` in sorted order.
+        setup: |
+          s = "tea"
+        solution: |
+          res = "".join(sorted(s))
+        check: |
+          assert res == "aet", f"res = {res!r} (should be a str, not a list)"
+      - id: d
+        prompt: |
+          - **Given**: `n`, an `int` `>= 0`.
+          - **Set** `res`: `int`, the sum of the decimal digits of `n`, in one line (go through `str`).
+        setup: |
+          n = 4096
+        solution: |
+          res = sum(int(c) for c in str(n))
+        check: |
+          assert res == 19, f"res = {res!r}"

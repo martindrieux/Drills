@@ -1,0 +1,680 @@
+id: ml-problems
+title: Classic ML problems in PyTorch
+intro: |
+  The "implement X from scratch" questions of ML-engineer interviews: regression, k-means, kNN,
+  box IoU + NMS and a contrastive loss, each written as one short function in plain torch.
+problems:
+  - Implement linear regression with gradient descent (and in closed form)
+  - Train logistic regression from scratch
+  - Implement k-means clustering
+  - Implement a k-nearest-neighbour classifier
+  - Compute IoU and implement non-max suppression
+  - Implement the CLIP contrastive loss
+atoms: []
+skills:
+  - id: ml-problems.linreg
+    name: Linear regression (autograd + SGD, and closed form)
+    teach: |
+      Find the slope `w` and intercept `b` that minimize the mean squared error `mean((w·x + b - y)²)`,
+      either step by step with gradient descent, or exactly in one linear-algebra call.
+
+      ```python
+      x = torch.tensor([[0.], [1.], [2.], [3.]]); y = 3 * x + 2          # (N, 1) each, N = 4
+      # requires_grad=True: autograd tracks this tensor; loss.backward() then writes d loss / d w into w.grad (same shape as w)
+      w = torch.zeros(1, requires_grad=True); b = torch.zeros(1, requires_grad=True)   # (1,) each
+      # torch.optim.SGD(params, lr) -> optimizer over a list of tensors:
+      #   opt.step() does p -= lr * p.grad for each p; opt.zero_grad() resets every p.grad (backward ADDS into it)
+      opt = torch.optim.SGD([w, b], lr=0.1)
+      for _ in range(300):
+          loss = ((w * x + b - y) ** 2).mean()                           # (N, 1) -> scalar ()
+          opt.zero_grad(); loss.backward(); opt.step()
+      # t.item() -> Python float of a one-element tensor
+      w.item(), b.item()                                                 # ≈ (3.0, 2.0)
+      # closed form: θ = [w, b] minimizes ||X θ - y||², where X = x plus a column of ones (that column multiplies b)
+      # torch.cat([a, b], dim=1) -> glue tensors side by side: (N, 1), (N, 1) -> (N, 2)
+      X = torch.cat([x, torch.ones_like(x)], dim=1)                      # (N, 2); ones_like(x) = ones, shape of x
+      # torch.linalg.lstsq(A, B).solution -> θ (k, m) minimizing ||A θ - B||², for A (N, k), B (N, m)
+      torch.linalg.lstsq(X, y).solution                                  # (2, 1): tensor([[3.], [2.]]) = [[w], [b]]
+      # torch.linalg.solve(A, B) -> θ (k, m) with A θ = B exactly, for A (k, k) square, B (k, m)
+      # the least-squares θ solves the "normal equations" (Xᵀ X) θ = Xᵀ y
+      torch.linalg.solve(X.T @ X, X.T @ y)                               # (2, 2), (2, 1) -> (2, 1): same [[3.], [2.]]
+      ```
+      Pitfall: without `opt.zero_grad()` the gradients of all steps add up.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `x`, `y` float, shape `(N, 1)`, with `y ≈ 3x + 2` plus noise.
+
+          **Write** three functions, each **returning** `(w, b)` as two Python floats (slope and intercept of `y ≈ w·x + b`):
+          - `fit_sgd(x, y)`: start from `w = b = 0`, minimize the mean squared error with autograd + `torch.optim.SGD`, lr `0.1`, 300 steps
+          - `fit_lstsq(x, y)`: closed form with `torch.linalg.lstsq` on `X = [x, 1]` `(N, 2)`
+          - `fit_normal(x, y)`: closed form, solve the normal equations `(XᵀX) θ = Xᵀy` with `torch.linalg.solve`
+          - **Checked on**: the setup data; every `w`, `b` must be within `0.05` of `3` and `2`
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          x = torch.randn(100, 1)
+          y = 3 * x + 2 + 0.1 * torch.randn(100, 1)
+        starter: |
+          def fit_sgd(x, y):
+              ...
+
+          def fit_lstsq(x, y):
+              ...
+
+          def fit_normal(x, y):
+              ...
+        solution: |
+          def fit_sgd(x, y):
+              w = torch.zeros(1, requires_grad=True)
+              b = torch.zeros(1, requires_grad=True)
+              opt = torch.optim.SGD([w, b], lr=0.1)
+              for _ in range(300):
+                  loss = ((w * x + b - y) ** 2).mean()
+                  opt.zero_grad()
+                  loss.backward()
+                  opt.step()
+              return w.item(), b.item()
+
+          def fit_lstsq(x, y):
+              X = torch.cat([x, torch.ones_like(x)], dim=1)
+              theta = torch.linalg.lstsq(X, y).solution
+              return theta[0, 0].item(), theta[1, 0].item()
+
+          def fit_normal(x, y):
+              X = torch.cat([x, torch.ones_like(x)], dim=1)
+              theta = torch.linalg.solve(X.T @ X, X.T @ y)
+              return theta[0, 0].item(), theta[1, 0].item()
+        check: |
+          for f in (fit_sgd, fit_lstsq, fit_normal):
+              res = f(x, y)
+              assert res is not None, f"{f.__name__} returned None"
+              w, b = res
+              w, b = float(w), float(b)
+              assert abs(w - 3) < 0.05 and abs(b - 2) < 0.05, f"{f.__name__}: w = {w:.3f}, b = {b:.3f}, expected ~3 and ~2"
+      - id: b
+        prompt: |
+          **Given** (see setup): `X` `(N, 3)` float features, `y` `(N, 1)` float targets (a noisy linear function of `X`).
+
+          **Write** `fit(X, y)`:
+          - create an `nn.Linear(3, 1)` and train it on the whole `(X, y)` at each step with `nn.MSELoss()` and `torch.optim.SGD`, lr `0.1`, 300 steps
+          - **Returns** the trained `nn.Linear` layer
+          - **Checked on**: the setup data; `layer.weight` must be ≈ `[1, -2, 0.5]` and `layer.bias` ≈ `4` (within `0.05`)
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          X = torch.randn(200, 3)
+          y = X @ torch.tensor([[1.0], [-2.0], [0.5]]) + 4 + 0.1 * torch.randn(200, 1)
+        starter: |
+          def fit(X, y):
+              ...
+        solution: |
+          def fit(X, y):
+              layer = nn.Linear(3, 1)
+              opt = torch.optim.SGD(layer.parameters(), lr=0.1)
+              loss_fn = nn.MSELoss()
+              for _ in range(300):
+                  loss = loss_fn(layer(X), y)
+                  opt.zero_grad()
+                  loss.backward()
+                  opt.step()
+              return layer
+        check: |
+          layer = fit(X, y)
+          assert isinstance(layer, nn.Linear), f"fit returned {type(layer).__name__}, expected nn.Linear"
+          w = layer.weight.detach().flatten()
+          b = layer.bias.detach().item()
+          assert torch.allclose(w, torch.tensor([1.0, -2.0, 0.5]), atol=0.05), f"weight = {w}, expected ~[1, -2, 0.5]"
+          assert abs(b - 4) < 0.05, f"bias = {b:.3f}, expected ~4"
+
+  - id: ml-problems.logreg
+    name: Logistic regression with BCEWithLogitsLoss
+    teach: |
+      A linear layer gives each point one score `z` (the "logit"); `p = sigmoid(z)` is its probability of class 1.
+      Train by minimizing the binary cross-entropy `mean(-[y·log p + (1 - y)·log(1 - p)])`.
+
+      ```python
+      # X: (N, 2) float points, y: (N,) float labels 0. or 1.
+      model = nn.Linear(2, 1)                       # model(X): (N, 2) -> (N, 1), z = X @ Wᵀ + b
+      z = model(X).squeeze(1)                       # (N, 1) -> (N,): same shape as y
+      # nn.BCEWithLogitsLoss()(z, y) -> scalar: the binary cross-entropy above, with p = sigmoid(z) computed inside
+      #   (numerically stable); z = raw logits, y = float 0./1. targets, both the same shape
+      nn.BCEWithLogitsLoss()(torch.tensor([0.]), torch.tensor([1.]))   # tensor(0.6931) = -log(0.5)
+      loss = nn.BCEWithLogitsLoss()(z, y)           # (N,), (N,) -> scalar; then zero_grad / backward / step
+      # torch.sigmoid(z) -> same shape as z, each entry 1 / (1 + e^-z): a probability in (0, 1)
+      torch.sigmoid(torch.tensor([0., 2.]))         # tensor([0.5000, 0.8808])
+      # predicted class: z > 0 is the same as sigmoid(z) > 0.5 -> (N,) bool; .float() turns it into 0./1.
+      acc = ((z > 0).float() == y).float().mean().item()   # Python float: fraction of correct predictions
+      ```
+      Pitfall: do not apply `sigmoid` before `BCEWithLogitsLoss` (it would be applied twice).
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `X` `(200, 2)` float points; `y` `(200,)` float labels `0.`/`1.` (two separable blobs).
+
+          **Write** three functions:
+          - `train_logreg(X, y)` **returns** a trained `nn.Linear(2, 1)`: `nn.BCEWithLogitsLoss()` + `torch.optim.SGD`, lr `0.1`, 200 steps on the whole data
+          - `predict_proba(model, X)` **returns** `(N,)` float: probability of class 1 for each row
+          - `accuracy(model, X, y)` **returns** a Python float in `[0, 1]`: fraction of rows whose predicted class (probability > 0.5) equals `y`
+          - **Checked on**: the setup data; `predict_proba` against `sigmoid(model(X))`, `accuracy` exactly, train accuracy ≥ 0.95
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          X = torch.cat([torch.randn(100, 2) + 2, torch.randn(100, 2) - 2])
+          y = torch.cat([torch.ones(100), torch.zeros(100)])
+        starter: |
+          def train_logreg(X, y):
+              ...
+
+          def predict_proba(model, X):
+              ...
+
+          def accuracy(model, X, y):
+              ...
+        solution: |
+          def train_logreg(X, y):
+              model = nn.Linear(2, 1)
+              opt = torch.optim.SGD(model.parameters(), lr=0.1)
+              loss_fn = nn.BCEWithLogitsLoss()
+              for _ in range(200):
+                  loss = loss_fn(model(X).squeeze(1), y)
+                  opt.zero_grad()
+                  loss.backward()
+                  opt.step()
+              return model
+
+          def predict_proba(model, X):
+              return torch.sigmoid(model(X).squeeze(1))
+
+          def accuracy(model, X, y):
+              pred = (model(X).squeeze(1) > 0).float()
+              return (pred == y).float().mean().item()
+        check: |
+          model = train_logreg(X, y)
+          assert isinstance(model, nn.Linear), f"train_logreg returned {type(model).__name__}"
+          p = predict_proba(model, X)
+          assert p is not None and p.shape == (200,), f"predict_proba shape = {getattr(p, 'shape', p)}, expected (200,)"
+          exp = torch.sigmoid(model(X).squeeze(1))
+          assert torch.allclose(p, exp, atol=1e-5), f"predict_proba[:3] = {p[:3]}, expected {exp[:3]}"
+          acc = accuracy(model, X, y)
+          assert acc is not None, "accuracy returned None"
+          true_acc = ((exp > 0.5).float() == y).float().mean().item()
+          assert abs(float(acc) - true_acc) < 1e-6, f"accuracy = {acc}, expected {true_acc}"
+          assert true_acc >= 0.95, f"train accuracy = {true_acc:.3f}, expected >= 0.95"
+      - id: b
+        prompt: |
+          **Given** (see setup): training points `Xtr` `(200, 2)` float with labels `ytr` `(200,)` float `0.`/`1.`; test points `Xte` `(M, 2)` float.
+
+          **Write** `fit_predict(Xtr, ytr, Xte)`:
+          - the parameters are plain tensors `w` `(2,)` and `b` `(1,)`, zeros with `requires_grad=True`; logits = `Xtr @ w + b`, shape `(200,)`
+          - train with `nn.BCEWithLogitsLoss()` + `torch.optim.SGD`, lr `0.1`, 200 steps on the whole training set
+          - **Returns** `(M,)` float tensor: predicted class of each test point, `1.` when its logit is > 0, else `0.`
+          - **Don't use**: `nn.Linear`
+          - **Checked on**: 100 held-out test points; values must be only `0.`/`1.`, test accuracy ≥ 0.95
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(1)
+          Xtr = torch.cat([torch.randn(100, 2) + torch.tensor([3.0, 0.0]), torch.randn(100, 2) - torch.tensor([3.0, 0.0])])
+          ytr = torch.cat([torch.ones(100), torch.zeros(100)])
+          Xte = torch.cat([torch.randn(50, 2) + torch.tensor([3.0, 0.0]), torch.randn(50, 2) - torch.tensor([3.0, 0.0])])
+          yte = torch.cat([torch.ones(50), torch.zeros(50)])
+        starter: |
+          def fit_predict(Xtr, ytr, Xte):
+              ...
+        solution: |
+          def fit_predict(Xtr, ytr, Xte):
+              w = torch.zeros(2, requires_grad=True)
+              b = torch.zeros(1, requires_grad=True)
+              opt = torch.optim.SGD([w, b], lr=0.1)
+              loss_fn = nn.BCEWithLogitsLoss()
+              for _ in range(200):
+                  loss = loss_fn(Xtr @ w + b, ytr)
+                  opt.zero_grad()
+                  loss.backward()
+                  opt.step()
+              with torch.no_grad():
+                  return (Xte @ w + b > 0).float()
+        check: |
+          pred = fit_predict(Xtr, ytr, Xte)
+          assert pred is not None and pred.shape == (100,), f"pred shape = {getattr(pred, 'shape', pred)}, expected (100,)"
+          assert set(pred.tolist()) <= {0.0, 1.0}, f"pred values = {sorted(set(pred.tolist()))[:5]}, expected 0./1."
+          acc = (pred.float() == yte).float().mean().item()
+          assert acc >= 0.95, f"test accuracy = {acc:.3f}, expected >= 0.95"
+
+  - id: ml-problems.kmeans
+    name: k-means from scratch
+    teach: |
+      Split `N` points into `K` groups: repeat (1) give each point the label of its nearest centroid,
+      (2) move each centroid to the mean of the points with its label; stop when the centroids no longer move.
+
+      ```python
+      # X: (N, d) float points, C: (K, d) float current centroids
+      # torch.cdist(a, b) -> (N, K): out[i][j] = Euclidean distance between row i of a (N, d) and row j of b (K, d)
+      torch.cdist(torch.tensor([[0., 0.]]), torch.tensor([[3., 4.], [0., 1.]]))   # (1, 2), (2, 2) -> tensor([[5., 1.]])
+      # t.argmin(dim) -> int64 indices of the smallest value along dim (that dim disappears)
+      torch.tensor([[5., 1.], [2., 7.]]).argmin(dim=1)        # (2, 2) -> tensor([1, 0])
+      # torch.allclose(a, b) -> Python bool: True if every entry of a is within a tiny tolerance of b (same shape)
+      for _ in range(iters):
+          labels = torch.cdist(X, C).argmin(dim=1)            # (N, K) -> (N,): cluster id of each point, in 0..K-1
+          new = C.clone()                                     # (K, d) copy, so writing new[k] leaves C unchanged
+          for k in range(K):
+              pts = X[labels == k]                            # (n_k, d): the rows of X labelled k
+              if len(pts) > 0:                                # empty cluster: keep the old centroid (mean of 0 rows is NaN)
+                  new[k] = pts.mean(dim=0)                    # (n_k, d) -> (d,)
+          if torch.allclose(new, C): break                    # centroids stopped moving
+          C = new
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Write** `kmeans(X, C0, iters=50)`:
+          - `X`: `(N, d)` float points; `C0`: `(K, d)` float starting centroids
+          - each iteration: label every point with its nearest centroid (`torch.cdist` + `argmin`), then move each centroid to the mean of its points
+          - if a cluster ends up empty, keep its previous centroid (no NaN)
+          - stop early when the centroids no longer move (`torch.allclose`), otherwise after `iters` iterations
+          - **Returns** `(C, labels)`: `C` `(K, d)` final centroids, `labels` `(N,)` int64 id (0..K-1) of the nearest centroid of the final `C` for each point
+          - **Checked on**: 3 separated blobs of 50 points started from one point of each blob (centroids compared after sorting), plus a far-away 4th centroid `[50, 50]` that gets no points and must stay put
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          centers = torch.tensor([[0.0, 0.0], [6.0, 0.0], [0.0, 6.0]])
+          X = torch.cat([torch.randn(50, 2) * 0.5 + c for c in centers])
+        starter: |
+          def kmeans(X, C0, iters=50):
+              ...
+        solution: |
+          def kmeans(X, C0, iters=50):
+              C = C0.clone()
+              for _ in range(iters):
+                  labels = torch.cdist(X, C).argmin(dim=1)
+                  new = C.clone()
+                  for k in range(len(C)):
+                      pts = X[labels == k]
+                      if len(pts) > 0:
+                          new[k] = pts.mean(dim=0)
+                  if torch.allclose(new, C):
+                      break
+                  C = new
+              labels = torch.cdist(X, C).argmin(dim=1)
+              return C, labels
+        check: |
+          # well-separated init: one start per blob
+          res = kmeans(X, X[[0, 50, 100]].clone())
+          assert res is not None, "kmeans returned None"
+          C, labels = res
+          means = torch.stack([X[i * 50:(i + 1) * 50].mean(0) for i in range(3)])
+          srt = lambda M: M[torch.argsort(M[:, 0] * 100 + M[:, 1])]
+          assert torch.allclose(srt(C), srt(means), atol=1e-4), f"sorted centroids = {srt(C)}, expected {srt(means)}"
+          groups = [set(labels[i * 50:(i + 1) * 50].tolist()) for i in range(3)]
+          assert all(len(g) == 1 for g in groups) and len(set.union(*groups)) == 3, f"labels per blob = {groups}"
+          # empty cluster: a 4th centroid far away gets no points and must stay put (no NaN)
+          C4, _ = kmeans(X, torch.cat([X[[0, 50, 100]], torch.tensor([[50.0, 50.0]])]))
+          assert not torch.isnan(C4).any(), f"centroids contain NaN: {C4}"
+          assert torch.allclose(C4[3], torch.tensor([50.0, 50.0])), f"empty centroid moved to {C4[3]}"
+      - id: b
+        prompt: |
+          Colour quantization: replace each pixel by the nearest colour of a small palette learned with k-means.
+
+          **Write** `quantize(pixels, C0, iters=20)`:
+          - `pixels`: `(N, 3)` float RGB colours; `C0`: `(K, 3)` float starting palette
+          - run k-means from `C0` (empty cluster keeps its colour, stop early when the palette no longer moves)
+          - **Returns** `(N, 3)` float: row `i` = the final centroid nearest to `pixels[i]`
+          - **Checked on**: 40 reddish + 60 bluish pixels, starting palette grey + blue; every red pixel must become the mean red, every blue one the mean blue
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          red = torch.tensor([0.9, 0.1, 0.1]) + 0.03 * torch.randn(40, 3)
+          blue = torch.tensor([0.1, 0.1, 0.9]) + 0.03 * torch.randn(60, 3)
+          pixels = torch.cat([red, blue])
+          C0 = torch.tensor([[0.5, 0.5, 0.5], [0.0, 0.0, 1.0]])
+        starter: |
+          def quantize(pixels, C0, iters=20):
+              ...
+        solution: |
+          def quantize(pixels, C0, iters=20):
+              C = C0.clone()
+              for _ in range(iters):
+                  labels = torch.cdist(pixels, C).argmin(dim=1)
+                  new = C.clone()
+                  for k in range(len(C)):
+                      pts = pixels[labels == k]
+                      if len(pts) > 0:
+                          new[k] = pts.mean(dim=0)
+                  if torch.allclose(new, C):
+                      break
+                  C = new
+              return C[torch.cdist(pixels, C).argmin(dim=1)]
+        check: |
+          out = quantize(pixels, C0)
+          assert out is not None and out.shape == (100, 3), f"shape = {getattr(out, 'shape', out)}, expected (100, 3)"
+          assert torch.allclose(out[:40], red.mean(0).expand(40, 3), atol=1e-4), f"red pixels -> {out[0]}, expected {red.mean(0)}"
+          assert torch.allclose(out[40:], blue.mean(0).expand(60, 3), atol=1e-4), f"blue pixels -> {out[40]}, expected {blue.mean(0)}"
+
+  - id: ml-problems.knn
+    name: k-nearest neighbours (topk + vote)
+    teach: |
+      For each query point, find the `k` training points closest to it and predict the label that is most
+      common among them (or their fraction of each label).
+
+      ```python
+      # Xtr: (N, d) float training points, ytr: (N,) int64 labels, Xq: (M, d) float query points
+      # broadcasting: Xq[:, None, :] is (M, 1, d), Xtr[None, :, :] is (1, N, d); the difference is (M, N, d)
+      d = ((Xq[:, None, :] - Xtr[None, :, :]) ** 2).sum(-1)   # (M, N, d) -> (M, N): d[i][j] = squared distance query i, train j
+      # t.topk(k, dim, largest=False) -> (values, indices): the k smallest entries along dim, in increasing order;
+      #   both have size k along dim (indices int64)
+      torch.tensor([5., 1., 3.]).topk(2, largest=False)        # values tensor([1., 3.]), indices tensor([1, 2])
+      idx = d.topk(k, dim=1, largest=False).indices            # (M, k): row numbers in Xtr of the k nearest
+      votes = ytr[idx]                                          # (M, k): their labels (indexing by a tensor keeps its shape)
+      # t.mode(dim) -> (values, indices): values = most frequent value along dim (that dim disappears)
+      torch.tensor([[2, 0, 2]]).mode(dim=1).values             # (1, 3) -> tensor([2])
+      # torch.bincount(v, minlength=C) -> (C,) int64: out[c] = how many times c appears in v (v: 1-D, ints >= 0)
+      torch.bincount(torch.tensor([2, 0, 2]), minlength=3)     # tensor([1, 0, 2])
+      ```
+      Pitfall: `topk` defaults to `largest=True`, which returns the farthest points.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `Xtr` `(N, d)` float training points, `ytr` `(N,)` int64 labels in `0..C-1`, `Xq` `(M, d)` float query points.
+
+          **Write** two functions, with distances computed by broadcasting (squared Euclidean is fine):
+          - `knn_predict(Xtr, ytr, Xq, k)` **returns** `(M,)` int64: for each query, the most frequent label among its `k` nearest training points (`topk` + `mode`)
+          - `knn_proba(Xtr, ytr, Xq, k, n_classes)` **returns** `(M, n_classes)` float: `out[i][c]` = fraction of the `k` neighbours of query `i` with label `c` (each row sums to 1; use `bincount`)
+          - **Checked on**: 9 points in 3 clusters, 4 queries, `k = 3`, including a query whose neighbours are split 1 vs 2
+        setup: |
+          import torch
+          Xtr = torch.tensor([[0., 0.], [0., 1.], [1., 0.], [5., 5.], [5., 6.], [6., 5.], [0., 5.], [0., 6.], [1., 5.]])
+          ytr = torch.tensor([0, 0, 0, 1, 1, 1, 2, 2, 2])
+          Xq = torch.tensor([[0.2, 0.2], [4., 4.], [0.5, 5.5], [0.5, 3.]])
+        starter: |
+          def knn_predict(Xtr, ytr, Xq, k):
+              ...
+
+          def knn_proba(Xtr, ytr, Xq, k, n_classes):
+              ...
+        solution: |
+          def knn_predict(Xtr, ytr, Xq, k):
+              d = ((Xq[:, None, :] - Xtr[None, :, :]) ** 2).sum(-1)
+              idx = d.topk(k, dim=1, largest=False).indices
+              return ytr[idx].mode(dim=1).values
+
+          def knn_proba(Xtr, ytr, Xq, k, n_classes):
+              d = ((Xq[:, None, :] - Xtr[None, :, :]) ** 2).sum(-1)
+              idx = d.topk(k, dim=1, largest=False).indices
+              votes = ytr[idx]
+              return torch.stack([torch.bincount(v, minlength=n_classes) for v in votes]).float() / k
+        check: |
+          pred = knn_predict(Xtr, ytr, Xq, 3)
+          assert pred is not None, "knn_predict returned None"
+          assert pred.tolist() == [0, 1, 2, 2], f"pred = {pred.tolist()}, expected [0, 1, 2, 2]"
+          p = knn_proba(Xtr, ytr, Xq, 3, 3)
+          assert p is not None and p.shape == (4, 3), f"proba shape = {getattr(p, 'shape', p)}, expected (4, 3)"
+          exp = torch.tensor([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [1 / 3, 0., 2 / 3]])
+          assert torch.allclose(p.float(), exp, atol=1e-4), f"proba = {p}, expected {exp}"
+      - id: b
+        prompt: |
+          kNN regression: predict a number as the average target of the nearest training points.
+
+          **Write** `knn_regress(Xtr, ytr, Xq, k)`:
+          - `Xtr`: `(N, d)` float training points; `ytr`: `(N,)` float targets; `Xq`: `(M, d)` float query points
+          - **Returns** `(M,)` float: `out[i]` = mean of `ytr` over the `k` training points nearest to `Xq[i]` (Euclidean distance)
+          - **Checked on**: 1-D points (`d = 1`) with `k = 3` and `k = 1`
+        setup: |
+          import torch
+          Xtr = torch.tensor([[0.], [1.], [2.], [10.], [11.], [12.]])
+          ytr = torch.tensor([1., 2., 3., 10., 20., 30.])
+          Xq = torch.tensor([[0.9], [11.2], [4.]])
+        starter: |
+          def knn_regress(Xtr, ytr, Xq, k):
+              ...
+        solution: |
+          def knn_regress(Xtr, ytr, Xq, k):
+              d = ((Xq[:, None, :] - Xtr[None, :, :]) ** 2).sum(-1)
+              idx = d.topk(k, dim=1, largest=False).indices
+              return ytr[idx].mean(dim=1)
+        check: |
+          out = knn_regress(Xtr, ytr, Xq, 3)
+          assert out is not None, "knn_regress returned None"
+          exp = torch.tensor([2., 20., 2.])
+          assert torch.allclose(out, exp), f"out = {out}, expected {exp}"
+          out1 = knn_regress(Xtr, ytr, Xq, 1)
+          assert torch.allclose(out1, torch.tensor([2., 20., 3.])), f"k=1: out = {out1}, expected [2., 20., 3.]"
+
+  - id: ml-problems.iou-nms
+    name: Box IoU matrix and non-max suppression
+    teach: |
+      IoU (intersection over union) of two boxes = area of their overlap / area covered by either box.
+      Non-max suppression (NMS): repeatedly keep the highest-scoring remaining box, then discard every remaining
+      box whose IoU with it is above a threshold `thr` (they detect the same object).
+
+      ```python
+      # a box is a row (x1, y1, x2, y2): top-left and bottom-right corners; A: (N, 4), B: (M, 4) float
+      area_a = (A[:, 2] - A[:, 0]) * (A[:, 3] - A[:, 1])            # (N,): width * height
+      area_b = (B[:, 2] - B[:, 0]) * (B[:, 3] - B[:, 1])            # (M,)
+      # torch.max(a, b) / torch.min(a, b) -> elementwise max / min of two tensors, broadcast to a common shape
+      torch.max(torch.tensor([1., 5.]), torch.tensor([3., 2.]))     # tensor([3., 5.])
+      lt = torch.max(A[:, None, :2], B[None, :, :2])                # (N, 1, 2), (1, M, 2) -> (N, M, 2): overlap top-left
+      rb = torch.min(A[:, None, 2:], B[None, :, 2:])                # (N, M, 2): overlap bottom-right
+      # t.clamp(min=0) -> same shape, every entry below 0 replaced by 0
+      wh = (rb - lt).clamp(min=0)                                   # (N, M, 2): overlap width, height (0 if disjoint)
+      inter = wh[..., 0] * wh[..., 1]                               # (N, M): overlap areas
+      iou = inter / (area_a[:, None] + area_b[None, :] - inter)     # (N, M); [0,0,2,2] vs [1,1,3,3] -> 1/7 = 0.1429
+      # t.argsort(descending=True) -> int64 indices that order t from largest to smallest, same shape as t
+      torch.tensor([0.2, 0.9, 0.5]).argsort(descending=True)        # tensor([1, 2, 0])
+      order = scores.argsort(descending=True)                       # (N,): box indices, best score first
+      keep = []
+      while order.numel() > 0:                                      # t.numel() -> number of elements
+          i = order[0]; keep.append(i.item())                       # keep the best remaining box
+          ious = box_iou(boxes[i][None], boxes[order[1:]])[0]       # (1, 4), (R, 4) -> (1, R) -> (R,)
+          order = order[1:][ious <= thr]                            # keep only boxes overlapping box i by <= thr
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Boxes are float rows `(x1, y1, x2, y2)` (top-left and bottom-right corners).
+
+          **Write** two functions (no torchvision):
+          - `box_iou(A, B)`: `A` `(N, 4)`, `B` `(M, 4)`; **returns** `(N, M)` float, `out[i][j]` = IoU of `A[i]` and `B[j]` (0 when they do not overlap), computed with broadcasting
+          - `nms(boxes, scores, thr)`: `boxes` `(N, 4)`, `scores` `(N,)` float, `thr` float; **returns** a list of Python ints, the indices of the kept boxes, highest score first
+          - NMS rule: repeatedly keep the best remaining box and drop every remaining box whose IoU with it is `> thr` (IoU exactly `thr` is kept)
+          - **Checked on**: an IoU matrix with partial, identical, nested and disjoint pairs; NMS on 5 boxes with `thr = 0.5` and `thr = 0.3`
+        setup: |
+          import torch
+        starter: |
+          def box_iou(A, B):
+              ...
+
+          def nms(boxes, scores, thr):
+              ...
+        solution: |
+          def box_iou(A, B):
+              area_a = (A[:, 2] - A[:, 0]) * (A[:, 3] - A[:, 1])
+              area_b = (B[:, 2] - B[:, 0]) * (B[:, 3] - B[:, 1])
+              lt = torch.max(A[:, None, :2], B[None, :, :2])
+              rb = torch.min(A[:, None, 2:], B[None, :, 2:])
+              wh = (rb - lt).clamp(min=0)
+              inter = wh[..., 0] * wh[..., 1]
+              return inter / (area_a[:, None] + area_b[None, :] - inter)
+
+          def nms(boxes, scores, thr):
+              order = scores.argsort(descending=True)
+              keep = []
+              while order.numel() > 0:
+                  i = order[0]
+                  keep.append(i.item())
+                  ious = box_iou(boxes[i][None], boxes[order[1:]])[0]
+                  order = order[1:][ious <= thr]
+              return keep
+        check: |
+          A = torch.tensor([[0., 0., 2., 2.], [0., 0., 4., 4.]])
+          B = torch.tensor([[1., 1., 3., 3.], [0., 0., 2., 2.], [3., 3., 4., 4.]])
+          iou = box_iou(A, B)
+          assert iou is not None and iou.shape == (2, 3), f"iou shape = {getattr(iou, 'shape', iou)}, expected (2, 3)"
+          exp = torch.tensor([[1 / 7, 1., 0.], [4 / 16, 4 / 16, 1 / 16]])
+          assert torch.allclose(iou, exp, atol=1e-5), f"iou = {iou}, expected {exp}"
+          boxes = torch.tensor([[0., 0., 10., 10.], [1., 1., 11., 11.], [20., 20., 30., 30.], [50., 50., 60., 60.], [5., 0., 15., 10.]])
+          scores = torch.tensor([0.9, 0.8, 0.7, 0.6, 0.85])
+          keep = nms(boxes, scores, 0.5)
+          assert keep is not None, "nms returned None"
+          keep = [int(k) for k in keep]
+          assert keep == [0, 4, 2, 3], f"keep = {keep}, expected [0, 4, 2, 3]"
+          keep2 = [int(k) for k in nms(boxes, scores, 0.3)]
+          assert keep2 == [0, 2, 3], f"thr 0.3: keep = {keep2}, expected [0, 2, 3]"
+      - id: b
+        prompt: |
+          Per-class NMS: a box can only suppress boxes of its own class.
+
+          **Given** (setup): `box_iou(A, B)` -> `(N, M)` IoU matrix, as in the lesson.
+
+          **Write** `batched_nms(boxes, scores, labels, thr)`:
+          - `boxes` `(N, 4)` float `(x1, y1, x2, y2)`; `scores` `(N,)` float; `labels` `(N,)` int64 class ids; `thr` float
+          - run NMS separately inside each class: drop a box when its IoU with a kept box of the same class is `> thr`
+          - **Returns** a list of Python ints: the kept indices of all classes together, sorted by decreasing score
+          - **Checked on**: 5 boxes in 2 classes, `thr = 0.5`; two heavily overlapping boxes of different classes must both be kept
+        setup: |
+          import torch
+
+          def box_iou(A, B):
+              area_a = (A[:, 2] - A[:, 0]) * (A[:, 3] - A[:, 1])
+              area_b = (B[:, 2] - B[:, 0]) * (B[:, 3] - B[:, 1])
+              lt = torch.max(A[:, None, :2], B[None, :, :2])
+              rb = torch.min(A[:, None, 2:], B[None, :, 2:])
+              wh = (rb - lt).clamp(min=0)
+              inter = wh[..., 0] * wh[..., 1]
+              return inter / (area_a[:, None] + area_b[None, :] - inter)
+        starter: |
+          def batched_nms(boxes, scores, labels, thr):
+              ...
+        solution: |
+          def batched_nms(boxes, scores, labels, thr):
+              keep = []
+              for c in labels.unique():
+                  idx = (labels == c).nonzero().flatten()
+                  order = idx[scores[idx].argsort(descending=True)]
+                  while order.numel() > 0:
+                      i = order[0]
+                      keep.append(i.item())
+                      ious = box_iou(boxes[i][None], boxes[order[1:]])[0]
+                      order = order[1:][ious <= thr]
+              return sorted(keep, key=lambda i: -scores[i].item())
+        check: |
+          boxes = torch.tensor([[0., 0., 10., 10.], [1., 1., 11., 11.], [0., 0., 10., 10.], [1., 0., 11., 10.], [30., 30., 40., 40.]])
+          scores = torch.tensor([0.9, 0.8, 0.7, 0.95, 0.5])
+          labels = torch.tensor([0, 0, 1, 1, 0])
+          keep = batched_nms(boxes, scores, labels, 0.5)
+          assert keep is not None, "batched_nms returned None"
+          keep = [int(k) for k in keep]
+          assert keep == [3, 0, 4], f"keep = {keep}, expected [3, 0, 4]"
+
+  - id: ml-problems.contrastive
+    name: CLIP / InfoNCE contrastive loss
+    teach: |
+      `za[i]` and `zb[i]` embed the same item (a positive pair); every `zb[j]` with `j ≠ i` is a negative.
+      Score all pairs by cosine similarity / temperature, then use cross-entropy so that row `i` picks column `i`,
+      in both directions (a→b over rows, b→a over columns), and average the two losses.
+
+      ```python
+      # za, zb: (N, D) float embeddings, row i of za matches row i of zb
+      # F.normalize(x, dim=-1) -> same shape, each row divided by its length (L2 norm): dot product = cosine similarity
+      F.normalize(torch.tensor([[3., 4.]]), dim=-1)            # tensor([[0.6000, 0.8000]])
+      a, b = F.normalize(za, dim=-1), F.normalize(zb, dim=-1)  # (N, D) each
+      logits = a @ b.T / temperature                           # (N, D) @ (D, N) -> (N, N): logits[i][j] = cos(za[i], zb[j]) / temperature
+      # torch.arange(N) -> int64 tensor([0, 1, ..., N-1]): the correct column of row i is i
+      labels = torch.arange(len(a))                            # (N,)
+      # F.cross_entropy(logits, target) -> scalar: mean over rows i of -log softmax(logits[i])[target[i]];
+      #   logits (N, C) float scores, target (N,) int64 correct class of each row, in 0..C-1
+      F.cross_entropy(torch.tensor([[0., 0.]]), torch.tensor([0]))    # tensor(0.6931) = -log(0.5)
+      loss = (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels)) / 2   # scalar
+      # t.argmax(dim) -> int64 indices of the largest value along dim (that dim disappears)
+      top1 = (logits.argmax(dim=1) == labels).float().mean()   # (N, N) -> (N,) -> scalar: fraction of rows whose best column is i
+      ```
+      Pitfall: without `normalize` the logits are raw dot products, not cosines.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `za`, `zb` `(N, D)` float embeddings, not normalized; `za[i]` and `zb[i]` are a positive pair.
+
+          **Write** two functions:
+          - `clip_loss(za, zb, temperature=0.07)` **returns** a scalar tensor: the average of the cross-entropy over rows (za→zb) and over columns (zb→za) of the `(N, N)` matrix cosine / `temperature`, where the correct column of row `i` is `i`
+          - `top1_acc(za, zb)` **returns** a Python float: fraction of rows `i` for which the `zb` row most cosine-similar to `za[i]` is row `i`
+          - **Checked on**: `5 * za` (the scale must not matter), temperatures `0.07` and `0.5`, `zb` with rows 0 and 1 swapped (the two directions then differ; `top1_acc` must give `0.75`)
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          za = torch.randn(8, 16)
+          zb = za + 0.3 * torch.randn(8, 16)
+        starter: |
+          def clip_loss(za, zb, temperature=0.07):
+              ...
+
+          def top1_acc(za, zb):
+              ...
+        solution: |
+          def clip_loss(za, zb, temperature=0.07):
+              a = F.normalize(za, dim=-1)
+              b = F.normalize(zb, dim=-1)
+              logits = a @ b.T / temperature
+              labels = torch.arange(len(a))
+              return (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels)) / 2
+
+          def top1_acc(za, zb):
+              sims = F.normalize(za, dim=-1) @ F.normalize(zb, dim=-1).T
+              return (sims.argmax(dim=1) == torch.arange(len(za))).float().mean().item()
+        check: |
+          def ref(za, zb, t):
+              a, b = za / za.norm(dim=1, keepdim=True), zb / zb.norm(dim=1, keepdim=True)
+              s = a @ b.T / t
+              n = len(a)
+              l1 = -(s.log_softmax(dim=1)[range(n), range(n)]).mean()
+              l2 = -(s.log_softmax(dim=0)[range(n), range(n)]).mean()
+              return (l1 + l2) / 2
+          zb2 = zb.clone(); zb2[[0, 1]] = zb[[1, 0]]          # rows 0 and 1 swapped: asymmetric logits
+          for t in (0.07, 0.5):
+              out = clip_loss(5 * za, zb2, t)
+              assert out is not None, "clip_loss returned None"
+              exp = ref(za, zb2, t)
+              assert torch.allclose(out, exp, atol=1e-4), f"t={t}: loss = {out.item():.4f}, expected {exp.item():.4f}"
+          acc = top1_acc(za, zb)
+          assert acc is not None and abs(float(acc) - 1.0) < 1e-6, f"top1_acc(za, zb) = {acc}, expected 1.0"
+          acc2 = top1_acc(3 * za, zb2)
+          assert abs(float(acc2) - 0.75) < 1e-6, f"top1_acc with rows 0, 1 swapped = {acc2}, expected 0.75"
+      - id: b
+        prompt: |
+          One-sided InfoNCE with a shared bank of negatives: each query must pick its own positive out of `1 + K` candidates.
+
+          **Write** `info_nce(q, pos, negs, temperature=0.1)`:
+          - `q`, `pos`: `(N, D)` float, not normalized, `pos[i]` is the positive of `q[i]`; `negs`: `(K, D)` float negatives shared by all queries
+          - logits `(N, 1 + K)`: column 0 = cosine(`q[i]`, `pos[i]`), column `1 + j` = cosine(`q[i]`, `negs[j]`), all divided by `temperature`
+          - **Returns** a scalar tensor: the mean cross-entropy of these logits with target column `0` for every row
+          - **Checked on**: `2 * q` (the scale must not matter), temperatures `0.1` and `1.0`
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          q = torch.randn(4, 8)
+          pos = q + 0.5 * torch.randn(4, 8)
+          negs = torch.randn(6, 8)
+        starter: |
+          def info_nce(q, pos, negs, temperature=0.1):
+              ...
+        solution: |
+          def info_nce(q, pos, negs, temperature=0.1):
+              q, pos, negs = F.normalize(q, dim=-1), F.normalize(pos, dim=-1), F.normalize(negs, dim=-1)
+              l_pos = (q * pos).sum(-1, keepdim=True)                 # (N, 1)
+              l_neg = q @ negs.T                                      # (N, K)
+              logits = torch.cat([l_pos, l_neg], dim=1) / temperature
+              labels = torch.zeros(len(q), dtype=torch.long)
+              return F.cross_entropy(logits, labels)
+        check: |
+          def ref(q, p, n, t):
+              q, p, n = (x / x.norm(dim=1, keepdim=True) for x in (q, p, n))
+              s = torch.cat([(q * p).sum(1, keepdim=True), q @ n.T], 1) / t
+              return -s.log_softmax(dim=1)[:, 0].mean()
+          for t in (0.1, 1.0):
+              out = info_nce(2 * q, pos, negs, t)
+              assert out is not None, "info_nce returned None"
+              exp = ref(q, pos, negs, t)
+              assert torch.allclose(out, exp, atol=1e-4), f"t={t}: loss = {out.item():.4f}, expected {exp.item():.4f}"

@@ -1,0 +1,275 @@
+id: tensors
+title: Tensors - create, dtype, shape, device
+intro: |
+  Every interview answer starts by building tensors of the right shape, dtype and device.
+  Know the factory functions cold, and the int64 vs float32 trap that breaks losses and matmuls.
+problems:
+  - Generate a toy dataset for a regression or classification model
+  - Build a causal mask or position ids for attention
+  - Debug "expected scalar type Float but found Long"
+  - Move a model and batch to the GPU if one is available
+atoms: []
+skills:
+  - id: tensors.create
+    name: torch.tensor, zeros/ones/full, randn/randint, arange/linspace, *_like
+    teach: |
+      ```python
+      # torch.tensor(data) -> tensor copied from a (nested) list
+      torch.tensor([[1., 2.], [3., 4.]])   # shape (2, 2)
+      # torch.zeros(*size) / torch.ones(*size) -> filled with 0. / 1.
+      torch.ones(2, 3)                     # shape (2, 3), all 1.
+      # torch.full(size_tuple, value) -> filled with value
+      torch.full((2, 2), 7.0)              # [[7., 7.], [7., 7.]]
+      # torch.randn(*size) -> N(0, 1) samples;  torch.rand(*size) -> U[0, 1) samples
+      torch.randn(2, 3)                    # shape (2, 3)
+      # torch.randint(low, high, size_tuple) -> ints in [low, high)
+      torch.randint(0, 10, (5,))           # e.g. [3, 7, 0, 9, 1]
+      # torch.arange(start, end, step) -> end exclusive (arange(n) = 0..n-1)
+      torch.arange(0, 10, 2)               # [0, 2, 4, 6, 8]
+      # torch.linspace(start, end, steps) -> steps points, end inclusive
+      torch.linspace(0, 1, 5)              # [0., .25, .5, .75, 1.]
+      # torch.zeros_like(x) / ones_like / randn_like / full_like(x, v) -> same shape, dtype, device as x
+      torch.full_like(torch.zeros(2), 3.)  # [3., 3.]
+      ```
+      Pitfall: `randint(0, 10, 5)` fails: the size must be a tuple `(5,)`.
+    cards:
+      - id: a
+        prompt: |
+          Set: `v` = `[0.5, -1.0, 2.0]` from a list · `z` = `(2, 3)` zeros · `o` = `(4,)` ones · `f` = `(3, 2)` full of `7.0` ·
+          then seed with `0` and draw, in this order, `g` = `(2, 3)` standard normal, `u` = 4 uniform samples in `[0, 1)`,
+          `k` = 5 ints in `[0, 10)` · `r` = `0, 1, ..., 9` · `t` = 5 points from 0 to 1 inclusive ·
+          `fill` = shaped like `g`, full of `-1.0` (use a `*_like` helper).
+        setup: |
+          import torch
+        solution: |
+          v = torch.tensor([0.5, -1.0, 2.0])
+          z = torch.zeros(2, 3)
+          o = torch.ones(4)
+          f = torch.full((3, 2), 7.0)
+          torch.manual_seed(0)
+          g = torch.randn(2, 3)
+          u = torch.rand(4)
+          k = torch.randint(0, 10, (5,))
+          r = torch.arange(10)
+          t = torch.linspace(0, 1, 5)
+          fill = torch.full_like(g, -1.0)
+        check: |
+          assert torch.equal(v, torch.tensor([0.5, -1.0, 2.0])), f"v = {v}"
+          assert z.shape == (2, 3) and torch.all(z == 0), f"z = {z}"
+          assert o.shape == (4,) and torch.all(o == 1), f"o = {o}"
+          assert f.shape == (3, 2) and torch.all(f == 7.0), f"f = {f}"
+          torch.manual_seed(0)
+          eg, eu, ek = torch.randn(2, 3), torch.rand(4), torch.randint(0, 10, (5,))
+          assert torch.equal(g, eg), f"g = {g} (seed 0, then randn(2, 3))"
+          assert torch.equal(u, eu), f"u = {u} (then rand(4))"
+          assert torch.equal(k, ek), f"k = {k} (then randint(0, 10, (5,)))"
+          assert torch.equal(r, torch.arange(10)), f"r = {r}"
+          assert torch.allclose(t, torch.tensor([0, 0.25, 0.5, 0.75, 1.0])), f"t = {t}"
+          assert fill.shape == (2, 3) and torch.all(fill == -1.0), f"fill = {fill}"
+      - id: b
+        prompt: "Toy regression data: seed with `0`, set `x` = 20 evenly spaced points from -1 to 1 (inclusive), and `y` = `3 * x` plus noise `0.1 * N(0, 1)` shaped like `x` (use a `*_like` helper)."
+        setup: |
+          import torch
+        solution: |
+          torch.manual_seed(0)
+          x = torch.linspace(-1, 1, 20)
+          y = 3 * x + 0.1 * torch.randn_like(x)
+        check: |
+          assert torch.allclose(x, torch.linspace(-1, 1, 20)), f"x = {x}"
+          torch.manual_seed(0)
+          ey = 3 * x + 0.1 * torch.randn(20)
+          assert y.shape == (20,) and torch.allclose(y, ey), f"y[:3] = {y[:3]} (seed 0, then randn_like(x))"
+
+  - id: tensors.dtype
+    name: dtype, .float(), .long(), .to(dtype)
+    teach: |
+      ```python
+      # integer data -> int64, float data -> float32
+      torch.tensor([1, 2]).dtype            # torch.int64
+      # dtype=... on any factory (torch.long is torch.int64)
+      torch.zeros(3, dtype=torch.long)      # tensor([0, 0, 0])
+      # x.float() / x.long() / x.bool() -> converted copy (long truncates, bool is x != 0)
+      torch.tensor([0, 2]).bool()           # tensor([False, True])
+      # x.to(dtype) -> converted copy, any dtype
+      torch.ones(2).to(torch.float16).dtype # torch.float16
+      ```
+      Pitfall: `x.mean()` on an int64 tensor raises; call `.float()` first.
+    cards:
+      - id: a
+        prompt: |
+          Set: `xf` = the int tensor `x` as float32 · `y` = targets `[2, 0, 1]` built as int64 with `dtype=` ·
+          `idx` = the floats `p` truncated to int64 · `nz` = a bool mask of the non-zero entries of `x`, by conversion ·
+          `h` = `p` cast to `torch.float16` with `.to(...)`.
+        setup: |
+          import torch
+          x = torch.tensor([0, 2, 3])
+          p = torch.tensor([0.7, 2.3, 1.9])
+        solution: |
+          xf = x.float()
+          y = torch.tensor([2, 0, 1], dtype=torch.long)
+          idx = p.long()
+          nz = x.bool()
+          h = p.to(torch.float16)
+        check: |
+          assert xf.dtype == torch.float32 and xf.tolist() == [0.0, 2.0, 3.0], f"xf = {xf} ({xf.dtype})"
+          assert y.dtype == torch.int64 and y.tolist() == [2, 0, 1], f"y = {y} ({y.dtype})"
+          assert idx.dtype == torch.int64 and idx.tolist() == [0, 2, 1], f"idx = {idx} ({idx.dtype})"
+          assert nz.dtype == torch.bool and nz.tolist() == [False, True, True], f"nz = {nz}"
+          assert h.dtype == torch.float16, f"h.dtype = {h.dtype}"
+      - id: d
+        prompt: From the int counts `c`, compute `avg`, their mean, and `frac`, the fraction of counts that are non-zero (both float tensors).
+        setup: |
+          import torch
+          c = torch.tensor([0, 3, 0, 1])
+        solution: |
+          avg = c.float().mean()
+          frac = (c > 0).float().mean()
+        check: |
+          assert abs(avg.item() - 1.0) < 1e-6, f"avg = {avg}"
+          assert abs(frac.item() - 0.5) < 1e-6, f"frac = {frac}"
+
+  - id: tensors.shape
+    name: .shape, .size(dim), .ndim, .numel(), len
+    teach: |
+      ```python
+      x = torch.zeros(4, 3, 2)
+      # x.shape -> torch.Size, compares equal to a tuple; unpacks like one
+      B, T, C = x.shape         # 4, 3, 2
+      # x.size(dim) -> int; negative dims count from the end
+      x.size(-1)                # 2
+      # x.ndim -> number of dims;  x.numel() -> number of elements
+      (x.ndim, x.numel())       # (3, 24)
+      # len(x) -> size of dim 0 only
+      len(x)                    # 4
+      ```
+    cards:
+      - id: a
+        prompt: "Unpack the shape of `x` into `B, T, C`, then set `last` = the size of its last dim with `.size(...)`, `d` = its number of dims, `n` = its number of elements, `batch` = `len(x)`."
+        setup: |
+          import torch
+          x = torch.randn(4, 7, 16)
+        solution: |
+          B, T, C = x.shape
+          last = x.size(-1)
+          d = x.ndim
+          n = x.numel()
+          batch = len(x)
+        check: |
+          assert (B, T, C) == (4, 7, 16), f"(B, T, C) = {(B, T, C)}"
+          assert last == 16, f"last = {last}"
+          assert d == 3, f"d = {d}"
+          assert n == 448, f"n = {n}"
+          assert batch == 4, f"batch = {batch}"
+      - id: b
+        prompt: Set `n_params` to the total number of parameters of `model` (sum over `model.parameters()`).
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2))
+        solution: |
+          n_params = sum(p.numel() for p in model.parameters())
+        check: |
+          assert n_params == 58, f"n_params = {n_params} (expected 4*8 + 8 + 8*2 + 2 = 58)"
+
+  - id: tensors.device
+    name: device = cuda if available else cpu, .to(device)
+    teach: |
+      ```python
+      # torch.cuda.is_available() -> bool
+      device = "cuda" if torch.cuda.is_available() else "cpu"
+      # device=... on any factory: create the tensor directly there
+      x = torch.randn(3, device=device)
+      # x.device -> where x lives
+      x.device                    # device(type='cpu')
+      # tensor.to(device) -> NEW tensor (reassign);  module.to(device) moves the module in place
+      x = x.to(device); model.to(device)
+      ```
+      Pitfall: an op between tensors on different devices raises an error.
+    cards:
+      - id: a
+        prompt: Set `device` to `"cuda"` if available else `"cpu"`. Move `x` (reassign it) and `model` to it. Then create `mask`, a `(2, 2)` tensor of ones made directly on `x`'s device (use `x.device`).
+        setup: |
+          import torch
+          import torch.nn as nn
+          x = torch.randn(3)
+          model = nn.Linear(3, 1)
+        solution: |
+          device = "cuda" if torch.cuda.is_available() else "cpu"
+          x = x.to(device)
+          model.to(device)
+          mask = torch.ones(2, 2, device=x.device)
+        check: |
+          exp = "cuda" if torch.cuda.is_available() else "cpu"
+          assert device == exp, f"device = {device!r}"
+          assert x.device.type == exp, f"x.device = {x.device}"
+          assert next(model.parameters()).device.type == exp, f"model is on {next(model.parameters()).device}"
+          assert mask.device == x.device and mask.shape == (2, 2) and torch.all(mask == 1), f"mask = {mask}"
+      - id: c
+        prompt: Move `model` and the batch `xb` to `device`, then compute `out = model(xb)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          device = torch.device("cpu")
+          model = nn.Linear(4, 2)
+          xb = torch.randn(3, 4)
+        solution: |
+          model.to(device)
+          xb = xb.to(device)
+          out = model(xb)
+        check: |
+          assert out.shape == (3, 2), f"out.shape = {tuple(out.shape)}"
+          assert out.device == device and next(model.parameters()).device == device, f"out.device = {out.device}"
+
+  - id: tensors.numpy
+    name: from_numpy / .numpy(), .item(), .tolist(), .clone()
+    teach: |
+      ```python
+      # torch.from_numpy(arr) -> tensor SHARING memory with arr (edit one, the other changes)
+      t = torch.from_numpy(np.array([1., 2.]))
+      # t.numpy() -> ndarray sharing memory (CPU only)
+      a = t.numpy()
+      # t.detach() -> same data without grad tracking; needed before .numpy() if t requires grad
+      t.detach().numpy()
+      # t.item() -> Python number (1-element tensor only)
+      torch.tensor(0.25).item()          # 0.25
+      # t.tolist() -> nested Python lists
+      torch.tensor([[1, 2]]).tolist()    # [[1, 2]]
+      # t.clone() -> independent copy
+      u = t.clone()
+      ```
+    cards:
+      - id: a
+        prompt: "Make `t`, a tensor **sharing memory** with `arr`, and `c`, an independent copy of `t`. Set `v` = `loss` as a Python float. `w` requires grad: set `a` = `w` as a numpy array and `lst` = `w` as nested Python lists."
+        setup: |
+          import torch
+          import numpy as np
+          arr = np.array([1.0, 2.0, 3.0])
+          loss = torch.tensor(0.25)
+          w = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+        solution: |
+          t = torch.from_numpy(arr)
+          c = t.clone()
+          v = loss.item()
+          a = w.detach().numpy()
+          lst = w.tolist()
+        check: |
+          arr[0] = 100.0
+          assert t[0].item() == 100.0, f"t does not share memory with arr: t = {t}"
+          assert c[0].item() == 1.0, f"c is not an independent copy: c = {c}"
+          assert type(v) is float and v == 0.25, f"v = {v!r} ({type(v).__name__})"
+          assert isinstance(a, np.ndarray) and a.tolist() == [[1.0, 2.0], [3.0, 4.0]], f"a = {a!r}"
+          assert lst == [[1.0, 2.0], [3.0, 4.0]], f"lst = {lst!r}"
+      - id: b
+        prompt: Before an update, save `w0`, a snapshot of `model.weight` that does not track grad and does **not** change when the weight is later updated in place.
+        setup: |
+          import torch
+          import torch.nn as nn
+          model = nn.Linear(3, 2)
+        solution: |
+          w0 = model.weight.detach().clone()
+        check: |
+          before = model.weight.detach().tolist()
+          with torch.no_grad():
+              model.weight += 1.0
+          assert not w0.requires_grad, "w0 still requires grad: detach it"
+          assert w0.tolist() == before, "w0 changed with the weight: clone it"

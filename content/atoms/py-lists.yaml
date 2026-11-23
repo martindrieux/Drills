@@ -1,0 +1,186 @@
+id: py-lists
+title: Lists — indexing, slicing, grids
+summary: The everyday mutable sequence. Indexing, slicing, in-place edits, comprehensions and 2D grids without aliasing bugs.
+links:
+  - to: py-deque
+    kind: contrast
+    note: list.pop(0) and list.insert(0, x) are O(n); a deque does both ends in O(1).
+lesson: |
+  A list is a **dynamic array**: O(1) access by index and O(1) append at the end,
+  but anything that shifts elements (insert/pop/remove near the front) is O(n).
+
+  **Indexing and slicing**
+
+  ```python
+  nums = [10, 20, 30, 40, 50]
+  nums[0], nums[-1]      # 10, 50       (negative = from the end)
+  nums[1:3]              # [20, 30]     (stop is excluded)
+  nums[:2], nums[-2:]    # first two, last two
+  nums[::2]              # [10, 30, 50] (step)
+  nums[::-1]             # reversed copy
+  copy = nums[:]         # shallow copy (same as list(nums), nums.copy())
+  ```
+
+  Slicing never raises: `nums[3:100]` is just `[40, 50]`. Indexing out of range raises `IndexError`.
+
+  **Mutation and cost**
+
+  | Call | Does | Cost |
+  |---|---|---|
+  | `nums.append(x)` | add one item at the end | O(1) |
+  | `nums.extend(xs)` / `nums += xs` | add many items | O(k) |
+  | `nums.insert(i, x)` | insert before index i | O(n) |
+  | `nums.pop()` | remove and return the last item | O(1) |
+  | `nums.pop(i)` | remove and return item i | O(n) |
+  | `nums.remove(x)` | remove the **first** x (`ValueError` if absent) | O(n) |
+  | `x in nums`, `nums.index(x)` | linear scan (`index` raises if absent) | O(n) |
+  | `del nums[i]`, `del nums[i:j]` | delete by position | O(n) |
+  | `nums.reverse()`, `nums.sort()` | in place, **return None** | O(n), O(n log n) |
+
+  **Comprehensions**
+
+  ```python
+  sq = [x * x for x in nums if x % 2 == 0]        # filter goes at the end
+  signs = [1 if x > 0 else -1 for x in nums]      # if/else goes at the front
+  flat = [x for row in grid for x in row]         # loops read left to right
+  ```
+
+  **2D grids**
+
+  ```python
+  grid = [[0] * cols for _ in range(rows)]   # correct: one new row per iteration
+  bad = [[0] * cols] * rows                  # WRONG: the same row object, rows times
+  bad[0][0] = 1                              # every row now starts with 1
+  rows, cols = len(grid), len(grid[0])
+  clone = [row[:] for row in grid]           # copy a 2D grid (grid[:] is not enough)
+  ```
+
+  `[0] * n` is fine because ints are immutable; the trap is multiplying a list **of lists**.
+
+  **Unpacking and swapping**
+
+  ```python
+  a, b = b, a                          # swap, no temp variable
+  nums[i], nums[j] = nums[j], nums[i]  # swap two cells
+  first, *rest = nums                  # rest is a list
+  *init, last = nums
+  ```
+
+  **Pitfalls**
+  - `b = a` does not copy; both names point at the same list.
+  - `nums = nums[::-1]` rebinds the local name. For "modify in place" problems write `nums[:] = ...`.
+  - `res = nums.append(x)` or `nums = nums.sort()` sets the name to `None`.
+  - Don't add or remove items from a list while looping over it; build a new list instead.
+  - Mutable default arguments (`def f(acc=[])`) are shared between calls.
+drills:
+  - id: last-two
+    prompt: Put the last two elements of `nums` into `res` using a negative slice.
+    setup: |
+      nums = [3, 1, 4, 1, 5, 9]
+    solution: |
+      res = nums[-2:]
+    check: |
+      assert res == [5, 9], f"res = {res!r}"
+  - id: reverse-copy
+    prompt: Put a reversed **copy** of `nums` into `rev`, leaving `nums` unchanged.
+    setup: |
+      nums = [1, 2, 3, 4]
+    solution: |
+      rev = nums[::-1]
+    check: |
+      assert rev == [4, 3, 2, 1], f"rev = {rev!r}"
+      assert nums == [1, 2, 3, 4], f"nums was modified: {nums!r}"
+  - id: grid-init
+    prompt: Create `grid` with 3 rows and 4 columns of `0`, then set `grid[0][1] = 7`. Only row 0 may change.
+    solution: |
+      grid = [[0] * 4 for _ in range(3)]
+      grid[0][1] = 7
+    check: |
+      assert grid == [[0, 7, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], f"grid = {grid!r}"
+  - id: pop-insert
+    prompt: Remove the element at index 1 of `nums` into `x`, then insert `x` at the front of `nums`.
+    setup: |
+      nums = [5, 8, 2]
+    solution: |
+      x = nums.pop(1)
+      nums.insert(0, x)
+    check: |
+      assert x == 8, f"x = {x!r}"
+      assert nums == [8, 5, 2], f"nums = {nums!r}"
+  - id: comprehension
+    prompt: In one comprehension, put the squares of the **even** numbers of `nums` into `squares`.
+    setup: |
+      nums = [1, 2, 3, 4, 5, 6]
+    solution: |
+      squares = [x * x for x in nums if x % 2 == 0]
+    check: |
+      assert squares == [4, 16, 36], f"squares = {squares!r}"
+  - id: unpack-swap
+    prompt: In one statement unpack `nums` into `head` (first item) and `tail` (list of the rest). Then swap `a` and `b` in one line.
+    setup: |
+      nums = [7, 8, 9]
+      a, b = 1, 2
+    solution: |
+      head, *tail = nums
+      a, b = b, a
+    check: |
+      assert head == 7, f"head = {head!r}"
+      assert tail == [8, 9], f"tail = {tail!r}"
+      assert (a, b) == (2, 1), f"a, b = {a!r}, {b!r}"
+classics:
+  - id: rotate-array
+    title: Rotate Array
+    url: https://leetcode.com/problems/rotate-array/
+    difficulty: Medium
+    prompt: |
+      Rotate `nums` to the right by `k` steps, **in place** (return nothing).
+      `[1,2,3,4,5,6,7]` with `k = 3` becomes `[5,6,7,1,2,3,4]`. `k` may exceed `len(nums)`.
+    starter: |
+      def rotate(nums, k):
+          pass
+    hints:
+      - Rotating by `len(nums)` changes nothing, so reduce `k` first.
+      - The answer is the last k items followed by the rest. Build it with two slices.
+      - Assigning to `nums` only rebinds the local name. Assign to `nums[:]` instead.
+    solution: |
+      def rotate(nums, k):
+          k %= len(nums)
+          nums[:] = nums[-k:] + nums[:-k]
+    check: |
+      nums = [1, 2, 3, 4, 5, 6, 7]; rotate(nums, 3)
+      assert nums == [5, 6, 7, 1, 2, 3, 4], f"nums = {nums!r}"
+      nums = [-1, -100, 3, 99]; rotate(nums, 2)
+      assert nums == [3, 99, -1, -100], f"nums = {nums!r}"
+      nums = [1, 2]; rotate(nums, 5)
+      assert nums == [2, 1], f"k > n: nums = {nums!r}"
+      nums = [1, 2, 3]; rotate(nums, 0)
+      assert nums == [1, 2, 3], f"k = 0: nums = {nums!r}"
+    takeaway: In-place list edits → `nums[:] = ...`; rotation is `nums[-k:] + nums[:-k]` after `k %= n`.
+  - id: pascals-triangle
+    title: Pascal's Triangle
+    url: https://leetcode.com/problems/pascals-triangle/
+    difficulty: Easy
+    prompt: |
+      Return the first `numRows` rows of Pascal's triangle as a list of lists.
+      Each row starts and ends with 1; every inner value is the sum of the two values above it.
+    starter: |
+      def generate(numRows):
+          pass
+    hints:
+      - Start with `[[1]]` and build each new row from the previous one.
+      - The inner values are `prev[j - 1] + prev[j]`; pairing `prev` with `prev[1:]` gives them all.
+    solution: |
+      def generate(numRows):
+          rows = [[1]]
+          for _ in range(numRows - 1):
+              prev = rows[-1]
+              rows.append([1] + [a + b for a, b in zip(prev, prev[1:])] + [1])
+          return rows
+    check: |
+      r = generate(5)
+      assert r == [[1], [1, 1], [1, 2, 1], [1, 3, 3, 1], [1, 4, 6, 4, 1]], f"generate(5) = {r!r}"
+      r = generate(1)
+      assert r == [[1]], f"generate(1) = {r!r}"
+      r = generate(2)
+      assert r == [[1], [1, 1]], f"generate(2) = {r!r}"
+    takeaway: Build row by row from `rows[-1]`; `zip(prev, prev[1:])` gives adjacent pairs.

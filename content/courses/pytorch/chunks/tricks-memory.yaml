@@ -1,0 +1,538 @@
+id: tricks-memory
+title: "Tricks: memory layout, autograd & attention"
+intro: |
+  Questions that test what a tensor really is (a flat storage read through strides), how autograd lets you
+  supply your own gradient, and how attention is computed when the T x T score matrix does not fit in memory.
+problems:
+  - Why does view fail after transpose? Flatten any tensor correctly
+  - Write a custom autograd.Function and verify it with gradcheck
+  - Straight-through estimator for a non-differentiable op
+  - Causal attention without materializing the T x T matrix (FlashAttention idea)
+  - Causal attention when the queries are the last T of S positions (prefill with a KV cache)
+atoms: []
+skills:
+  - id: tricks-memory.strides
+    name: Strides and contiguity (Medium)
+    teach: |
+      `t[i0, ..., ik] = storage[offset + i0 * stride[0] + ... + ik * stride[k]]`
+      ```python
+      x = torch.arange(6).view(2, 3)   # shape (2, 3), stride (3, 1): row-major = contiguous
+      x.t()                            # shape (3, 2), stride (1, 3): same storage, not contiguous
+      x.t().view(6)                    # RuntimeError: view size is not compatible ...
+      ```
+      Problem: (A) row-major strides of a shape; is `(shape, stride)` contiguous, like `is_contiguous()`?
+      (B) flatten any tensor to 1-D, row-major, copying only when needed.
+    cards:
+      - id: a
+        prompt: |
+          Part A: write two pure-Python functions on tuples of ints: the row-major strides of a shape, and a contiguity test.
+          - `shape` (tuple of ints ≥ 0, may be `()`); `stride` (tuple of ints ≥ 0, same length)
+          - `contig_strides(shape)` returns a tuple: the strides of a dense row-major tensor of that shape, e.g. `(2, 3, 4)` -> `(12, 4, 1)`, `()` -> `()`
+          - `is_contig(shape, stride)` returns a bool: whether a tensor with this shape and stride is contiguous (cross-check: `torch.empty_strided(shape, stride).is_contiguous()`)
+          - size-1 dims may have any stride; a tensor with 0 elements is contiguous
+
+          <details><summary>Hint 1</summary>Walk dims from last to first, tracking the stride a dense layout would have.</details>
+          <details><summary>Hint 2</summary>Row-major: `stride[d] = shape[d+1] * ... * shape[-1]` (empty product = 1).</details>
+          <details><summary>Hint 3</summary>Skip size-1 dims; else require `stride[d] == expected`, then `expected *= shape[d]`.</details>
+        starter: |
+          def contig_strides(shape):
+              raise NotImplementedError
+
+          def is_contig(shape, stride):
+              raise NotImplementedError
+        solution: |
+          def contig_strides(shape):
+              out, acc = [], 1
+              for n in reversed(shape):          # last dim moves fastest: stride 1
+                  out.append(acc)
+                  acc *= n
+              return tuple(reversed(out))
+
+          def is_contig(shape, stride):
+              if 0 in shape:
+                  return True                    # no element: nothing to lay out
+              expected = 1
+              for n, s in zip(reversed(shape), reversed(stride)):
+                  if n == 1:
+                      continue                   # never stepped along: stride irrelevant
+                  if s != expected:
+                      return False
+                  expected *= n
+              return True
+          # Trick: contiguous = strides equal the row-major strides, ignoring size-1 dims (exactly c10's rule).
+          # transpose / permute / x[:, ::2] / expand only change (shape, stride, offset): O(1), no copy.
+          # Cost: O(ndim). NumPy: a.strides is in BYTES; a.flags["C_CONTIGUOUS"].
+          # Mistakes: exact compare with contig_strides (fails on size-1 dims); "strides sorted descending" (x[:, ::2]).
+          # Follow-up: what is channels_last ((N, C, H, W) with strides (HWC, 1, WC, C))?
+        check: |
+          import torch
+          from cardtest import against, rand_cases
+
+          def _ref_strides(shape):
+              return tuple(torch.empty(shape).stride())
+
+          def _ref_contig(shape, stride):
+              return torch.empty_strided(shape, stride).is_contiguous()
+
+          def _from_tensor(r, allow_zero):
+              nd = r.randint(0, 4)
+              lo = 0 if allow_zero and r.random() < 0.15 else 1
+              t = torch.empty([r.randint(lo, 4) for _ in range(nd)])
+              for _ in range(r.randint(0, 3)):
+                  op = r.randrange(4)
+                  if op == 0 and t.ndim >= 2:
+                      p = list(range(t.ndim)); r.shuffle(p); t = t.permute(p)
+                  elif op == 1 and t.ndim >= 1:
+                      d = r.randrange(t.ndim); t = t.narrow(d, 1, t.shape[d] - 1) if t.shape[d] > 1 else t
+                  elif op == 2 and t.ndim >= 1:
+                      d = r.randrange(t.ndim); sl = [slice(None)] * t.ndim; sl[d] = slice(None, None, r.randint(1, 3)); t = t[tuple(sl)]
+                  elif op == 3 and t.ndim >= 1:
+                      d = r.randrange(t.ndim)
+                      if t.shape[d] == 1:
+                          sz = list(t.shape); sz[d] = r.randint(1, 4); t = t.expand(sz)
+              return tuple(t.shape), tuple(t.stride())
+
+          against(contig_strides, _ref_strides,
+                  [((),), ((1,),), ((5,),), ((2, 3, 4),), ((3, 1, 2),), ((1, 1),), ((4, 1),)]
+                  + rand_cases(lambda r: (_from_tensor(r, False)[0],), 150, seed=1))
+          against(is_contig, _ref_contig,
+                  [((), ()), ((1,), (7,)), ((5,), (1,)), ((5,), (2,)), ((3, 1, 2), (2, 99, 1)), ((1, 1), (5, 3)),
+                   ((3, 4), (4, 1)), ((4, 3), (1, 4)), ((3, 2), (4, 2)), ((3, 4), (0, 1)), ((2, 3), (3, 0)),
+                   ((0, 3), (1, 5)), ((2, 0), (0, 0)), ((2, 1, 3), (3, 1, 1)), ((2, 1, 3), (1, 3, 2)), ((1, 3), (1, 1))]
+                  + rand_cases(lambda r: _from_tensor(r, True), 300, seed=2))
+      - id: b
+        prompt: |
+          Part B: implement `flatten(t)`: return the elements of `t` as a 1-D tensor in row-major order, copying only when needed.
+          - `t`: any shape (0-d included), any dtype, maybe non-contiguous (transposed, sliced with a step, expanded)
+          - returns (numel,), dtype of `t`: a view of `t` (same `data_ptr`) if `t` is contiguous, otherwise a fresh copy
+          - don't use `reshape` / `flatten` / `ravel`
+
+          <details><summary>Hint 1</summary>`view` merges dims only on a dense row-major layout.</details>
+          <details><summary>Hint 2</summary>`t.contiguous()` returns `t` itself if already contiguous, else a copy.</details>
+          <details><summary>Hint 3</summary>Make it dense, then `view(-1)`.</details>
+        starter: |
+          def flatten(t):
+              raise NotImplementedError
+        solution: |
+          def flatten(t):
+              return t.contiguous().view(-1)       # (...) -> (numel,)
+          # Trick: .contiguous() returns self when already row-major (the view shares storage), else copies once.
+          # t.view(-1) alone fails after transpose / step slicing / expand; reshape(-1) does exactly this.
+          # Cost: O(1) for contiguous t, O(numel) copy otherwise.
+          # NumPy: np.ravel(a) = view if possible else copy; a.flatten() always copies.
+          # Mistake: .clone().view(-1) (clone keeps the transposed strides).
+          # Follow-up: is .contiguous() on a stride-0 expanded (1000, 1000) tensor cheap? (No: 10^6 elements.)
+        check: |
+          import torch
+          from cardtest import against, rand_cases
+          def _names(co):
+              out = set(co.co_names)
+              for c in co.co_consts:
+                  if hasattr(c, "co_names"):
+                      out |= _names(c)
+              return out
+          assert not {"reshape", "flatten", "ravel"} & _names(flatten.__code__), "don't use reshape / flatten / ravel"
+
+          def _run(t):
+              base = t.clone()
+              out = flatten(t)
+              assert isinstance(out, torch.Tensor) and out.ndim == 1, f"returned {type(out).__name__} with shape {getattr(out, 'shape', None)}"
+              if t.is_contiguous() and t.numel() > 0:
+                  assert out.data_ptr() == t.data_ptr(), "t is contiguous: return a view (same data_ptr), not a copy"
+              if not t.is_contiguous() and out.numel() > 0:
+                  out[0] = out[0] + 1
+                  assert torch.equal(t, base), "writing into flatten(t) changed t: return a fresh copy for non-contiguous t"
+                  out[0] = out[0] - 1
+              return out
+
+          def _ref(t):
+              flat = []
+              def walk(v):
+                  if isinstance(v, list):
+                      for e in v: walk(e)
+                  else:
+                      flat.append(v)
+              walk(t.tolist())
+              return torch.tensor(flat, dtype=t.dtype)
+
+          def _same(got, exp):
+              return got.shape == exp.shape and got.dtype == exp.dtype and torch.equal(got, exp)
+
+          def _show(t):
+              return f"(t of shape {tuple(t.shape)}, stride {t.stride()}, contiguous={t.is_contiguous()})"
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randrange(10**6))
+              nd = r.randint(1, 4)
+              t = torch.randint(-9, 10, [r.randint(1, 4) for _ in range(nd)], generator=g)
+              if r.random() < 0.3:
+                  t = t.float()
+              if nd >= 2 and r.random() < 0.5:
+                  p = list(range(nd)); r.shuffle(p); t = t.permute(p)
+              if r.random() < 0.4:
+                  d = r.randrange(t.ndim); sl = [slice(None)] * t.ndim; sl[d] = slice(r.randint(0, 1), None, r.randint(1, 2)); t = t[tuple(sl)]
+              if r.random() < 0.2 and t.shape[-1] > 0:
+                  t = t[..., :1].expand(*t.shape[:-1], r.randint(1, 3))
+              return (t,)
+
+          x = torch.arange(12).view(3, 4)
+          edge = [(torch.tensor(5),), (torch.empty(0, 3),), (x,), (x[1:],), (x.t(),), (x[:, ::2],),
+                  (torch.arange(4.0).expand(3, -1),), (x.view(3, 1, 4).expand(3, 2, 4),), (x.t()[1:],),
+                  (torch.arange(24).view(2, 3, 4).permute(2, 0, 1),)]
+          against(_run, _ref, edge + rand_cases(_gen, 200), same=_same, show=_show, name="flatten")
+
+  - id: tricks-memory.custom-grad
+    name: Custom gradients, autograd.Function and the detach trick (Medium)
+    teach: |
+      ```text
+      (A) LogSumExp as a torch.autograd.Function with a hand-written backward:
+          lse(x)[...] = log(sum_j exp(x[..., j])), x (..., N) -> (...), finite for logits ±1e4
+          Example: x [[0., 0.], [1000., 1000.]] -> [0.6931, 1000.6931]; d lse / d x = [[0.5, 0.5], [0.5, 0.5]]
+      (B) ste_round: forward = round(x), backward = identity (straight-through estimator), no custom class.
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Part A: implement log-sum-exp as a `torch.autograd.Function` with a hand-written backward, then verify it with `gradcheck`.
+          - `LogSumExp.forward(ctx, x)`: `x` (..., N) float; returns (...): `out[...] = log Σ_j exp(x[..., j])`, finite for `|x|` up to 1e4
+          - `LogSumExp.backward(ctx, g)`: `g` (...) = d loss / d out; returns (..., N): d loss / d x
+          - `ok` (bool): the result of `torch.autograd.gradcheck(LogSumExp.apply, (x64,))`, `x64` a random (3, 5) float64 tensor with `requires_grad=True`
+          - don't use `logsumexp` / `softmax` / `log_softmax`
+
+          <details><summary>Hint 1</summary>Subtract the row max before `exp`, add it back after `log`.</details>
+          <details><summary>Hint 2</summary>`d lse / d x_j = exp(x_j - lse)` (the softmax); save `x` and the output.</details>
+          <details><summary>Hint 3</summary>backward: `g.unsqueeze(-1) * torch.exp(x - out.unsqueeze(-1))`.</details>
+        setup: |
+          import torch
+        starter: |
+          class LogSumExp(torch.autograd.Function):
+              @staticmethod
+              def forward(ctx, x):
+                  raise NotImplementedError
+
+              @staticmethod
+              def backward(ctx, g):
+                  raise NotImplementedError
+
+          ok = None
+        solution: |
+          class LogSumExp(torch.autograd.Function):
+              @staticmethod
+              def forward(ctx, x):                                   # x: (..., N)
+                  m = x.max(dim=-1, keepdim=True).values             # (..., 1)
+                  out = (m + torch.log(torch.exp(x - m).sum(dim=-1, keepdim=True))).squeeze(-1)   # (...)
+                  ctx.save_for_backward(x, out)
+                  return out
+
+              @staticmethod
+              def backward(ctx, g):                                  # g: (...)
+                  x, out = ctx.saved_tensors
+                  return g.unsqueeze(-1) * torch.exp(x - out.unsqueeze(-1))   # (..., 1) * (..., N) -> (..., N)
+
+          torch.manual_seed(0)
+          x64 = torch.randn(3, 5, dtype=torch.float64, requires_grad=True)
+          ok = torch.autograd.gradcheck(LogSumExp.apply, (x64,))
+          # Trick: the max-shift keeps exp from overflowing; backward reuses the saved output: softmax = exp(x - lse).
+          # Cost: O(numel); only (x, out) are saved.
+          # gradcheck compares with finite differences: float32 rounding swamps them, so always use float64.
+          # NumPy: no autograd; write forward and backward as two functions.
+          # Mistakes: forgetting to multiply by g; (...) vs (..., 1) broadcasting.
+          # Follow-up: return None for inputs that need no grad; ctx.mark_non_differentiable.
+        check: |
+          from cardtest import against, rand_cases
+          def _names(co):
+              out = set(co.co_names)
+              for c in co.co_consts:
+                  if hasattr(c, "co_names"):
+                      out |= _names(c)
+              return out
+          _used = _names(LogSumExp.forward.__code__) | _names(LogSumExp.backward.__code__)
+          assert not {"logsumexp", "softmax", "log_softmax"} & _used, "don't use torch.logsumexp / softmax / log_softmax"
+          assert ok is True, f"ok = {ok!r}: set it to the result of torch.autograd.gradcheck(LogSumExp.apply, (x64,))"
+          _x = torch.randn(4, 3, dtype=torch.float64, requires_grad=True)
+          assert torch.autograd.gradcheck(LogSumExp.apply, (_x,)), "gradcheck failed"
+
+          def _run(x, g):
+              x = x.clone().requires_grad_(True)
+              out = LogSumExp.apply(x)
+              assert "LogSumExp" in type(out.grad_fn).__name__, f"out.grad_fn = {out.grad_fn}: call LogSumExp.apply"
+              gx, = torch.autograd.grad(out, x, g)
+              return out.detach(), gx
+
+          def _ref(x, g):
+              x = x.clone().requires_grad_(True)
+              out = torch.logsumexp(x, dim=-1)
+              gx, = torch.autograd.grad(out, x, g)
+              return out.detach(), gx
+
+          def _same(got, exp):
+              return all(a.shape == b.shape and a.dtype == b.dtype and torch.isfinite(a).all()
+                         and torch.allclose(a, b, rtol=1e-4, atol=1e-5) for a, b in zip(got, exp))
+
+          def _show(x, g):
+              return f"(x of shape {tuple(x.shape)} {x.dtype}, |x|max = {x.abs().max().item():.3g})"
+
+          def _case(shape, scale=1.0, dtype=torch.float32, seed=0, t=False):
+              gen = torch.Generator().manual_seed(seed)
+              x = (torch.randn(shape, generator=gen, dtype=torch.float64) * scale).to(dtype)
+              if t:
+                  x = x.transpose(0, -1)
+              return x, torch.randn(x.shape[:-1], generator=gen, dtype=torch.float64).to(dtype)
+
+          def _gen(r):
+              nd = r.randint(1, 4)
+              shape = [r.randint(1, 4) for _ in range(nd)]
+              return _case(shape, r.choice([1.0, 10.0, 1e4]), r.choice([torch.float32, torch.float64]),
+                           r.randrange(10**6), t=nd >= 2 and r.random() < 0.3)
+
+          edge = [(torch.tensor([[0., 0.], [1000., 1000.]]), torch.ones(2)), _case((3, 1)), _case((5,)),
+                  (torch.full((2, 4), 3.0), torch.tensor([1.0, -2.0])), _case((4, 6), 1e4, seed=1),
+                  _case((3, 5), 1e4, torch.float64, seed=2), _case((5, 3), seed=3, t=True), _case((2, 3, 4), 50.0, seed=4)]
+          against(_run, _ref, edge + rand_cases(_gen, 200), same=_same, show=_show, name="LogSumExp")
+      - id: b
+        prompt: |
+          Part B: implement `ste_round(x)`, a straight-through estimator: round in the forward pass, act as the identity in the backward pass.
+          - `x` (any shape, 0-d included) float
+          - returns (shape of `x`): values `torch.round(x)`; gradient w.r.t. `x` = identity (`d loss / d x = d loss / d out`)
+          - don't modify `x`; don't use `torch.autograd.Function`
+
+          <details><summary>Hint 1</summary>Autograd only differentiates what it records: hide part of the computation.</details>
+          <details><summary>Hint 2</summary>`x + c` has gradient 1 for any constant `c`; `.detach()` makes a constant.</details>
+          <details><summary>Hint 3</summary>`x + (torch.round(x) - x).detach()`.</details>
+        setup: |
+          import torch
+        starter: |
+          def ste_round(x):
+              raise NotImplementedError
+        solution: |
+          def ste_round(x):
+              return x + (torch.round(x) - x).detach()   # value: x + round(x) - x = round(x); grad: 1 (the detached part is a constant)
+          # Trick: out = x + const, const = (round(x) - x) cut from the graph: value round(x), gradient that of x.
+          # torch.round alone has derivative 0 almost everywhere: nothing upstream would learn. Cost: O(numel).
+          # Same pattern: VQ-VAE (z + (z_q - z).detach()), hard Gumbel-softmax.
+          # NumPy: no autograd; JAX: x + jax.lax.stop_gradient(round(x) - x).
+          # Mistakes: no detach (grad 1 - 1 = 0); round(x).detach() (no grad at all).
+          # Follow-up: clipped STE (grad 0 where |x| > 1).
+        check: |
+          from cardtest import against, rand_cases
+          def _names(co):
+              out = set(co.co_names)
+              for c in co.co_consts:
+                  if hasattr(c, "co_names"):
+                      out |= _names(c)
+              return out
+          assert "Function" not in _names(ste_round.__code__), "don't use torch.autograd.Function"
+
+          def _run(x, g):
+              base = x.clone()
+              x = x.clone().requires_grad_(True)
+              out = ste_round(x)
+              assert torch.equal(x.detach(), base), "ste_round modified x"
+              assert out.requires_grad, "out does not require grad: the gradient must flow back to x"
+              gx, = torch.autograd.grad(out, x, g, allow_unused=True)
+              assert gx is not None, "the gradient does not reach x"
+              return out.detach(), gx
+
+          def _ref(x, g):
+              return torch.round(x), g.clone()
+
+          def _same(got, exp):
+              return all(a.shape == b.shape and a.dtype == b.dtype and torch.allclose(a, b) for a, b in zip(got, exp))
+
+          def _show(x, g):
+              return f"(x = {x.flatten()[:6].tolist()}{'...' if x.numel() > 6 else ''}, shape {tuple(x.shape)})"
+
+          def _gen(r):
+              gen = torch.Generator().manual_seed(r.randrange(10**6))
+              shape = [r.randint(1, 4) for _ in range(r.randint(0, 3))]
+              x = torch.randn(shape, generator=gen) * r.choice([0.7, 3.0, 20.0])
+              if r.random() < 0.3:
+                  x = torch.randint(-8, 9, shape, generator=gen) / 2.0
+              return x, torch.randn(shape, generator=gen)
+
+          edge = [(torch.tensor([0.5, 1.5, 2.5, -0.5, -1.5]), torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])),
+                  (torch.tensor(2.7), torch.tensor(-3.0)), (torch.empty(0), torch.empty(0)),
+                  (torch.tensor([[0.2, -0.7], [1.49, -2.51]]), torch.tensor([[0.5, 0.0], [-1.0, 2.0]]))]
+          against(_run, _ref, edge + rand_cases(_gen, 200), same=_same, show=_show, name="ste_round")
+
+  - id: tricks-memory.flash
+    name: Causal attention without the T x T matrix (Hard)
+    teach: |
+      ```text
+      out[t] = sum_{u <= t} softmax_u(q[t] . k[u] / sqrt(Dh)) * v[u]; q, k, v (B, H, T, Dh) -> out (B, H, T, Dh)
+      The usual (B, H, T, T) score matrix costs O(T^2) memory per head.
+      (A) Same result as F.scaled_dot_product_attention(..., is_causal=True), looping over key blocks of
+          block positions; no tensor larger than B*H*T*max(block, Dh).
+          Example: T = 5, block = 2 -> key blocks [0, 1], [2, 3], [4].
+      (B) Prefill with a cache: T new queries, S >= T keys (the first S - T are past tokens); no loops.
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Part A: implement `blocked_causal_attention(q, k, v, block)`: causal attention computed over blocks of `block` key positions, never building the (T, T) score matrix.
+          - `q`, `k`, `v` (B, H, T, Dh) float32 (`q` maybe non-contiguous); `block` (int ≥ 1): key-block size, the last block may be shorter
+          - returns (B, H, T, Dh): `out[..., t, :] = Σ_{u <= t} softmax_u(q[t] · k[u] / sqrt(Dh)) * v[u]` (cross-check: `F.scaled_dot_product_attention(q, k, v, is_causal=True)`)
+          - a Python loop over key blocks is fine; no intermediate tensor with more than `B*H*T*max(block, Dh)` elements; don't use `F.scaled_dot_product_attention`
+
+          <details><summary>Hint 1</summary>One-pass softmax: keep a running max per query, rescale old sums when it grows.</details>
+          <details><summary>Hint 2</summary>Keep `m` (max), `l` (sum of `exp(sc - m)`), `acc` (sum of `exp(sc - m) * v`); answer `acc / l`.</details>
+          <details><summary>Hint 3</summary>Per block: mask with `-inf`, `m_new = max(m, block max)`, multiply `acc`, `l` by `exp(m - m_new)`, add the block.</details>
+        setup: |
+          import math
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def blocked_causal_attention(q, k, v, block):
+              raise NotImplementedError
+        solution: |
+          def blocked_causal_attention(q, k, v, block):
+              B, H, T, Dh = q.shape
+              qpos = torch.arange(T)[:, None]                               # (T, 1)
+              m = torch.full((B, H, T, 1), float("-inf"))                   # running max of the scores
+              l = torch.zeros(B, H, T, 1)                                   # running softmax denominator
+              acc = torch.zeros(B, H, T, Dh)                                # running numerator (weighted sum of v)
+              for s in range(0, T, block):
+                  e = min(s + block, T)
+                  sc = q @ k[..., s:e, :].transpose(-2, -1) / math.sqrt(Dh) # (B, H, T, e-s)
+                  sc = sc.masked_fill(torch.arange(s, e)[None, :] > qpos, float("-inf"))   # (T, e-s) mask
+                  m_new = torch.maximum(m, sc.amax(-1, keepdim=True))         # (B, H, T, 1)
+                  p = torch.exp(sc - m_new)                                 # (B, H, T, e-s); exp(-inf) = 0
+                  scale = torch.exp(m - m_new)                              # shrink the old sums to the new max
+                  acc = acc * scale + p @ v[..., s:e, :]                    # (B, H, T, Dh)
+                  l = l * scale + p.sum(-1, keepdim=True)
+                  m = m_new
+              return acc / l                                                # (B, H, T, Dh)
+          # Trick: online softmax: when the running max rises m -> m', old sums are multiplied by exp(m - m').
+          #   Key 0 is in block 0, so m is finite after it (no NaN).
+          # Cost: time O(B*H*T^2*Dh) both ways; memory O(B*H*T*block) instead of O(B*H*T^2).
+          # FlashAttention = this, tiled over queries too, in on-chip SRAM: exact, and faster (memory-bound).
+          # Mistakes: not rescaling acc / l; masking with 0 instead of -inf; sqrt(T) instead of sqrt(Dh).
+          # Follow-up: skip key blocks entirely above the diagonal (2x less work).
+        check: |
+          from torch.overrides import TorchFunctionMode
+          from cardtest import against, rand_cases
+          def _names(co):
+              out = set(co.co_names)
+              for c in co.co_consts:
+                  if hasattr(c, "co_names"):
+                      out |= _names(c)
+              return out
+          assert "scaled_dot_product_attention" not in _names(blocked_causal_attention.__code__), \
+              "don't use F.scaled_dot_product_attention"
+          _sdpa = F.scaled_dot_product_attention
+
+          class _Track(TorchFunctionMode):
+              def __init__(self):
+                  super().__init__(); self.big = 0
+              def __torch_function__(self, func, types, args=(), kwargs=None):
+                  res = func(*args, **(kwargs or {}))
+                  for r in (res if isinstance(res, (tuple, list)) else (res,)):
+                      if isinstance(r, torch.Tensor):
+                          self.big = max(self.big, r.numel())
+                  return res
+
+          def _run(q, k, v, block):
+              B, H, T, Dh = q.shape
+              tr = _Track()
+              with tr:
+                  out = blocked_causal_attention(q, k, v, block)
+              lim = B * H * T * max(block, Dh)
+              assert tr.big <= lim, (f"an intermediate tensor had {tr.big} elements (limit B*H*T*max(block, Dh) = {lim}):"
+                                     f" don't build the full (T, T) scores or mask")
+              return out
+
+          def _ref(q, k, v, block):
+              return _sdpa(q, k, v, is_causal=True)
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, rtol=1e-4, atol=1e-5))
+
+          def _show(q, k, v, block):
+              return f"(q, k, v of shape {tuple(q.shape)}, block={block})"
+
+          def _case(B, H, T, Dh, block, seed, scale=1.0, nc=False):
+              g = torch.Generator().manual_seed(seed)
+              if nc:
+                  q = (torch.randn(B, T, H, Dh, generator=g) * scale).transpose(1, 2)
+              else:
+                  q = torch.randn(B, H, T, Dh, generator=g) * scale
+              return q, torch.randn(B, H, T, Dh, generator=g), torch.randn(B, H, T, Dh, generator=g), block
+
+          def _gen(r):
+              T = r.randint(1, 20)
+              return _case(r.randint(1, 3), r.randint(1, 3), T, r.randint(1, 6), r.randint(1, T + 2),
+                           r.randrange(10**6), r.choice([1.0, 1.0, 10.0]), nc=r.random() < 0.2)
+
+          edge = [_case(1, 1, 1, 4, 1, 1), _case(1, 1, 5, 4, 2, 2), _case(2, 2, 7, 3, 1, 3), _case(1, 2, 6, 4, 10, 4),
+                  _case(2, 1, 9, 1, 4, 5), _case(1, 1, 8, 4, 3, 6, scale=25.0), _case(2, 3, 10, 4, 4, 7, nc=True),
+                  _case(1, 1, 24, 2, 4, 8)]
+          against(_run, _ref, edge + rand_cases(_gen, 150), same=_same, show=_show, name="blocked_causal_attention")
+      - id: b
+        prompt: |
+          Part B: implement `prefix_causal_attention(q, k, v)`: causal attention for prefill with a KV cache, where the `T` queries are the last `T` of `S` positions.
+          - `q` (B, H, T, Dh) float32: queries for positions `S - T .. S - 1`
+          - `k`, `v` (B, H, S, Dh) float32, `S >= T`: keys / values for positions `0 .. S - 1`
+          - returns (B, H, T, Dh): query `i` takes a softmax over `q[i] · k[j] / sqrt(Dh)` for keys `j <= S - T + i` only, applied to `v`
+          - no Python loops (`F.scaled_dot_product_attention` allowed)
+
+          <details><summary>Hint 1</summary>Draw the (T, S) grid of allowed pairs: where is the diagonal when `T < S`?</details>
+          <details><summary>Hint 2</summary>`is_causal=True` is top-left aligned; `tril(diagonal=d)` keeps `j <= i + d`.</details>
+          <details><summary>Hint 3</summary>`torch.ones(T, S, dtype=torch.bool).tril(S - T)` as `attn_mask` (`True` = attend).</details>
+        setup: |
+          import math
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def prefix_causal_attention(q, k, v):
+              raise NotImplementedError
+        solution: |
+          def prefix_causal_attention(q, k, v):
+              T, S = q.size(-2), k.size(-2)
+              keep = torch.ones(T, S, dtype=torch.bool).tril(S - T)     # (T, S): keep[i, j] = j <= i + S - T
+              return F.scaled_dot_product_attention(q, k, v, attn_mask=keep)   # (B, H, T, Dh)
+          # Trick: the diagonal shifts by S - T: the last query (position S - 1) sees every key, like decoding.
+          # sdpa's is_causal=True is top-left aligned (tril with no offset): wrong whenever T < S.
+          # Bool attn_mask in sdpa: True = take part (the opposite of masked_fill's True = blocked).
+          # Cost: O(B*H*T*S*Dh) time. NumPy: np.tril(np.ones((T, S), bool), k=S - T).
+          # Mistakes: is_causal=True with T < S; tril(T - S).
+          # Follow-up: chunked prefill (process a long prompt T tokens at a time into the KV cache).
+        check: |
+          from cardtest import against, rand_cases
+          import dis
+          def _loops(co):
+              return any(i.opname in ("FOR_ITER", "JUMP_BACKWARD") for i in dis.get_instructions(co)) or \
+                  any(_loops(c) for c in co.co_consts if hasattr(c, "co_code"))
+          assert not _loops(prefix_causal_attention.__code__), "no Python loops"
+
+          def _ref(q, k, v):
+              B, H, T, Dh = q.shape
+              S = k.size(-2)
+              out = torch.zeros(B, H, T, Dh, dtype=torch.float64)
+              qd, kd, vd = q.double(), k.double(), v.double()
+              for i in range(T):
+                  n = S - T + i + 1
+                  w = (qd[:, :, i:i + 1] @ kd[:, :, :n].transpose(-2, -1) / math.sqrt(Dh)).softmax(-1)  # (B, H, 1, n)
+                  out[:, :, i] = (w @ vd[:, :, :n])[:, :, 0]
+              return out.float()
+
+          def _same(got, exp):
+              return (isinstance(got, torch.Tensor) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, rtol=1e-4, atol=1e-5))
+
+          def _show(q, k, v):
+              return f"(q of shape {tuple(q.shape)}, k/v of shape {tuple(k.shape)})"
+
+          def _case(B, H, T, S, Dh, seed, scale=1.0):
+              g = torch.Generator().manual_seed(seed)
+              return (torch.randn(B, H, T, Dh, generator=g) * scale, torch.randn(B, H, S, Dh, generator=g),
+                      torch.randn(B, H, S, Dh, generator=g))
+
+          def _gen(r):
+              T = r.randint(1, 8)
+              return _case(r.randint(1, 3), r.randint(1, 3), T, T + r.choice([0, r.randint(1, 8)]), r.randint(1, 5),
+                           r.randrange(10**6), r.choice([1.0, 1.0, 10.0]))
+
+          edge = [_case(1, 1, 4, 4, 3, 1), _case(2, 2, 1, 6, 4, 2), _case(1, 1, 3, 6, 2, 3), _case(1, 2, 5, 5, 4, 4),
+                  _case(1, 1, 4, 9, 4, 5, scale=25.0), _case(2, 1, 1, 1, 1, 6)]
+          against(prefix_causal_attention, _ref, edge + rand_cases(_gen, 150), same=_same, show=_show)

@@ -1,0 +1,555 @@
+id: stacks-heaps-intervals
+title: Stacks, heaps & intervals
+intro: |
+  Five skeletons for "next greater", "matching brackets", "top k", "overlapping ranges" and "running median".
+problems:
+  - Daily Temperatures
+  - Valid Parentheses
+  - Kth Largest Element in an Array
+  - Merge Intervals
+  - Find Median from Data Stream
+  - Largest Rectangle in Histogram
+atoms: []
+skills:
+  - id: stacks-heaps-intervals.monotonic-stack
+    name: monotonic stack (next greater)
+    teach: |
+      ```python
+      stack = []                      # indices, values decreasing
+
+      for i, x in enumerate(a):
+          while stack and a[stack[-1]] < x:
+              j = stack.pop()
+              # x is the answer for j
+
+          stack.append(i)
+
+      # indices left in stack have no answer
+      ```
+      Use when: "next greater / smaller element", "how many days until", "nearest taller to the right".
+      Cost: O(n), each index is pushed and popped once.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `t: list[int]` daily temperatures, possibly empty.
+          - **Write** `daily_temperatures(t)` with a monotonic stack.
+          - **Returns**: `list[int]`, same length: `res[i]` = days from day `i` to the next strictly warmer day (`j - i`), or `0` if none.
+          - **Checked on**: equal temperatures (not warmer), strictly decreasing, `[]`, plus 300 random cases with many ties.
+        starter: |
+          def daily_temperatures(t):
+              pass
+        solution: |
+          def daily_temperatures(t):
+              res = [0] * len(t)
+              stack = []
+              for i, x in enumerate(t):
+                  while stack and t[stack[-1]] < x:
+                      j = stack.pop()
+                      res[j] = i - j
+                  stack.append(i)
+              return res
+        check: |
+          r = daily_temperatures([73, 74, 75, 71, 69, 72, 76, 73])
+          assert r == [1, 1, 4, 2, 1, 1, 0, 0], f"got {r!r}"
+          r = daily_temperatures([30, 40, 50, 60])
+          assert r == [1, 1, 1, 0], f"got {r!r}"
+          r = daily_temperatures([60, 50, 40])
+          assert r == [0, 0, 0], f"got {r!r}"
+          r = daily_temperatures([50, 50])
+          assert r == [0, 0], f"equal is not warmer, got {r!r}"
+          r = daily_temperatures([])
+          assert r == [], f"got {r!r}"
+          from cardtest import against, rand_cases
+          def _ref(t):  # brute force: scan forward from each day
+              return [next((j - i for j in range(i + 1, len(t)) if t[j] > t[i]), 0) for i in range(len(t))]
+          def _gen(r):
+              return ([r.randint(30, 36) for _ in range(r.randint(0, 10))],)
+          edge = [([70],), ([70, 71],), ([71, 70],), ([50, 50, 51],), ([55, 38, 53, 81, 61, 93, 97, 32, 43, 78],), ([5, 4, 3, 2, 10],)]
+          against(daily_temperatures, _ref, edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          - **Given**: `a: list[int]` (negatives and duplicates allowed, possibly empty), read as a circle: after the last item comes the first.
+          - **Write** `next_greater_circular(a)`. Hint: loop `i` over `range(2 * n)`, read `a[i % n]`, push indices only while `i < n`.
+          - **Returns**: `list[int]` of length `n`: `res[i]` = the first value (not index) strictly greater than `a[i]` going forward around the circle, or `-1`.
+          - **Checked on**: equal values, answers found only after wrapping, one element, `[]`, plus 300 random cases.
+        starter: |
+          def next_greater_circular(a):
+              pass
+        solution: |
+          def next_greater_circular(a):
+              n = len(a)
+              res = [-1] * n
+              stack = []
+              for i in range(2 * n):
+                  while stack and a[stack[-1]] < a[i % n]:
+                      res[stack.pop()] = a[i % n]
+                  if i < n:
+                      stack.append(i)
+              return res
+        check: |
+          r = next_greater_circular([1, 2, 1])
+          assert r == [2, -1, 2], f"next_greater_circular([1, 2, 1]) = {r!r}"
+          r = next_greater_circular([1, 2, 3, 4, 3])
+          assert r == [2, 3, 4, -1, 4], f"next_greater_circular([1, 2, 3, 4, 3]) = {r!r}"
+          r = next_greater_circular([5, 4, 3])
+          assert r == [-1, 5, 5], f"next_greater_circular([5, 4, 3]) = {r!r}"
+          r = next_greater_circular([2, 2])
+          assert r == [-1, -1], f"equal is not greater, got {r!r}"
+          r = next_greater_circular([])
+          assert r == [], f"got {r!r}"
+          from cardtest import against, rand_cases
+          def _ref(a):  # brute force: walk around the circle from each i
+              n = len(a)
+              return [next((a[(i + d) % n] for d in range(1, n) if a[(i + d) % n] > a[i]), -1) for i in range(n)]
+          def _gen(r):
+              return ([r.randint(-3, 3) for _ in range(r.randint(0, 9))],)
+          edge = [([7],), ([-2],), ([3, 1],), ([1, 3],), ([3, 1, 2],), ([1, 1, 2],), ([-1, -5, -3],), ([0, 0, 0],)]
+          against(next_greater_circular, _ref, edge + rand_cases(_gen, 300))
+
+  - id: stacks-heaps-intervals.matching-stack
+    name: matching stack (brackets)
+    teach: |
+      ```python
+      pairs = {")": "(", "]": "[", "}": "{"}
+      stack = []
+
+      for c in s:
+          if c not in pairs:
+              stack.append(c)           # opener
+          elif not stack or stack.pop() != pairs[c]:
+              return False              # closer with no match
+
+      return not stack                  # leftovers are unmatched openers
+      ```
+      Use when: "valid / balanced brackets", "remove adjacent pairs", "decode nested", "simplify path".
+      Cost: O(n).
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s: str` made only of `()[]{}`, possibly empty.
+          - **Write** `is_valid(s)` with a stack.
+          - **Returns**: the `bool` `True` if every opener is closed by the same type in the right nested order with nothing left over, else `False`; `""` is valid.
+          - **Checked on**: crossed pairs `"([)]"`, a lone closer, leftover openers, `""`, plus 300 random strings (valid ones and broken ones).
+        starter: |
+          def is_valid(s):
+              pass
+        solution: |
+          def is_valid(s):
+              pairs = {")": "(", "]": "[", "}": "{"}
+              stack = []
+              for c in s:
+                  if c not in pairs:
+                      stack.append(c)
+                  elif not stack or stack.pop() != pairs[c]:
+                      return False
+              return not stack
+        check: |
+          for s, want in [("()[]{}", True), ("([]{})", True), ("(]", False), ("([)]", False), ("((", False), (")", False), ("", True)]:
+              got = is_valid(s)
+              assert got is want, f"is_valid({s!r}) = {got!r}, want {want!r}"
+          from cardtest import against, rand_cases
+          def _ref(s):  # brute force: delete innermost pairs until nothing changes
+              prev = None
+              while prev != s:
+                  prev, s = s, s.replace("()", "").replace("[]", "").replace("{}", "")
+              return s == ""
+          def _gen(r):
+              def build(depth):
+                  out = ""
+                  while r.random() < 0.6 and len(out) < 8:
+                      o, c = r.choice(["()", "[]", "{}"])
+                      out += o + (build(depth + 1) if depth < 3 else "") + c
+                  return out
+              if r.random() < 0.25:
+                  return ("".join(r.choice("()[]{}") for _ in range(r.randint(0, 8))),)
+              s = build(0)
+              if s and r.random() < 0.5:  # break it: replace or drop one character
+                  i = r.randrange(len(s))
+                  s = s[:i] + (r.choice("()[]{}") if r.random() < 0.5 else "") + s[i + 1:]
+              return (s,)
+          edge = [("{[]}",), ("([{}])",), ("(((",), (")(",), ("]",), ("([]",), ("[(])",), ("(){}}{",), ("{[()()]}",)]
+          against(is_valid, _ref, edge + rand_cases(_gen, 300), same=lambda got, want: got is want)
+      - id: b
+        prompt: |
+          - **Given**: `s: str` of `(` and `)` only, possibly empty.
+          - **Write** `min_add(s)`.
+          - **Returns**: `int`, the fewest brackets to insert (anywhere) so that `s` becomes balanced.
+          - **Checked on**: `")("` (2), only closers, only openers, `""`, plus 300 random strings.
+        starter: |
+          def min_add(s):
+              pass
+        solution: |
+          def min_add(s):
+              stack = []
+              missing = 0
+              for c in s:
+                  if c == "(":
+                      stack.append(c)
+                  elif stack:
+                      stack.pop()
+                  else:
+                      missing += 1
+              return missing + len(stack)
+        check: |
+          for s, want in [("())", 1), ("(((", 3), ("()", 0), ("()))((", 4), (")(", 2), ("", 0)]:
+              got = min_add(s)
+              assert got == want, f"min_add({s!r}) = {got!r}, want {want!r}"
+          from cardtest import against, rand_cases
+          def _ref(s):  # brute force: delete matched "()" pairs, whatever is left needs a partner
+              while "()" in s:
+                  s = s.replace("()", "")
+              return len(s)
+          def _gen(r):
+              return ("".join(r.choice("()") for _ in range(r.randint(0, 12))),)
+          edge = [("(",), (")",), ("))((",), ("(()",), ("())(",), ("(()())",), ("))",), ("()(",)]
+          against(min_add, _ref, edge + rand_cases(_gen, 300))
+
+  - id: stacks-heaps-intervals.top-k-heap
+    name: top-k with a size-k heap
+    teach: |
+      ```python
+      import heapq
+      h = []                            # min-heap holding the k best so far
+
+      for x in items:
+          heapq.heappush(h, (score(x), x))
+          if len(h) > k:
+              heapq.heappop(h)          # drop the worst of the k+1
+
+      # h[0] is the k-th best, h holds the top k
+      ```
+      Use when: "k largest / smallest / closest / most frequent", "k-th largest".
+      Cost: O(n log k).
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums: list[int]` (length ≥ 1, duplicates and negatives allowed), `k: int` with `1 <= k <= len(nums)`.
+          - **Write** `kth_largest(nums, k)` with a size-`k` heap.
+          - **Returns**: `int`, the item at position `k` of `nums` sorted in decreasing order (duplicates count: `[5, 5, 4]`, `k = 2` → `5`).
+          - **Checked on**: duplicates, `k = 1`, `k = len(nums)`, negatives, plus 300 random cases.
+        starter: |
+          def kth_largest(nums, k):
+              pass
+        solution: |
+          import heapq
+
+          def kth_largest(nums, k):
+              h = []
+              for x in nums:
+                  heapq.heappush(h, x)
+                  if len(h) > k:
+                      heapq.heappop(h)
+              return h[0]
+        check: |
+          r = kth_largest([3, 2, 1, 5, 6, 4], 2)
+          assert r == 5, f"got {r!r}"
+          r = kth_largest([3, 2, 3, 1, 2, 4, 5, 5, 6], 4)
+          assert r == 4, f"got {r!r}"
+          r = kth_largest([7], 1)
+          assert r == 7, f"got {r!r}"
+          r = kth_largest([1, 2, 3], 3)
+          assert r == 1, f"k = len(nums) should give the min, got {r!r}"
+          r = kth_largest([-1, -5, -3], 1)
+          assert r == -1, f"got {r!r}"
+          from cardtest import against, rand_cases
+          def _ref(nums, k):  # brute force: full sort
+              return sorted(nums, reverse=True)[k - 1]
+          def _gen(r):
+              nums = [r.randint(-5, 5) for _ in range(r.randint(1, 10))]
+              return (nums, r.randint(1, len(nums)))
+          edge = [([5, 5, 4], 2), ([2, 2, 2], 3), ([1, 2], 2), ([-1, -5, -3], 3), ([0, -1, 0], 2), ([4, 1, 4, 1], 3)]
+          against(kth_largest, _ref, edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          - **Given**: `points: list[list[int]]`, each `[x, y]` (the same point may appear twice), `k: int` with `1 <= k <= len(points)`.
+          - **Write** `k_closest(points, k)`.
+          - **Returns**: a `list` of the `k` points (each a `[x, y]` list) with the smallest `x*x + y*y`, in any order; a repeated point counts once per copy. Tests have no distance ties except identical points.
+          - **Checked on**: duplicate points, `k = len(points)`, negatives, plus 300 random cases.
+        starter: |
+          def k_closest(points, k):
+              pass
+        solution: |
+          import heapq
+
+          def k_closest(points, k):
+              h = []
+              for x, y in points:
+                  heapq.heappush(h, (-(x * x + y * y), x, y))
+                  if len(h) > k:
+                      heapq.heappop(h)
+              return [[x, y] for _, x, y in h]
+        check: |
+          r = k_closest([[1, 3], [-2, 2]], 1)
+          assert r == [[-2, 2]], f"got {r!r}"
+          r = k_closest([[3, 3], [5, -1], [-2, 4]], 2)
+          assert r is not None and sorted(r) == [[-2, 4], [3, 3]], f"got {r!r}"
+          r = k_closest([[0, 1]], 1)
+          assert r == [[0, 1]], f"got {r!r}"
+          r = k_closest([[1, 0], [0, 2], [3, 0]], 3)
+          assert r is not None and sorted(r) == [[0, 2], [1, 0], [3, 0]], f"k = n keeps all, got {r!r}"
+          from cardtest import against, rand_cases
+          def _ref(points, k):  # brute force: full sort by squared distance
+              return sorted(points, key=lambda p: p[0] ** 2 + p[1] ** 2)[:k]
+          def _gen(r):  # distinct distances (so the answer is unique), plus exact duplicate points
+              pts, used = [], {}
+              for _ in range(r.randint(1, 8)):
+                  if pts and r.random() < 0.2:
+                      pts.append(list(r.choice(pts)))
+                      continue
+                  x, y = r.randint(-6, 6), r.randint(-6, 6)
+                  if used.get(x * x + y * y, (x, y)) == (x, y):
+                      used[x * x + y * y] = (x, y)
+                      pts.append([x, y])
+              return (pts, r.randint(1, len(pts)))
+          edge = [([[2, 2], [2, 2], [5, 0]], 2), ([[-3, 0], [0, 1]], 1), ([[0, 0], [-1, -1], [4, -4]], 2), ([[3, -1], [-1, 1], [-4, 0]], 2)]
+          as_set = lambda got, want: isinstance(got, list) and sorted(map(list, got)) == sorted(want)
+          against(k_closest, _ref, edge + rand_cases(_gen, 300), same=as_set)
+
+  - id: stacks-heaps-intervals.merge-intervals
+    name: sort then merge intervals
+    teach: |
+      ```python
+      intervals.sort()                  # by start
+      out = []
+
+      for s, e in intervals:
+          if out and s <= out[-1][1]:
+              out[-1][1] = max(out[-1][1], e)   # overlaps: extend last
+          else:
+              out.append([s, e])                # gap: start a new one
+      ```
+      Use when: "overlapping intervals / meetings / ranges", "merge", "insert into sorted ranges", "free time".
+      Cost: O(n log n) for the sort.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `intervals: list[list[int]]`, each `[start, end]` with `start <= end`, unsorted, possibly empty (you may modify it).
+          - **Write** `merge(intervals)`.
+          - **Returns**: `list[list[int]]`, the merged intervals sorted by start; overlapping or touching ones merge (`[1, 4], [4, 5]` → `[1, 5]`).
+          - **Checked on**: unsorted input, touching, contained, zero-length `[2, 2]`, `[]`, plus 300 random cases.
+        starter: |
+          def merge(intervals):
+              pass
+        solution: |
+          def merge(intervals):
+              intervals.sort()
+              out = []
+              for s, e in intervals:
+                  if out and s <= out[-1][1]:
+                      out[-1][1] = max(out[-1][1], e)
+                  else:
+                      out.append([s, e])
+              return out
+        check: |
+          r = merge([[1, 3], [2, 6], [8, 10], [15, 18]])
+          assert r == [[1, 6], [8, 10], [15, 18]], f"got {r!r}"
+          r = merge([[1, 4], [4, 5]])
+          assert r == [[1, 5]], f"touching should merge, got {r!r}"
+          r = merge([[5, 6], [1, 2]])
+          assert r == [[1, 2], [5, 6]], f"unsorted input, got {r!r}"
+          r = merge([[1, 10], [2, 3], [4, 5]])
+          assert r == [[1, 10]], f"contained intervals, got {r!r}"
+          r = merge([])
+          assert r == [], f"got {r!r}"
+          from cardtest import against, rand_cases
+          def _ref(intervals):  # brute force: keep fusing any two overlapping/touching intervals
+              out = [list(iv) for iv in intervals]
+              fused = True
+              while fused:
+                  fused = False
+                  for i in range(len(out)):
+                      for j in range(i + 1, len(out)):
+                          (a, b), (c, d) = out[i], out[j]
+                          if a <= d and c <= b:
+                              out[i] = [min(a, c), max(b, d)]
+                              del out[j]
+                              fused = True
+                              break
+                      if fused:
+                          break
+              return sorted(out)
+          def _gen(r):
+              ivs = []
+              for _ in range(r.randint(0, 7)):
+                  s = r.randint(-5, 15)
+                  ivs.append([s, s + r.randint(0, 5)])
+              return (ivs,)
+          edge = [([[1, 4]],), ([[2, 2]],), ([[1, 4], [0, 4]],), ([[1, 4], [2, 3]],), ([[1, 4], [0, 0]],), ([[2, 3], [4, 5], [6, 7], [1, 10]],), ([[1, 2], [3, 4]],), ([[0, 3], [5, 6], [3, 5]],)]
+          against(merge, _ref, edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          - **Given**: `intervals: list[list[int]]`, each `[s, e]` with `s <= e`, unsorted, possibly empty.
+          - **Write** `covered_length(intervals)`.
+          - **Returns**: `int`, the total length of their union (`[s, e]` covers `e - s`, overlaps counted once); `0` for `[]`.
+          - **Checked on**: contained, touching, gaps, zero-length, negatives, plus 300 random cases.
+        starter: |
+          def covered_length(intervals):
+              pass
+        solution: |
+          def covered_length(intervals):
+              out = []
+              for s, e in sorted(intervals):
+                  if out and s <= out[-1][1]:
+                      out[-1][1] = max(out[-1][1], e)
+                  else:
+                      out.append([s, e])
+              return sum(e - s for s, e in out)
+        check: |
+          r = covered_length([[1, 3], [2, 6], [8, 10]])
+          assert r == 7, f"covered_length([[1,3],[2,6],[8,10]]) = {r!r}, want 7"
+          r = covered_length([[5, 6], [1, 2]])
+          assert r == 2, f"covered_length([[5,6],[1,2]]) = {r!r}, want 2"
+          r = covered_length([[1, 10], [2, 3], [4, 5]])
+          assert r == 9, f"contained intervals: {r!r}, want 9"
+          r = covered_length([[1, 4], [4, 5]])
+          assert r == 4, f"touching: {r!r}, want 4"
+          r = covered_length([])
+          assert r == 0, f"covered_length([]) = {r!r}, want 0"
+          from cardtest import against, rand_cases
+          def _ref(intervals):  # brute force: count the unit cells [x, x+1) that are covered
+              return len({x for s, e in intervals for x in range(s, e)})
+          def _gen(r):
+              ivs = []
+              for _ in range(r.randint(0, 7)):
+                  s = r.randint(-5, 15)
+                  ivs.append([s, s + r.randint(0, 5)])
+              return (ivs,)
+          edge = [([[3, 3]],), ([[-4, -1]],), ([[0, 5], [1, 2], [6, 7]],), ([[1, 4], [2, 3], [3, 8]],), ([[5, 9], [0, 2]],), ([[0, 1], [3, 4], [1, 3]],)]
+          against(covered_length, _ref, edge + rand_cases(_gen, 300))
+
+  - id: stacks-heaps-intervals.two-heaps
+    name: two heaps (running median)
+    teach: |
+      ```python
+      import heapq
+      lo, hi = [], []                   # lo: max-heap (negated) low half, hi: min-heap high half
+
+      def add(x):
+          heapq.heappush(lo, -x)
+          heapq.heappush(hi, -heapq.heappop(lo))   # move lo's max to hi
+          if len(hi) > len(lo):
+              heapq.heappush(lo, -heapq.heappop(hi))   # keep len(lo) >= len(hi)
+
+      def median():
+          if len(lo) > len(hi):
+              return -lo[0]
+          return (-lo[0] + hi[0]) / 2
+      ```
+      Use when: "median of a stream", "sliding window median", "balance two halves".
+      Cost: O(log n) per add, O(1) per median.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums: list[int]` (negatives and duplicates allowed), possibly empty.
+          - **Write** `running_median(nums)` with two heaps.
+          - **Returns**: a `list` with one item per input: item `i` is the median of `nums[:i+1]`, the middle value for an odd count, `(a + b) / 2` of the two middles for an even count (true division: `1.5`, `-1.5`).
+          - **Checked on**: decreasing input, negatives with odd sums, duplicates, `[]`, plus 300 random cases.
+        starter: |
+          def running_median(nums):
+              pass
+        solution: |
+          import heapq
+
+          def running_median(nums):
+              lo, hi, out = [], [], []
+              for x in nums:
+                  heapq.heappush(lo, -x)
+                  heapq.heappush(hi, -heapq.heappop(lo))
+                  if len(hi) > len(lo):
+                      heapq.heappush(lo, -heapq.heappop(hi))
+                  out.append(-lo[0] if len(lo) > len(hi) else (-lo[0] + hi[0]) / 2)
+              return out
+        check: |
+          r = running_median([5, 15, 1, 3])
+          assert r == [5, 10, 5, 4], f"got {r!r}"
+          r = running_median([1, 2, 3, 4, 5])
+          assert r == [1, 1.5, 2, 2.5, 3], f"got {r!r}"
+          r = running_median([4])
+          assert r == [4], f"got {r!r}"
+          r = running_median([2, 2, 2])
+          assert r == [2, 2, 2], f"got {r!r}"
+          r = running_median([])
+          assert r == [], f"got {r!r}"
+          from cardtest import against, rand_cases
+          def _ref(nums):  # brute force: sort every prefix
+              out = []
+              for i in range(1, len(nums) + 1):
+                  s, m = sorted(nums[:i]), i // 2
+                  out.append(s[m] if i % 2 else (s[m - 1] + s[m]) / 2)
+              return out
+          def _gen(r):
+              return ([r.randint(-5, 5) for _ in range(r.randint(0, 10))],)
+          edge = [([-1, 2],), ([-3, 0],), ([3, 2, 1],), ([1, 3, 2],), ([0, 0, 1, 1],), ([5, -5, 4, -4, 3],)]
+          against(running_median, _ref, edge + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          - **Write** the class `MedianFinder` (in the editor): `MedianFinder()`, `add(x)` with `x: int`, and `median()`.
+          - **Returns**: `median()` gives the median of all numbers added so far: the middle value for an odd count, `(a + b) / 2` of the two middles for an even count (true division). It is only called after at least one `add`.
+          - **Conventions**: each `MedianFinder()` keeps its own data; calling `median()` does not change it.
+          - **Checked on**: ascending, descending, negatives, two finders used side by side, `median()` called twice, plus 300 random add sequences.
+        starter: |
+          import heapq
+
+          class MedianFinder:
+              def __init__(self):
+                  pass
+
+              def add(self, x):
+                  pass
+
+              def median(self):
+                  pass
+        solution: |
+          import heapq
+
+          class MedianFinder:
+              def __init__(self):
+                  self.lo, self.hi = [], []
+
+              def add(self, x):
+                  heapq.heappush(self.lo, -x)
+                  heapq.heappush(self.hi, -heapq.heappop(self.lo))
+                  if len(self.hi) > len(self.lo):
+                      heapq.heappush(self.lo, -heapq.heappop(self.hi))
+
+              def median(self):
+                  if len(self.lo) > len(self.hi):
+                      return -self.lo[0]
+                  return (-self.lo[0] + self.hi[0]) / 2
+        check: |
+          m = MedianFinder()
+          m.add(1)
+          assert m.median() == 1, f"after [1]: {m.median()!r}"
+          m.add(2)
+          assert m.median() == 1.5, f"after [1, 2]: {m.median()!r}"
+          m.add(3)
+          assert m.median() == 2, f"after [1, 2, 3]: {m.median()!r}"
+          m2 = MedianFinder()
+          for x in [10, -4, 7, 0]:
+              m2.add(x)
+          assert m2.median() == 3.5, f"after [10, -4, 7, 0]: {m2.median()!r}"
+          m3 = MedianFinder()
+          for x in [6, 5, 4, 3, 2]:
+              m3.add(x)
+          assert m3.median() == 4, f"after descending [6..2]: {m3.median()!r}"
+          from cardtest import against, rand_cases
+          def add_then_median(xs):  # a fresh MedianFinder; add each x, read median() after every add
+              m, out = MedianFinder(), []
+              for x in xs:
+                  m.add(x)
+                  out.append(m.median())
+              return out
+          def _ref(xs):  # brute force: sort every prefix
+              out = []
+              for i in range(1, len(xs) + 1):
+                  s, k = sorted(xs[:i]), i // 2
+                  out.append(s[k] if i % 2 else (s[k - 1] + s[k]) / 2)
+              return out
+          def _gen(r):
+              return ([r.randint(-6, 6) for _ in range(r.randint(1, 12))],)
+          edge = [([-1, 2],), ([-3, 0],), ([3, 2, 1],), ([1, 3, 2],), ([0, 0, 1, 1],), ([5, -5, 4, -4, 3],)]
+          against(add_then_median, _ref, edge + rand_cases(_gen, 300))
+          a, b = MedianFinder(), MedianFinder()
+          a.add(1); b.add(100); a.add(3)
+          assert (a.median(), b.median()) == (2, 100), f"two separate finders share state: {a.median()!r}, {b.median()!r}"
+          assert a.median() == 2, f"calling median() twice changed the answer: {a.median()!r}"

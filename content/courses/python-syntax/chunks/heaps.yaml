@@ -1,0 +1,364 @@
+id: heaps
+title: Heaps with heapq
+intro: |
+  A heap gives you the **smallest item** again and again in O(log n). Reach for it when you need
+  "the top k", "the next smallest", or a priority queue (Dijkstra, scheduling, merging sorted lists).
+problems:
+  - Kth Largest Element in an Array
+  - Top K Frequent Elements
+  - Merge k Sorted Lists
+  - Find Median from Data Stream
+  - Last Stone Weight
+atoms: [py-heapq]
+skills:
+  - id: heaps.push-pop
+    name: heappush / heappop / peek
+    teach: |
+      ```python
+      import heapq
+      h = [5]              # a heap is a plain list; heapq makes it a MIN-heap
+      # heapq.heappush(h, x): add x, O(log n)
+      heapq.heappush(h, 2)
+      # h[0] -> the smallest, without removing, O(1)
+      h[0]                 # 2
+      # heapq.heappop(h) -> removes and returns the smallest, O(log n)
+      heapq.heappop(h)     # 2, h == [5]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `h`, an empty `list` used as a min-heap; `heapq` is imported.
+          - **Change** `h`: push `4`, then `1`.
+          - **Set** `top`: `int`, the smallest item, without removing it.
+          - **Set** `res`: `int`, the smallest item, popped from `h` (afterwards `h == [4]`, checked).
+        setup: |
+          import heapq
+          h = []
+        solution: |
+          heapq.heappush(h, 4)
+          heapq.heappush(h, 1)
+          top = h[0]
+          res = heapq.heappop(h)
+        check: |
+          assert top == 1, f"top = {top!r}"
+          assert res == 1, f"res = {res!r}"
+          assert h == [4], f"h = {h!r}"
+      - id: b
+        prompt: |
+          - **Given**: `h`, a non-empty min-heap of `int`s.
+          - **Set** `res`: `int`, its smallest item, without removing anything (`h` must keep all its items, checked).
+        setup: |
+          import heapq
+          h = []
+          for x in [7, 3, 9]:
+              heapq.heappush(h, x)
+        solution: |
+          res = h[0]
+        check: |
+          assert res == 3, f"res = {res!r}"
+          assert len(h) == 3, "you removed something from h"
+      - id: c
+        prompt: |
+          - **Given**: `h` (a min-heap of `int`s), `out` (empty `list`).
+          - **Change** `out`: append every item popped from `h`, until `h` is empty, so `out` is `list[int]` smallest first.
+        setup: |
+          import heapq
+          h = []
+          for x in [5, 1, 3]:
+              heapq.heappush(h, x)
+          out = []
+        solution: |
+          while h:
+              out.append(heapq.heappop(h))
+        check: |
+          assert out == [1, 3, 5], f"out = {out!r}"
+
+  - id: heaps.heapify
+    name: heapify an existing list
+    teach: |
+      ```python
+      # heapq.heapify(xs): turns xs into a heap IN PLACE, O(n), returns None
+      nums = [5, 1, 4]
+      heapq.heapify(nums)      # nums[0] == 1 (the rest is not sorted)
+      ```
+      Pitfall: `nums = heapq.heapify(nums)` sets `nums` to `None`.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Change** `nums` in place into a min-heap, in one call (`nums` must not become `None`).
+        setup: |
+          import heapq
+          nums = [8, 2, 6, 1]
+        solution: |
+          heapq.heapify(nums)
+        check: |
+          assert nums is not None and nums[0] == 1, f"nums = {nums!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums`, a `list[int]` with at least 2 items.
+          - **Change** `nums` in place into a min-heap.
+          - **Set** `a`, `b`: `int`s, the smallest and the second-smallest value, popped from `nums`.
+        setup: |
+          import heapq
+          nums = [9, 4, 7, 2]
+        solution: |
+          heapq.heapify(nums)
+          a = heapq.heappop(nums)
+          b = heapq.heappop(nums)
+        check: |
+          assert (a, b) == (2, 4), f"a, b = {a!r}, {b!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Set** `h`: `list[int]`, a min-heap holding the same items as `nums`.
+          - `nums` must stay unchanged (checked).
+        setup: |
+          import heapq
+          nums = [3, 1, 2]
+        solution: |
+          h = nums[:]
+          heapq.heapify(h)
+        check: |
+          assert nums == [3, 1, 2], f"nums changed: {nums!r}"
+          assert h[0] == 1 and sorted(h) == [1, 2, 3], f"h = {h!r}"
+
+  - id: heaps.max-negate
+    name: max-heap by negating
+    teach: |
+      ```python
+      # max-heap: store -x, negate again when you read
+      h = [-3, -9, -4]
+      heapq.heapify(h)
+      -heapq.heappop(h)     # 9
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `h` (empty `list`).
+          - **Change** `h`: push every value of `nums`, negated, so `h` works as a max-heap.
+          - **Set** `res`: `int`, the largest value, popped from `h` (the original, un-negated value).
+        setup: |
+          import heapq
+          nums = [3, 8, 5]
+          h = []
+        solution: |
+          for x in nums:
+              heapq.heappush(h, -x)
+          res = -heapq.heappop(h)
+        check: |
+          assert res == 8, f"res = {res!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Set** `h`: `list[int]`, a max-heap of `nums` storing `-x` for each `x` (so `-h[0]` is the largest), built with one comprehension plus `heapify` (no push loop).
+        setup: |
+          import heapq
+          nums = [2, 7, 4]
+        solution: |
+          h = [-x for x in nums]
+          heapq.heapify(h)
+        check: |
+          assert -h[0] == 7, f"h = {h!r} (h[0] should be -7)"
+      - id: c
+        prompt: |
+          - **Given**: `h`, a max-heap of stone weights stored negated (at least 2 stones).
+          - **Change** `h` in place: pop the two heaviest stones; if their weights differ, push back the difference (negated); if equal, push nothing.
+        setup: |
+          import heapq
+          h = [-8, -7, -1]
+          heapq.heapify(h)
+        solution: |
+          a = -heapq.heappop(h)
+          b = -heapq.heappop(h)
+          if a != b:
+              heapq.heappush(h, -(a - b))
+        check: |
+          assert sorted(-x for x in h) == [1, 1], f"stones left = {sorted(-x for x in h)!r}"
+
+  - id: heaps.tuples
+    name: priorities with tuples
+    teach: |
+      ```python
+      # tuples compare item by item: push (priority, value)
+      h = [(2, "write")]
+      heapq.heappush(h, (1, "read"))
+      heapq.heappop(h)    # (1, 'read')
+      ```
+      Pitfall: values that can't be compared (nodes, lists) need a tie-breaker: `(priority, i, node)`.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `h`, `g` (empty `list`s), `lists` (`list[list[int]]`, each non-empty).
+          - **Change** `h`: push `(3, "c")` and `(1, "a")`.
+          - **Set** `res`: `str`, only the **name** (2nd item) of the tuple popped from `h`.
+          - **Change** `g`: push each list of `lists` as `(first_value, index, the_list)`, `index` being its position in `lists` (so lists never get compared).
+          - **Set** `idx`: `int`, the `index` of the tuple popped from `g` (equal first values → smaller index wins).
+        setup: |
+          import heapq
+          h = []
+          g = []
+          lists = [[5, 6], [2, 9], [2, 3]]
+        solution: |
+          heapq.heappush(h, (3, "c"))
+          heapq.heappush(h, (1, "a"))
+          res = heapq.heappop(h)[1]
+          for i, l in enumerate(lists):
+              heapq.heappush(g, (l[0], i, l))
+          idx = heapq.heappop(g)[1]
+        check: |
+          assert res == "a", f"res = {res!r}"
+          assert idx == 1, f"idx = {idx!r} (ties on value break on the index)"
+      - id: b
+        prompt: |
+          - **Given**: `count`, a `dict[str, int]` (word → frequency, all frequencies different).
+          - **Set** `h`: `list[tuple[int, str]]`, a heap of `(frequency, word)` pairs.
+          - **Set** `res`: `str`, the least frequent word, popped from `h`.
+        setup: |
+          import heapq
+          count = {"x": 3, "y": 1, "z": 2}
+        solution: |
+          h = [(f, w) for w, f in count.items()]
+          heapq.heapify(h)
+          res = heapq.heappop(h)[1]
+        check: |
+          assert res == "y", f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `lists` (`list[list[int]]`, each non-empty), `h` (empty `list`).
+          - **Change** `h`: push each list as `(first_value, index, the_list)`, `index` being its position in `lists` (so lists never get compared).
+          - **Set** `res`: `int`, the `index` of the tuple popped from `h` (equal first values → smaller index wins).
+        setup: |
+          import heapq
+          lists = [[5, 6], [2, 9], [2, 3]]
+          h = []
+        solution: |
+          for i, l in enumerate(lists):
+              heapq.heappush(h, (l[0], i, l))
+          res = heapq.heappop(h)[1]
+        check: |
+          assert res == 1, f"res = {res!r} (ties on value break on the index)"
+
+  - id: heaps.top-k
+    name: top-k with a size-k heap
+    teach: |
+      ```python
+      # k largest: a MIN-heap capped at k items; h[0] is then the k-th largest, O(n log k)
+      for x in nums:
+          heapq.heappush(h, x)
+          if len(h) > k:
+              heapq.heappop(h)
+      # heapq.heappushpop(h, x) -> pushes x then pops and returns the smallest, in one step
+      heapq.heappushpop([3, 5], 4)    # 3 (the heap is now [4, 5])
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `k` (`int`), `h` (empty `list`), `p` (a min-heap), `x` (`int`).
+          - **Change** `h`: a min-heap of the `k` largest values of `nums`: push each value, pop whenever it holds more than `k` (checked: `len(h) == k`).
+          - **Set** `res`: `int`, the k-th largest value of `nums`, read from `h`.
+          - **Set** `out`: `int`, the result of pushing `x` onto `p` and popping its smallest, **in one call**.
+        setup: |
+          import heapq
+          nums = [4, 1, 7, 3, 9]
+          k = 2
+          h = []
+          p = [3, 5]
+          x = 4
+        solution: |
+          for n in nums:
+              heapq.heappush(h, n)
+              if len(h) > k:
+                  heapq.heappop(h)
+          res = h[0]
+          out = heapq.heappushpop(p, x)
+        check: |
+          assert res == 7, f"res = {res!r}"
+          assert len(h) == k, f"heap should have k={k} items, has {len(h)}"
+          assert out == 3 and sorted(p) == [4, 5], f"out = {out!r}, p = {p!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `k` (`int`), `h` (empty `list`).
+          - **Change** `h`: keep the `k` largest values, never holding more than `k`: push while `h` has fewer than `k` items, else use `heappushpop`.
+          - **Set** `res`: `int`, the k-th largest value of `nums`.
+        setup: |
+          import heapq
+          nums = [5, 2, 8, 6, 1]
+          k = 3
+          h = []
+        solution: |
+          for x in nums:
+              if len(h) < k:
+                  heapq.heappush(h, x)
+              else:
+                  heapq.heappushpop(h, x)
+          res = h[0]
+        check: |
+          assert res == 5, f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `k` (`int`), `h` (empty `list`).
+          - **Change** `h`: keep the `k` **smallest** values in a size-`k` heap (hint: store `-x`).
+          - **Set** `res`: `int`, the k-th smallest value of `nums` (un-negated).
+        setup: |
+          import heapq
+          nums = [6, 2, 9, 4, 1]
+          k = 2
+          h = []
+        solution: |
+          for x in nums:
+              heapq.heappush(h, -x)
+              if len(h) > k:
+                  heapq.heappop(h)
+          res = -h[0]
+        check: |
+          assert res == 2, f"res = {res!r}"
+
+  - id: heaps.nlargest
+    name: nlargest / nsmallest one-liners
+    teach: |
+      ```python
+      # heapq.nlargest(k, it) / nsmallest(k, it) -> list of the k largest / smallest, in order
+      heapq.nlargest(2, [5, 1, 8, 3])                    # [8, 5]
+      # key=f -> compare f(item) instead of the item
+      heapq.nsmallest(2, ["ccc", "a", "bb"], key=len)    # ['a', 'bb']
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `words` (`list[str]`, all lengths different); `heapq` is imported.
+          - **Set** `res`: `list[int]`, the 3 largest numbers, largest first, in one line.
+          - **Set** `short`: `list[str]`, the 2 shortest words, shortest first, in one line.
+        setup: |
+          import heapq
+          nums = [4, 10, 2, 8, 6]
+          words = ["banana", "fig", "kiwi", "apple"]
+        solution: |
+          res = heapq.nlargest(3, nums)
+          short = heapq.nsmallest(2, words, key=len)
+        check: |
+          assert res == [10, 8, 6], f"res = {res!r}"
+          assert short == ["fig", "kiwi"], f"short = {short!r}"
+      - id: b
+        prompt: |
+          - **Given**: `words`, a `list[str]` (all lengths different); `heapq` is imported.
+          - **Set** `res`: `list[str]`, the 2 **shortest** words, shortest first.
+        setup: |
+          import heapq
+          words = ["banana", "fig", "kiwi", "apple"]
+        solution: |
+          res = heapq.nsmallest(2, words, key=len)
+        check: |
+          assert res == ["fig", "kiwi"], f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `count` (`dict[int, int]`, value → frequency, all frequencies different), `k` (`int`).
+          - **Set** `res`: `list[int]`, the `k` values with the highest frequency (values only, not counts), most frequent first.
+        setup: |
+          import heapq
+          count = {1: 3, 2: 2, 3: 5}
+          k = 2
+        solution: |
+          res = heapq.nlargest(k, count, key=count.get)
+        check: |
+          assert res == [3, 1], f"res = {res!r}"

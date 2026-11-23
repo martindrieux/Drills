@@ -1,0 +1,342 @@
+id: grids
+title: Comprehensions & grids
+intro: |
+  Comprehensions build a list, dict or set in one line. Grids are lists of lists: you will
+  create them, walk them cell by cell, visit the 4 neighbours of a cell, and transpose or rotate them.
+problems:
+  - Number of Islands
+  - Rotate Image
+  - Set Matrix Zeroes
+  - Spiral Matrix
+  - Word Search
+  - Pacific Atlantic Water Flow
+atoms: [py-lists, py-iteration, dp-grid, graph-bfs]
+skills:
+  - id: grids.list-comp
+    name: list comprehensions
+    teach: |
+      ```python
+      # [expr for x in it] -> expr for each item
+      [x * x for x in [1, 2]]                 # [1, 4]
+      # filter: `if` AFTER the for (no else)
+      [x for x in [3, -1] if x > 0]           # [3]
+      # choose a value: `a if c else b` BEFORE the for (else required)
+      [x if x > 0 else 0 for x in [3, -1]]    # [3, 0]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Set** `res`: `list[int]`, the square of every number.
+          - **Set** `pos`: `list[int]`, only the numbers `> 0`.
+          - **Set** `clipped`: `list[int]`, same length as `nums`, every negative replaced by `0`.
+          - One list comprehension each; all keep the order of `nums`.
+        setup: |
+          nums = [1, -2, 3]
+        solution: |
+          res = [x * x for x in nums]
+          pos = [x for x in nums if x > 0]
+          clipped = [x if x > 0 else 0 for x in nums]
+        check: |
+          assert res == [1, 4, 9], f"res = {res!r}"
+          assert pos == [1, 3], f"pos = {pos!r}"
+          assert clipped == [1, 0, 3], f"clipped = {clipped!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Set** `res`: `list[int]`, only the **even** numbers, in their original order, in one line.
+        setup: |
+          nums = [1, 2, 3, 4, 6]
+        solution: |
+          res = [x for x in nums if x % 2 == 0]
+        check: |
+          assert res == [2, 4, 6], f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums`, a `list[int]`.
+          - **Set** `res`: `list[int]`, same length as `nums`, every negative replaced by `0`, the other numbers kept.
+        setup: |
+          nums = [3, -1, 2, -5]
+        solution: |
+          res = [x if x > 0 else 0 for x in nums]
+        check: |
+          assert res == [3, 0, 2, 0], f"res = {res!r}"
+
+  - id: grids.dict-set-comp
+    name: dict and set comprehensions
+    teach: |
+      ```python
+      # {k: v for ...} -> dict
+      {w: len(w) for w in ["hi", "hey"]}    # {'hi': 2, 'hey': 3}
+      # {v for ...} -> set (duplicates disappear)
+      {x % 3 for x in [1, 4, 5]}            # {1, 2}
+      ```
+      Pitfall: `{}` alone is an empty **dict**. An empty set is `set()`.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `words`, a `list[str]` of non-empty words.
+          - **Set** `res`: `dict[str, int]`, each word → its length (dict comprehension).
+          - **Set** `firsts`: `set[str]` (a set, not a list), the first letters of the words (set comprehension).
+        setup: |
+          words = ["hi", "hello", "yo"]
+        solution: |
+          res = {w: len(w) for w in words}
+          firsts = {w[0] for w in words}
+        check: |
+          assert res == {"hi": 2, "hello": 5, "yo": 2}, f"res = {res!r}"
+          assert isinstance(firsts, set) and firsts == {"h", "y"}, f"firsts = {firsts!r}"
+      - id: b
+        prompt: |
+          - **Given**: `words`, a `list[str]` of non-empty words.
+          - **Set** `res`: `set[str]` (a set, not a list), the first letters of the words.
+        setup: |
+          words = ["apple", "avocado", "bean"]
+        solution: |
+          res = {w[0] for w in words}
+        check: |
+          assert isinstance(res, set), f"res should be a set, got {type(res).__name__}"
+          assert res == {"a", "b"}, f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `d`, a `dict[str, int]` whose values are all different.
+          - **Set** `res`: `dict[int, str]`, each value of `d` → its key, with a dict comprehension (`d.items()` gives `(key, value)` pairs).
+        setup: |
+          d = {"a": 1, "b": 2}
+        solution: |
+          res = {v: k for k, v in d.items()}
+        check: |
+          assert res == {1: "a", 2: "b"}, f"res = {res!r}"
+
+  - id: grids.init
+    name: create a rows x cols grid
+    teach: |
+      ```python
+      # outer level = a comprehension: a new row each time
+      [[0] * 3 for _ in range(2)]   # [[0, 0, 0], [0, 0, 0]]
+      ```
+      Pitfall: `[[0] * cols] * rows` repeats the SAME row: setting `g[0][0]` changes every row.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `rows`, `cols` (`int`s).
+          - **Set** `g`: `list[list[int]]`, `rows` rows, each a list of `cols` zeros.
+          - The rows must be **independent** lists (checked).
+        setup: |
+          rows, cols = 2, 3
+        solution: |
+          g = [[0] * cols for _ in range(rows)]
+        check: |
+          assert g == [[0, 0, 0], [0, 0, 0]], f"g = {g!r}"
+          assert g[0] is not g[1], "the rows are the same list object (aliasing)"
+      - id: b
+        prompt: |
+          - **Given**: `grid`, a non-empty `list[list[int]]`.
+          - **Set** `visited`: `list[list[bool]]`, all `False`, with the same number of rows and columns as `grid`.
+          - The rows must be **independent** lists (checked).
+        setup: |
+          grid = [[1, 0], [0, 1], [1, 1]]
+        solution: |
+          visited = [[False] * len(grid[0]) for _ in range(len(grid))]
+        check: |
+          assert visited == [[False, False]] * 3, f"visited = {visited!r}"
+          visited[0][0] = True
+          assert visited[1][0] is False, "the rows are the same list object (aliasing)"
+      - id: c
+        prompt: |
+          - **Given**: the starter code. Its bug: setting `g[0][0]` changes every row (all rows are the same list).
+          - **Fix** the line that builds `g` (2 rows × 3 columns of zeros), so that after `g[0][0] = 1` only row 0 changes.
+        starter: |
+          g = [[0] * 3] * 2
+          g[0][0] = 1
+        solution: |
+          g = [[0] * 3 for _ in range(2)]
+          g[0][0] = 1
+        check: |
+          assert g == [[1, 0, 0], [0, 0, 0]], f"g = {g!r}"
+
+  - id: grids.iterate
+    name: walk every cell
+    teach: |
+      ```python
+      rows, cols = len(g), len(g[0])
+      for r in range(rows):
+          for c in range(cols):
+              g[r][c]          # row r, column c
+      # g[r] is a whole row; column c is [g[r][c] for r in range(rows)]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `g`, a non-empty `list[list[int]]`.
+          - **Set** `res`: `int`, the number of cells equal to `1`, counted with nested `for r` / `for c` loops.
+          - **Set** `row`: `list[int]`, row 1 (0-indexed).
+          - **Set** `col`: `list[int]`, column 2 (0-indexed), top to bottom.
+        setup: |
+          g = [[1, 0, 1], [0, 1, 1]]
+        solution: |
+          res = 0
+          for r in range(len(g)):
+              for c in range(len(g[0])):
+                  if g[r][c] == 1:
+                      res += 1
+          row = g[1]
+          col = [g[r][2] for r in range(len(g))]
+        check: |
+          assert res == 4, f"res = {res!r}"
+          assert row == [0, 1, 1], f"row = {row!r}"
+          assert col == [1, 1], f"col = {col!r}"
+      - id: b
+        prompt: |
+          - **Given**: `g`, a `list[list[str]]` of `"0"` / `"1"` strings.
+          - **Set** `res`: `list[tuple[int, int]]`, the `(r, c)` of every `"1"` cell, row by row, left to right within a row.
+        setup: |
+          g = [["1", "0"], ["0", "1"], ["1", "1"]]
+        solution: |
+          res = []
+          for r in range(len(g)):
+              for c in range(len(g[0])):
+                  if g[r][c] == "1":
+                      res.append((r, c))
+        check: |
+          assert res == [(0, 0), (1, 1), (2, 0), (2, 1)], f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `g` (`list[list[int]]`), `col` (`int`, 0-indexed column).
+          - **Set** `res`: `list[int]`, column `col` of `g`, top to bottom.
+        setup: |
+          g = [[1, 2, 3], [4, 5, 6]]
+          col = 1
+        solution: |
+          res = [g[r][col] for r in range(len(g))]
+        check: |
+          assert res == [2, 5], f"res = {res!r}"
+
+  - id: grids.neighbors
+    name: 4-direction neighbours with bounds check
+    teach: |
+      ```python
+      for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+          nr, nc = r + dr, c + dc
+          if 0 <= nr < rows and 0 <= nc < cols:
+              ...   # g[nr][nc] is a real neighbour
+      # 8 directions: dr and dc each in (-1, 0, 1), skipping dr == dc == 0
+      ```
+      Pitfall: check bounds **before** indexing: `g[-1]` does not raise, it wraps to the last row.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `rows`, `cols` (grid size), `r`, `c` (a cell, 0-indexed).
+          - **Set** `res`: `list[tuple[int, int]]`, the in-bounds 4-direction neighbours `(nr, nc)` of `(r, c)` (up, down, left, right), any order.
+          - **Set** `res8`: `list[tuple[int, int]]`, the in-bounds **8**-direction neighbours (diagonals too, not `(r, c)` itself), any order.
+        setup: |
+          rows, cols = 2, 3
+          r, c = 0, 0
+        solution: |
+          res = []
+          for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+              nr, nc = r + dr, c + dc
+              if 0 <= nr < rows and 0 <= nc < cols:
+                  res.append((nr, nc))
+          res8 = []
+          for dr in (-1, 0, 1):
+              for dc in (-1, 0, 1):
+                  if dr == dc == 0:
+                      continue
+                  nr, nc = r + dr, c + dc
+                  if 0 <= nr < rows and 0 <= nc < cols:
+                      res8.append((nr, nc))
+        check: |
+          assert sorted(res) == [(0, 1), (1, 0)], f"res = {res!r}"
+          assert sorted(res8) == [(0, 1), (1, 0), (1, 1)], f"res8 = {res8!r}"
+      - id: b
+        prompt: |
+          - **Given**: `g` (`list[list[int]]`), `rows`, `cols` (its size), `r`, `c` (a cell).
+          - **Set** `res`: `int`, how many of the in-bounds 4-direction neighbours of `(r, c)` equal `1`.
+        setup: |
+          g = [[1, 1, 0], [0, 1, 1], [1, 0, 0]]
+          rows, cols = 3, 3
+          r, c = 1, 1
+        solution: |
+          res = 0
+          for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+              nr, nc = r + dr, c + dc
+              if 0 <= nr < rows and 0 <= nc < cols and g[nr][nc] == 1:
+                  res += 1
+        check: |
+          assert res == 2, f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `g` (`list[list[int]]`), `rows`, `cols` (its size), `r`, `c` (a cell).
+          - **Set** `res`: `int`, how many of the in-bounds **8**-direction neighbours of `(r, c)` (diagonals too, not the cell itself) equal `1`.
+        setup: |
+          g = [[1, 1, 0], [0, 1, 1], [1, 0, 0]]
+          rows, cols = 3, 3
+          r, c = 1, 1
+        solution: |
+          res = 0
+          for dr in (-1, 0, 1):
+              for dc in (-1, 0, 1):
+                  if dr == dc == 0:
+                      continue
+                  nr, nc = r + dr, c + dc
+                  if 0 <= nr < rows and 0 <= nc < cols and g[nr][nc] == 1:
+                      res += 1
+        check: |
+          assert res == 4, f"res = {res!r}"
+
+  - id: grids.transform
+    name: copy, flatten, transpose, rotate
+    teach: |
+      ```python
+      g = [[1, 2], [3, 4]]
+      # copy each row (g[:] would still share the rows)
+      [row[:] for row in g]               # [[1, 2], [3, 4]], independent
+      # flatten: the fors in the same order as nested loops
+      [x for row in g for x in row]       # [1, 2, 3, 4]
+      # zip(*g) -> the columns as tuples = transpose
+      [list(col) for col in zip(*g)]      # [[1, 3], [2, 4]]
+      ```
+      Rotate 90° clockwise = transpose, then reverse each row.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `g`, a `list[list[int]]`.
+          - **Set** `h`: an independent copy of `g` (copy each row), then set `h[0][0] = 9`; `g` must stay unchanged (checked).
+          - **Set** `flat`: `list[int]`, all values of `g`, row by row.
+          - **Set** `t`: `list[list[int]]`, the transpose of `g` (`t[i][j] == g[j][i]`).
+          - **Set** `rot`: `list[list[int]]`, `g` rotated 90° clockwise.
+        setup: |
+          g = [[1, 2], [3, 4]]
+        solution: |
+          h = [row[:] for row in g]
+          h[0][0] = 9
+          flat = [x for row in g for x in row]
+          t = [list(col) for col in zip(*g)]
+          rot = [list(col)[::-1] for col in zip(*g)]
+        check: |
+          assert g == [[1, 2], [3, 4]], f"g changed: {g!r}"
+          assert h == [[9, 2], [3, 4]], f"h = {h!r}"
+          assert flat == [1, 2, 3, 4], f"flat = {flat!r}"
+          assert t == [[1, 3], [2, 4]], f"t = {t!r}"
+          assert rot == [[3, 1], [4, 2]], f"rot = {rot!r}"
+      - id: b
+        prompt: |
+          - **Given**: `g`, a `list[list[int]]`.
+          - **Set** `res`: `list[int]`, all values of `g`, row by row, in one line.
+        setup: |
+          g = [[1, 2, 3], [4, 5, 6]]
+        solution: |
+          res = [x for row in g for x in row]
+        check: |
+          assert res == [1, 2, 3, 4, 5, 6], f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `g`, a `list[list[int]]`.
+          - **Set** `res`: `list[list[int]]` (rows are lists, not tuples), `g` rotated 90° clockwise.
+        setup: |
+          g = [[1, 2], [3, 4]]
+        solution: |
+          res = [list(r[::-1]) for r in zip(*g)]
+        check: |
+          assert res == [[3, 1], [4, 2]], f"res = {res!r}"

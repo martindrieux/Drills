@@ -1,0 +1,365 @@
+id: dicts
+title: Dictionaries
+intro: |
+  A dict maps keys to values with O(1) lookup. It is the tool for "have I seen this?",
+  "how many times?", and "where was it?" questions.
+problems:
+  - Two Sum
+  - Valid Anagram
+  - Group Anagrams
+  - Longest Substring Without Repeating Characters
+  - Clone Graph
+  - LRU Cache
+atoms: [py-dict-counter]
+skills:
+  - id: dicts.basics
+    name: create, set, test, read
+    teach: |
+      ```python
+      # {k: v, ...} literal; {} is an empty dict
+      d = {"a": 1}
+      # d[k] = v: insert or overwrite
+      d["b"] = 2      # {'a': 1, 'b': 2}
+      # k in d -> bool: checks KEYS, O(1)
+      "a" in d        # True
+      # d[k] -> value (KeyError if k is missing); len(d) -> number of keys
+      d["b"], len(d)  # (2, 2)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: nothing.
+          - **Set** `d`: create it as the literal `{"x": 1}`, then store `"y"` → `2` in it.
+          - **Set** `has`: `bool`, whether `"x"` is a key of `d`.
+          - **Set** `v`: `int`, the value stored at key `"y"`.
+          - **Set** `n`: `int`, the number of keys of `d`.
+        solution: |
+          d = {"x": 1}
+          d["y"] = 2
+          has = "x" in d
+          v = d["y"]
+          n = len(d)
+        check: |
+          assert d == {"x": 1, "y": 2}, f"d = {d!r}"
+          assert has is True, f"has = {has!r}"
+          assert v == 2, f"v = {v!r}"
+          assert n == 2, f"n = {n!r}"
+      - id: b
+        prompt: |
+          - **Given**: `d` (`dict[str, int]`), `xs` (a `list` of `str`s and `int`s).
+          - **Set** `res`: `list`, the items of `xs` that are **keys** of `d` (values do not count), in `xs` order.
+        setup: |
+          d = {"a": 1, "b": 2}
+          xs = ["b", 2, "z", "a"]
+        solution: |
+          res = [x for x in xs if x in d]
+        check: |
+          assert res == ["b", "a"], f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `d` (`dict[str, int]`), `k` (`str`).
+          - **Set** `res`: `int`, `d[k]`, or `-1` if `k` is not a key. Use `in`, not `get`.
+        setup: |
+          d = {"a": 5}
+          k = "z"
+        solution: |
+          res = d[k] if k in d else -1
+        check: |
+          assert res == -1, f"res = {res!r}"
+
+  - id: dicts.get
+    name: get with a default
+    teach: |
+      ```python
+      # d.get(k, default=None) -> d[k], or default if k is missing (never raises)
+      {"a": 3}.get("b", 0)              # 0
+      # counting idiom
+      count[x] = count.get(x, 0) + 1
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `d` (`dict[str, int]`), `s` (`str`), `count` (empty `dict`).
+          - **Set** `res1`, `res2`: `int`s, the values of keys `"a"` and `"b"` in `d`, `0` for a missing key (use `get`).
+          - **Change** `count` in place, using `get`: each character of `s` → its number of occurrences (`dict[str, int]`).
+        setup: |
+          d = {"a": 3}
+          s = "abca"
+          count = {}
+        solution: |
+          res1 = d.get("a", 0)
+          res2 = d.get("b", 0)
+          for ch in s:
+              count[ch] = count.get(ch, 0) + 1
+        check: |
+          assert (res1, res2) == (3, 0), f"res1, res2 = {res1!r}, {res2!r}"
+          assert count == {"a": 2, "b": 1, "c": 1}, f"count = {count!r}"
+      - id: b
+        prompt: |
+          - **Given**: `s` (`str`), `count` (empty `dict`).
+          - **Change** `count` in place, using `get`: each character of `s` → its number of occurrences (`dict[str, int]`).
+        setup: |
+          s = "abca"
+          count = {}
+        solution: |
+          for ch in s:
+              count[ch] = count.get(ch, 0) + 1
+        check: |
+          assert count == {"a": 2, "b": 1, "c": 1}, f"count = {count!r}"
+      - id: c
+        prompt: |
+          - **Given**: `graph` (`dict[int, list[int]]`, node → list of neighbours), `node` (`int`).
+          - **Set** `res`: `list[int]`, the neighbours of `node`, or `[]` if `node` is not a key (one call).
+        setup: |
+          graph = {1: [2, 3]}
+          node = 5
+        solution: |
+          res = graph.get(node, [])
+        check: |
+          assert res == [], f"res = {res!r}"
+
+  - id: dicts.iterate
+    name: keys, values, items
+    teach: |
+      ```python
+      d = {"a": 3, "b": 7}
+      # for k in d: loops over the keys, in insertion order
+      # d.values() / d.items() -> the values / the (key, value) pairs
+      list(d.values()), list(d.items())   # ([3, 7], [('a', 3), ('b', 7)])
+      # max(d, key=d.get) -> the key with the biggest value
+      max(d, key=d.get)                   # 'b'
+      ```
+      Pitfall: adding / removing keys while looping over `d` raises RuntimeError; loop over `list(d)`.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `d` (`dict[str, int]`), `keys` (empty `list`).
+          - **Change** `keys`: append every key of `d`, in insertion order, with a `for` loop over `d`.
+          - **Set** `res`: `int`, the sum of all values.
+          - **Set** `big`: `list[str]`, the keys whose value is `> 1`, in insertion order (loop over the `(key, value)` pairs).
+          - **Set** `best`: `str`, the key with the largest value.
+        setup: |
+          d = {"x": 2, "y": 1, "z": 5}
+          keys = []
+        solution: |
+          for k in d:
+              keys.append(k)
+          res = sum(d.values())
+          big = [k for k, v in d.items() if v > 1]
+          best = max(d, key=d.get)
+        check: |
+          assert keys == ["x", "y", "z"], f"keys = {keys!r}"
+          assert res == 8, f"res = {res!r}"
+          assert big == ["x", "z"], f"big = {big!r}"
+          assert best == "z", f"best = {best!r}"
+      - id: b
+        prompt: |
+          - **Given**: `d`, a `dict[str, int]`.
+          - **Set** `res`: `list[str]`, the keys whose value is `> 1`, in insertion order.
+        setup: |
+          d = {"x": 2, "y": 1, "z": 5}
+        solution: |
+          res = [k for k, v in d.items() if v > 1]
+        check: |
+          assert res == ["x", "z"], f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `d`, a non-empty `dict[str, int]` (its largest value is unique).
+          - **Set** `res`: `str`, the key with the largest value.
+        setup: |
+          d = {"a": 2, "b": 7, "c": 4}
+        solution: |
+          res = max(d, key=d.get)
+        check: |
+          assert res == "b", f"res = {res!r}"
+      - id: d
+        prompt: |
+          - **Given**: `d`, a `dict[str, int]`.
+          - **Change** `d` in place: delete every key whose value is `0`, looping over a copy of the keys (deleting while looping over `d` itself raises).
+        setup: |
+          d = {"a": 0, "b": 2, "c": 0}
+        solution: |
+          for k in list(d):
+              if d[k] == 0:
+                  del d[k]
+        check: |
+          assert d == {"b": 2}, f"d = {d!r}"
+
+  - id: dicts.remove
+    name: del / pop
+    teach: |
+      ```python
+      d = {"a": 1, "b": 2}
+      # del d[k]: remove k (KeyError if missing)
+      del d["a"]          # {'b': 2}
+      # d.pop(k) -> removes k and returns its value (KeyError if missing)
+      d.pop("b")          # 2
+      # d.pop(k, default) -> default instead of KeyError
+      d.pop("z", None)    # None
+      ```
+      Sliding windows: when a count drops to 0, delete the key so `len(d)` = distinct items.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `d`, a `dict[str, int]` with keys `"a"`, `"b"`, `"c"`.
+          - **Change** `d` in place, in this order:
+            1. remove the key `"b"` with `del`;
+            2. remove the key `"a"` and put its value into `res` (`int`), in one line;
+            3. remove `"z"` (not a key) without error, putting the returned `None` into `miss`.
+        setup: |
+          d = {"a": 1, "b": 2, "c": 3}
+        solution: |
+          del d["b"]
+          res = d.pop("a")
+          miss = d.pop("z", None)
+        check: |
+          assert res == 1, f"res = {res!r}"
+          assert miss is None, f"miss = {miss!r}"
+          assert d == {"c": 3}, f"d = {d!r}"
+      - id: b
+        prompt: |
+          - **Given**: `d`, a `dict[str, int]` that has the key `"a"`.
+          - **Set** `res`: `int`, the value of `"a"`, removing `"a"` from `d` in the same single line.
+        setup: |
+          d = {"a": 1, "b": 2}
+        solution: |
+          res = d.pop("a")
+        check: |
+          assert res == 1, f"res = {res!r}"
+          assert d == {"b": 2}, f"d = {d!r}"
+      - id: c
+        prompt: |
+          - **Given**: `d` (`dict[str, int]`), `ks` (`list[str]`; some of them, like `"z"`, are not keys of `d`).
+          - **Change** `d` in place: remove every key listed in `ks`, with no error for the missing ones.
+        setup: |
+          d = {"a": 1, "b": 2}
+          ks = ["a", "z"]
+        solution: |
+          for k in ks:
+              d.pop(k, None)
+        check: |
+          assert d == {"b": 2}, f"d = {d!r}"
+      - id: d
+        prompt: |
+          - **Given**: `count` (`dict[str, int]`, character → its count in a sliding window, all `>= 1`), `c` (a key of `count`, leaving the window).
+          - **Change** `count` in place: decrease `count[c]` by 1, and delete the key `c` if it reaches 0.
+          - **Set** `n`: `int`, the number of distinct characters left (keys of `count`).
+        setup: |
+          count = {"a": 1, "b": 3}
+          c = "a"
+        solution: |
+          count[c] -= 1
+          if count[c] == 0:
+              del count[c]
+          n = len(count)
+        check: |
+          assert count == {"b": 3}, f"count = {count!r}"
+          assert n == 1, f"n = {n!r}"
+
+  - id: dicts.setdefault
+    name: setdefault for lists in a dict
+    teach: |
+      ```python
+      # d.setdefault(k, default) -> d[k], storing default first if k is missing
+      groups = {}
+      groups.setdefault(3, []).append("cat")   # groups = {3: ['cat']}
+      ```
+      Pitfall: `d.get(k, []).append(w)` appends to a throwaway list. Nothing is stored.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `words` (`list[str]` of non-empty words), `groups` (empty `dict`).
+          - **Change** `groups` in place, using `setdefault`: first letter → `list[str]` of the words starting with it, in `words` order.
+        setup: |
+          words = ["ant", "bee", "ape"]
+          groups = {}
+        solution: |
+          for w in words:
+              groups.setdefault(w[0], []).append(w)
+        check: |
+          assert groups == {"a": ["ant", "ape"], "b": ["bee"]}, f"groups = {groups!r}"
+      - id: b
+        prompt: |
+          - **Given**: `edges` (`list[tuple[int, int]]`, directed `(u, v)` edges), `graph` (empty `dict`).
+          - **Change** `graph` in place, using `setdefault`: each node `u` → `list[int]` of its targets `v`, in `edges` order. Nodes with no outgoing edge are not keys.
+        setup: |
+          edges = [(0, 1), (0, 2), (1, 2)]
+          graph = {}
+        solution: |
+          for u, v in edges:
+              graph.setdefault(u, []).append(v)
+        check: |
+          assert graph == {0: [1, 2], 1: [2]}, f"graph = {graph!r}"
+      - id: c
+        prompt: |
+          - **Given**: `pairs` (`list[tuple[str, int]]` of `(key, value)`), `d` (empty `dict`).
+          - **Change** `d` in place, using `setdefault` with a `set()`: each key → `set[int]` of its values (a repeated value counts once).
+        setup: |
+          pairs = [("a", 1), ("b", 2), ("a", 1), ("a", 3)]
+          d = {}
+        solution: |
+          for k, v in pairs:
+              d.setdefault(k, set()).add(v)
+        check: |
+          assert d == {"a": {1, 3}, "b": {2}}, f"d = {d!r}"
+
+  - id: dicts.index-map
+    name: value → index map (two-sum)
+    teach: |
+      ```python
+      # {x: i for i, x in enumerate(nums)}: value -> index; duplicates: the LAST index wins
+      {x: i for i, x in enumerate([5, 3, 5])}   # {5: 2, 3: 1}
+      # two-sum: look up the complement BEFORE storing x
+      for i, x in enumerate(nums):
+          if target - x in seen: return [seen[target - x], i]
+          seen[x] = i
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `target` (`int`; exactly one pair of indices sums to it).
+          - **Set** `pos`: `dict[int, int]`, each value → its index, in one line; for a repeated value, its **last** index.
+          - **Set** `res`: `list[int]`, `[i, j]` with `i < j` and `nums[i] + nums[j] == target`, found in one pass with a `seen` dict (value → index).
+        setup: |
+          nums = [3, 5, 3]
+          target = 6
+        solution: |
+          pos = {x: i for i, x in enumerate(nums)}
+          seen = {}
+          for i, x in enumerate(nums):
+              if target - x in seen:
+                  res = [seen[target - x], i]
+                  break
+              seen[x] = i
+        check: |
+          assert pos == {3: 2, 5: 1}, f"pos = {pos!r}"
+          assert res == [0, 2], f"res = {res!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `target` (`int`; exactly one pair of indices sums to it).
+          - **Set** `res`: `list[int]`, `[i, j]` with `i < j` and `nums[i] + nums[j] == target`, found in one pass with a `seen` dict (value → index).
+        setup: |
+          nums = [2, 7, 11, 15]
+          target = 9
+        solution: |
+          seen = {}
+          for i, x in enumerate(nums):
+              if target - x in seen:
+                  res = [seen[target - x], i]
+                  break
+              seen[x] = i
+        check: |
+          assert res == [0, 1], f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `nums`, a `list[int]` with repeated values.
+          - **Set** `first`: `dict[int, int]`, each value → the index of its **first** occurrence (a comprehension would keep the last).
+        setup: |
+          nums = [5, 3, 5, 3, 1]
+        solution: |
+          first = {}
+          for i, x in enumerate(nums):
+              if x not in first:
+                  first[x] = i
+        check: |
+          assert first == {5: 0, 3: 1, 1: 4}, f"first = {first!r}"

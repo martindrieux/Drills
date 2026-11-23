@@ -1,0 +1,181 @@
+id: np-arrays
+title: Arrays, dtypes and random numbers
+intro: |
+  Every NumPy computation starts with an array of the right shape and dtype. These are the constructors,
+  the attributes you print when a shape or dtype is wrong, and the seeded random generator.
+problems:
+  - Initialize the weights of a model written in NumPy
+  - Build a synthetic dataset (X, y) to test an algorithm
+  - Debug a shape or dtype mismatch
+atoms: []
+skills:
+  - id: np-arrays.create
+    name: np.array, zeros / ones / full, zeros_like, arange, linspace, eye
+    teach: |
+      ```python
+      import numpy as np
+      np.array([[1, 2], [3, 4]])     # nested list -> (2, 2) int64 (any float in it -> float64)
+      np.zeros((2, 3))               # (2, 3) float64 of 0.;  np.ones(shape): same with 1.
+      np.full((2, 2), 7)             # (2, 2) filled with 7
+      np.zeros_like(a)               # zeros with a's shape AND dtype
+      np.arange(0, 10, 3)            # (start, stop, step), stop excluded: [0, 3, 6, 9]
+      np.linspace(0, 1, 5)           # 5 floats, both ends included: [0., .25, .5, .75, 1.]
+      np.eye(2)                      # (2, 2) float64 identity: [[1., 0.], [0., 1.]]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Create these arrays with NumPy constructors.
+          - `A` (2, 3) int64: `[[1, 2, 3], [4, 5, 6]]`
+          - `Z` (3, 4): all zeros
+          - `F` (2, 3): every entry `-1`
+          - `G`: zeros with the same shape and dtype as `W`
+          - `r` (4,): `[0, 5, 10, 15]`, built with `np.arange`
+          - `t` (5,) float: evenly spaced from `-1` to `1`, both ends included
+          - `I` (3, 3): the identity matrix
+        setup: |
+          import numpy as np
+          W = np.arange(12, dtype=np.float64).reshape(4, 3)
+        solution: |
+          A = np.array([[1, 2, 3], [4, 5, 6]])
+          Z = np.zeros((3, 4))
+          F = np.full((2, 3), -1)
+          G = np.zeros_like(W)
+          r = np.arange(0, 20, 5)
+          t = np.linspace(-1, 1, 5)
+          I = np.eye(3)
+        check: |
+          assert isinstance(A, np.ndarray) and A.shape == (2, 3) and A.tolist() == [[1, 2, 3], [4, 5, 6]], f"A = {A!r}"
+          assert isinstance(Z, np.ndarray) and Z.shape == (3, 4) and not Z.any(), f"Z = {Z!r}"
+          assert isinstance(F, np.ndarray) and F.shape == (2, 3) and (F == -1).all(), f"F = {F!r}"
+          assert isinstance(G, np.ndarray) and G.shape == (4, 3) and G.dtype == np.float64 and not G.any(), f"G = {G!r}"
+          assert isinstance(r, np.ndarray) and r.tolist() == [0, 5, 10, 15], f"r = {r!r}"
+          assert isinstance(t, np.ndarray) and np.allclose(t, [-1, -0.5, 0, 0.5, 1]), f"t = {t!r}"
+          assert isinstance(I, np.ndarray) and I.shape == (3, 3) and (I == np.diag([1, 1, 1])).all(), f"I = {I!r}"
+      - id: b
+        prompt: |
+          Build these arrays for size `n` (set in the setup).
+          - `M` (n, n) float: `3.0` on the diagonal, `0.0` elsewhere
+          - `idx` (n,): `[4, 3, 2, 1, 0]`, built with `np.arange` and a negative step
+          - `lrs` (11,) float: evenly spaced learning rates from `0.0` to `0.1`, both ends included
+          - `bias` (n,): all ones
+        setup: |
+          import numpy as np
+          n = 5
+        solution: |
+          M = 3 * np.eye(n)
+          idx = np.arange(n - 1, -1, -1)
+          lrs = np.linspace(0.0, 0.1, 11)
+          bias = np.ones(n)
+        check: |
+          assert isinstance(M, np.ndarray) and M.shape == (5, 5) and (M == 3 * np.eye(5)).all(), f"M = {M!r}"
+          assert isinstance(idx, np.ndarray) and idx.tolist() == [4, 3, 2, 1, 0], f"idx = {idx!r}"
+          assert isinstance(lrs, np.ndarray) and lrs.shape == (11,) and np.allclose(lrs, [i / 100 for i in range(11)]), f"lrs = {lrs!r}"
+          assert isinstance(bias, np.ndarray) and bias.shape == (5,) and (bias == 1).all(), f"bias = {bias!r}"
+
+  - id: np-arrays.attrs
+    name: shape, ndim, size, dtype, astype
+    teach: |
+      ```python
+      a = np.zeros((2, 3, 4))
+      a.shape, a.ndim, a.size                 # sizes per axis, number of axes, number of elements: (2, 3, 4), 3, 24
+      a.dtype                                 # float64 (also float32, int64, bool, uint8 = 0..255 pixels)
+      np.array([1.7, -1.7]).astype(np.int64)  # converted COPY; float -> int truncates toward 0: [1, -1]
+      ```
+      Pitfall: writing `0.9` into an int array silently stores `0`.
+    cards:
+      - id: a
+        prompt: |
+          Read the attributes of `X` and convert dtypes.
+          - `shp` (tuple): shape of `X`; `nd` (int): its number of axes; `n` (int): its number of elements
+          - `dt`: dtype of `X`
+          - `X32`: `X` converted to float32 (`X` itself must stay float64)
+          - `pi`: `p` converted to int64
+        setup: |
+          import numpy as np
+          X = np.ones((5, 3, 2))
+          p = np.array([2.9, -0.5, 7.0])
+        solution: |
+          shp = X.shape
+          nd = X.ndim
+          n = X.size
+          dt = X.dtype
+          X32 = X.astype(np.float32)
+          pi = p.astype(np.int64)
+        check: |
+          assert shp == (5, 3, 2), f"shp = {shp!r}"
+          assert nd == 3, f"nd = {nd!r}"
+          assert n == 30, f"n = {n!r}"
+          assert dt == np.float64, f"dt = {dt!r}"
+          assert isinstance(X32, np.ndarray) and X32.dtype == np.float32 and X32.shape == (5, 3, 2), f"X32 dtype = {getattr(X32, 'dtype', None)}"
+          assert X.dtype == np.float64, "X itself was changed"
+          assert isinstance(pi, np.ndarray) and pi.dtype == np.int64 and pi.tolist() == [2, 0, 7], f"pi = {pi!r}"
+      - id: b
+        prompt: |
+          Prepare the uint8 image `img` (H, W, 3) for a model.
+          - `H`, `W` (int): its height and width, read from `img.shape`
+          - `x` (H, W, 3) float32: `img` scaled to `[0, 1]` by dividing by 255
+        setup: |
+          import numpy as np
+          img = np.array([[[0, 255, 51]] * 4] * 2, dtype=np.uint8)
+        solution: |
+          H, W = img.shape[:2]
+          x = img.astype(np.float32) / 255
+        check: |
+          assert (H, W) == (2, 4), f"H, W = {H!r}, {W!r}"
+          assert isinstance(x, np.ndarray) and x.dtype == np.float32, f"x dtype = {getattr(x, 'dtype', None)}, expected float32"
+          assert x.shape == (2, 4, 3) and np.allclose(x[0, 0], [0, 1, 0.2]), f"x[0, 0] = {x[0, 0]!r}"
+
+  - id: np-arrays.random
+    name: default_rng, normal, random, integers, permutation, choice
+    teach: |
+      ```python
+      rng = np.random.default_rng(0)          # seeded Generator: same seed + same calls -> same numbers
+      rng.normal(0, 0.01, size=(3, 2))        # (3, 2) float64 ~ N(mean 0, std 0.01)
+      rng.random(4)                           # (4,) uniform in [0, 1)
+      rng.integers(0, 10, size=5)             # (5,) int64 in [0, 10), high excluded
+      rng.permutation(5)                      # shuffled arange(5), e.g. [2, 0, 4, 1, 3]; X[perm] shuffles rows
+      rng.choice(10, size=3, replace=False)   # (3,) distinct ints from [0, 10)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Create a generator `rng = np.random.default_rng(...)` seeded with `42`, then draw from it **in this order** (the check replays the same calls):
+          - `W` (4, 3): normal samples, mean `0`, std `0.1`
+          - `u` (5,): uniform in `[0, 1)`
+          - `labels` (10,) int: random integers from `0` to `2` inclusive
+          - `perm` (8,): a random permutation of `0 .. 7`
+          - `pick` (5,): 5 distinct integers from `[0, 100)` (without replacement)
+        setup: |
+          import numpy as np
+        solution: |
+          rng = np.random.default_rng(42)
+          W = rng.normal(0, 0.1, size=(4, 3))
+          u = rng.random(5)
+          labels = rng.integers(0, 3, size=10)
+          perm = rng.permutation(8)
+          pick = rng.choice(100, size=5, replace=False)
+        check: |
+          _r = np.random.default_rng(42)
+          assert isinstance(rng, np.random.Generator), f"rng is {type(rng).__name__}, expected np.random.Generator"
+          assert np.array_equal(W, _r.normal(0, 0.1, size=(4, 3))), f"W (shape {np.shape(W)}) differs from rng.normal(0, 0.1, size=(4, 3))"
+          assert np.array_equal(u, _r.random(5)), f"u = {u!r}"
+          assert np.array_equal(labels, _r.integers(0, 3, size=10)), f"labels = {labels!r}"
+          assert np.array_equal(perm, _r.permutation(8)), f"perm = {perm!r}"
+          assert np.array_equal(pick, _r.choice(100, size=5, replace=False)), f"pick = {pick!r}"
+      - id: b
+        prompt: |
+          Shuffle the dataset `X` (6, 2), `y` (6,) with the generator `rng` so that each row keeps its label.
+          - `Xs` (6, 2), `ys` (6,): `X` and `y` reordered by the same permutation, from a single `rng.permutation` call
+        setup: |
+          import numpy as np
+          X = np.arange(12).reshape(6, 2)
+          y = np.arange(6) * 10
+          rng = np.random.default_rng(0)
+        solution: |
+          idx = rng.permutation(len(X))
+          Xs, ys = X[idx], y[idx]
+        check: |
+          _idx = np.random.default_rng(0).permutation(6)
+          assert isinstance(Xs, np.ndarray) and np.array_equal(Xs, X[_idx]), f"Xs = {Xs!r}"
+          assert isinstance(ys, np.ndarray) and np.array_equal(ys, y[_idx]), f"ys = {ys!r} (rows and labels must use the same permutation)"

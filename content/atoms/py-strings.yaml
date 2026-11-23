@@ -1,0 +1,192 @@
+id: py-strings
+title: Strings — immutable text
+summary: Splitting, joining, cleaning and indexing characters, and why you build strings with a list and ''.join.
+links:
+  - to: py-lists
+    kind: contrast
+    note: Same indexing and slicing, but strings are immutable; convert to a list to edit characters.
+  - to: py-dict-counter
+    kind: uses
+    note: Character counting is Counter(s) or a 26-slot list indexed by ord(c) - ord('a').
+lesson: |
+  Strings are **immutable** sequences of characters. Indexing and slicing work like lists
+  (`s[0]`, `s[-1]`, `s[1:4]`, `s[::-1]`), but `s[0] = "x"` raises `TypeError`.
+
+  **Building strings: list + join**
+
+  ```python
+  parts = []
+  for c in s:
+      if c.isalpha():
+          parts.append(c.upper())
+  out = "".join(parts)          # O(n) total
+  ```
+
+  `out += c` in a loop copies the string each time (O(n²) in the worst case). To edit
+  characters in place: `chars = list(s); chars[0] = "X"; s = "".join(chars)`.
+
+  **Split, strip, join**
+
+  ```python
+  "  a  b ".split()            # ['a', 'b']        any whitespace, empties dropped
+  "a,,b".split(",")            # ['a', '', 'b']    explicit separator keeps empties
+  "  hi\n".strip()             # 'hi'   (also lstrip / rstrip; strip("xy") strips those chars)
+  " ".join(["a", "b"])         # 'a b'
+  ",".join(map(str, nums))     # join needs strings
+  ```
+
+  **Characters as numbers**
+
+  ```python
+  ord("a"), chr(97)            # 97, 'a'
+  i = ord(c) - ord("a")        # 'a'->0 ... 'z'->25
+  counts = [0] * 26
+  for c in s:
+      counts[ord(c) - ord("a")] += 1
+  chr(ord("a") + (i + 1) % 26) # shift a letter by one, wrapping z -> a
+  ```
+
+  **Tests and case**
+
+  | Call | True for |
+  |---|---|
+  | `c.isalnum()` | letters or digits |
+  | `c.isalpha()` / `c.isdigit()` | letters / digits |
+  | `c.isspace()` | whitespace |
+  | `c.islower()` / `c.isupper()` | case checks |
+
+  `s.lower()`, `s.upper()` return new strings. Other useful methods: `s.count("ab")`,
+  `s.find("ab")` (-1 if absent) vs `s.index("ab")` (raises), `s.startswith(p)`,
+  `s.replace(a, b)`, `"ab" * 3`, `sub in s`.
+
+  **Sorting and comparing**
+
+  - `sorted(s)` returns a **list** of chars: `"".join(sorted(s))` gives a canonical anagram key.
+  - Comparison is lexicographic by code point: `"apple" < "banana"`, `"Z" < "a"`, `"10" < "9"`.
+  - `min(strs)` and `max(strs)` are the two most different strings lexicographically, so
+    their common prefix is the common prefix of the whole list.
+
+  **f-strings**
+
+  ```python
+  f"{name}: {score:.2f}"       # 2 decimals
+  f"{n:>5}" f"{n:05d}"         # right-align, zero-pad
+  f"{n:b}"                     # binary digits
+  f"{x!r}" f"{x=}"             # repr, and 'x=<value>' for debugging
+  ```
+
+  **Complexity:** `len(s)` O(1); slicing, `in`, `find`, `replace`, `==` are O(n).
+
+  **Pitfalls**
+  - `s.split(" ")` on text with repeated spaces gives empty strings; use `s.split()`.
+  - String methods return new strings: `s.strip()` alone does nothing; write `s = s.strip()`.
+  - `"".join(nums)` fails on ints; map them with `str` first.
+drills:
+  - id: join-filter
+    prompt: Put into `res` the digits of `s` (in order) as one string, using `"".join`.
+    setup: |
+      s = "a1b22c3"
+    solution: |
+      res = "".join(c for c in s if c.isdigit())
+    check: |
+      assert res == "1223", f"res = {res!r}"
+  - id: split-join
+    prompt: Split `s` on whitespace (ignoring repeated spaces) and join the words with `"-"` into `res`.
+    setup: |
+      s = "  the sky   is blue "
+    solution: |
+      res = "-".join(s.split())
+    check: |
+      assert res == "the-sky-is-blue", f"res = {res!r}"
+  - id: letter-counts
+    prompt: Build `counts`, a list of 26 ints where `counts[i]` is how many times the i-th letter appears in `s`. Use `ord`.
+    setup: |
+      s = "banana"
+    solution: |
+      counts = [0] * 26
+      for c in s:
+          counts[ord(c) - ord("a")] += 1
+    check: |
+      assert len(counts) == 26, f"len(counts) = {len(counts)}"
+      assert (counts[0], counts[1], counts[13]) == (3, 1, 2), f"counts = {counts!r}"
+      assert sum(counts) == 6, f"sum(counts) = {sum(counts)}"
+  - id: caesar-shift
+    prompt: Shift every lowercase letter of `s` forward by one (`z` wraps to `a`) and store the result in `res`.
+    setup: |
+      s = "abz"
+    solution: |
+      res = "".join(chr((ord(c) - ord("a") + 1) % 26 + ord("a")) for c in s)
+    check: |
+      assert res == "bca", f"res = {res!r}"
+  - id: anagram-key
+    prompt: Put the characters of `s` in sorted order, as a **string**, into `key`.
+    setup: |
+      s = "listen"
+    solution: |
+      key = "".join(sorted(s))
+    check: |
+      assert key == "eilnst", f"key = {key!r}"
+  - id: fstring
+    prompt: Using an f-string, set `res` to the upper-cased `name`, a colon and space, then `score` with 2 decimals.
+    setup: |
+      name = "ada"
+      score = 93.456
+    solution: |
+      res = f"{name.upper()}: {score:.2f}"
+    check: |
+      assert res == "ADA: 93.46", f"res = {res!r}"
+classics:
+  - id: valid-palindrome
+    title: Valid Palindrome
+    url: https://leetcode.com/problems/valid-palindrome/
+    difficulty: Easy
+    prompt: |
+      Return `True` if `s` reads the same forwards and backwards after lower-casing it
+      and removing every non-alphanumeric character.
+    starter: |
+      def isPalindrome(s):
+          pass
+    hints:
+      - Keep only the characters with `c.isalnum()`, lower-cased.
+      - Compare the cleaned sequence with its reverse `[::-1]`, or walk two pointers inward for O(1) extra space.
+      - Digits count as alphanumeric, so `"0P"` is not a palindrome.
+    solution: |
+      def isPalindrome(s):
+          t = [c.lower() for c in s if c.isalnum()]
+          return t == t[::-1]
+    check: |
+      r = isPalindrome("A man, a plan, a canal: Panama")
+      assert r is True, f"'A man, a plan...' -> {r!r}"
+      r = isPalindrome("race a car")
+      assert r is False, f"'race a car' -> {r!r}"
+      r = isPalindrome(" ")
+      assert r is True, f"' ' -> {r!r}"
+      r = isPalindrome("0P")
+      assert r is False, f"'0P' -> {r!r}"
+    takeaway: Normalise first (`isalnum`, `lower`), then compare with `[::-1]` or two pointers.
+  - id: reverse-words
+    title: Reverse Words in a String
+    url: https://leetcode.com/problems/reverse-words-in-a-string/
+    difficulty: Medium
+    prompt: |
+      Return the words of `s` in reverse order, separated by single spaces.
+      `s` may have leading, trailing or repeated spaces; the output must not.
+    starter: |
+      def reverseWords(s):
+          pass
+    hints:
+      - "`s.split()` with no argument already drops all the extra spaces."
+      - Reverse the list of words and join it back with `" "`.
+    solution: |
+      def reverseWords(s):
+          return " ".join(s.split()[::-1])
+    check: |
+      r = reverseWords("the sky is blue")
+      assert r == "blue is sky the", f"r = {r!r}"
+      r = reverseWords("  hello world  ")
+      assert r == "world hello", f"r = {r!r}"
+      r = reverseWords("a good   example")
+      assert r == "example good a", f"r = {r!r}"
+      r = reverseWords("single")
+      assert r == "single", f"r = {r!r}"
+    takeaway: "Word-level string work → `s.split()` (no argument), transform the list, `' '.join(...)`."

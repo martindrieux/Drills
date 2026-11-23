@@ -1,0 +1,608 @@
+id: rl-ppo
+title: PPO (clipped objective)
+intro: |
+  No lesson: write the PPO loss and the PPO update from memory, then run them. The checks are strict.
+problems: [PPO clipped surrogate loss, PPO with padding masks and clipped value loss, PPO minibatch update, PPO with KL early stopping]
+atoms: []
+skills:
+  - id: rl-ppo.clip
+    name: PPO clipped loss
+    teach: |
+      Ratio ρ = exp(logπ_new(a|s) - logπ_old(a|s)); loss = -mean(min(ρ·A, clip(ρ, 1-ε, 1+ε)·A)), A = advantage.
+      `old_logp` and `A` are constants (no gradient). Gradient is 0 exactly where the clipped term is the strict min.
+      Monitoring: clip_frac = fraction with |ρ - 1| > ε; approx KL (k3) = mean((ρ - 1) - log ρ) ≥ 0.
+      Padded (B, T) batches: average over real steps only (mask True = real step).
+    cards:
+      - id: a
+        prompt: |
+          Implement the PPO clipped policy loss with its two monitoring statistics.
+          - `new_logp` (N,) float, requires grad: log π_new(a|s); `old_logp` (N,): log π_old(a|s); `adv` (N,): advantages; `eps` (float)
+          - ρ = exp(new_logp - old_logp); returns `ppo_policy_loss(...)` = `(loss, clip_frac, approx_kl)`:
+            `loss` 0-dim tensor = -mean(min(ρ·adv, clip(ρ, 1-eps, 1+eps)·adv));
+            `clip_frac` float = fraction of samples with |ρ - 1| > eps; `approx_kl` float = mean((ρ - 1) - log ρ)
+          - no gradient may flow into `old_logp` or `adv` (even if they require grad); no Python loops
+        setup: |
+          import torch
+        starter: |
+          def ppo_policy_loss(new_logp, old_logp, adv, eps):
+              raise NotImplementedError
+        solution: |
+          def ppo_policy_loss(new_logp, old_logp, adv, eps):
+              old_logp, adv = old_logp.detach(), adv.detach()
+              log_ratio = new_logp - old_logp                                # (N,)
+              ratio = log_ratio.exp()                                        # (N,)
+              surr = torch.min(ratio * adv, ratio.clamp(1 - eps, 1 + eps) * adv)
+              loss = -surr.mean()                                            # 0-dim
+              with torch.no_grad():
+                  clip_frac = ((ratio - 1).abs() > eps).float().mean().item()
+                  approx_kl = ((ratio - 1) - log_ratio).mean().item()
+              return loss, clip_frac, approx_kl
+          # Follow-ups:
+          # why min with the clipped term? pessimistic lower bound: never credit a gain from moving ρ beyond 1±ε.
+          # adv < 0 and ρ < 1-ε? clipped term (1-ε)·A is the min -> zero gradient: stop pushing that action down.
+          # why detach old_logp? it is the fixed behaviour policy; a gradient through it would change the objective.
+          # why is k3 ≥ 0? x - 1 - log x ≥ 0 for x > 0 (log is concave, below its tangent at 1); unbiased for KL(old‖new).
+        check: |
+          import math
+          import torch
+          from cardtest import against, rand_cases
+
+          def _run(new, old, adv, eps):
+              new, old, adv = (t.clone().requires_grad_(True) for t in (new, old, adv))
+              out = ppo_policy_loss(new, old, adv, eps)
+              assert isinstance(out, tuple) and len(out) == 3, "return a tuple (loss, clip_frac, approx_kl)"
+              loss, cf, kl = out
+              assert isinstance(loss, torch.Tensor) and loss.dim() == 0, \
+                  f"loss must be a 0-dim tensor, got {getattr(loss, 'shape', type(loss))}"
+              for name, x in (("clip_frac", cf), ("approx_kl", kl)):
+                  assert not (isinstance(x, torch.Tensor) and x.requires_grad), f"{name} must be a float without grad"
+              assert loss.requires_grad, "loss has no gradient w.r.t. new_logp"
+              loss.backward()
+              gnew = new.grad.tolist() if new.grad is not None else None
+              old_free = old.grad is None or not old.grad.any().item()
+              adv_free = adv.grad is None or not adv.grad.any().item()
+              return (loss.item(), float(cf), float(kl), gnew, old_free, adv_free)
+
+          def _ref(new, old, adv, eps):
+              rs = torch.exp(new - old).tolist()                             # ρ in the input dtype
+              lr = (new.double() - old.double()).tolist()
+              N = len(rs)
+              loss = cf = kl = 0.0
+              grad = []
+              for r, l, a in zip(rs, lr, adv.tolist()):
+                  c = min(max(r, 1 - eps), 1 + eps)
+                  if r * a <= c * a:                                         # unclipped term is the min
+                      loss -= r * a / N
+                      grad.append(-a * r / N)
+                  else:                                                      # clipped term is the min: no gradient
+                      loss -= c * a / N
+                      grad.append(0.0)
+                  cf += (abs(r - 1) > eps) / N
+                  kl += ((r - 1) - l) / N
+              return (loss, cf, kl, grad, True, True)
+
+          def _same(got, exp):
+              return (abs(got[0] - exp[0]) < 1e-5 + 1e-5 * abs(exp[0]) and abs(got[1] - exp[1]) < 1e-6
+                      and abs(got[2] - exp[2]) < 1e-6 and got[3] is not None and len(got[3]) == len(exp[3])
+                      and all(abs(x - y) < 1e-5 for x, y in zip(got[3], exp[3]))
+                      and got[4] and got[5])
+
+          def _show(new, old, adv, eps):
+              return (f"(new_logp={[round(x, 4) for x in new.tolist()]}, old_logp={[round(x, 4) for x in old.tolist()]}, "
+                      f"adv={[round(x, 4) for x in adv.tolist()]}, eps={eps})\n  as (loss, clip_frac, approx_kl, "
+                      f"d loss/d new_logp, old_logp gets no grad, adv gets no grad)")
+
+          T = lambda xs: torch.tensor(xs, dtype=torch.float32)
+          L = lambda xs: torch.log(T(xs))
+          # boundary: ρ exactly 1 + eps / 1 - eps (not clipped, gradient still flows)
+          bn, bo = T([0.18232]), T([0.0])
+          b_eps = (torch.exp(bn - bo) - 1).item()
+          ln, lo = T([-0.22314]), T([0.0])
+          l_eps = (1 - torch.exp(ln - lo)).item()
+          _edge = [
+              (T([0.0, 0.0]), T([0.0, 0.0]), T([1.0, -1.0]), 0.2),          # ρ = 1
+              (L([1.5]), T([0.0]), T([2.0]), 0.2),                            # A > 0, ρ > 1+ε: clipped, grad 0
+              (L([0.5]), T([0.0]), T([2.0]), 0.2),                            # A > 0, ρ < 1-ε: unclipped is min
+              (L([0.5]), T([0.0]), T([-2.0]), 0.2),                           # A < 0, ρ < 1-ε: clipped, grad 0
+              (L([1.5]), T([0.0]), T([-2.0]), 0.2),                           # A < 0, ρ > 1+ε: unclipped is min
+              (L([1.5, 0.5, 1.1]), T([0.0, 0.0, 0.0]), T([0.0, 0.0, 0.0]), 0.2),   # A = 0
+              (L([1.5, 0.5, 1.05, 0.85]) - 1, T([-1.0] * 4), T([1.0, -0.5, 3.0, -2.0]), 0.1),
+              (bn, bo, T([1.5]), b_eps), (bn, bo, T([-1.5]), b_eps),
+              (ln, lo, T([1.5]), l_eps), (ln, lo, T([-1.5]), l_eps),
+          ]
+
+          def _gen(r):
+              while True:
+                  gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+                  N = r.randint(1, 10)
+                  old = torch.randn(N, generator=gg) - 1
+                  new = old + torch.randn(N, generator=gg) * r.choice([0.05, 0.2, 0.5])
+                  adv = torch.randn(N, generator=gg) * r.choice([0.5, 2.0])
+                  adv[torch.rand(N, generator=gg) < 0.15] = 0.0
+                  eps = r.choice([0.1, 0.2, 0.3])
+                  if ((torch.exp(new - old) - 1).abs() - eps).abs().min() > 1e-4:
+                      return (new, old, adv, eps)
+
+          against(_run, _ref, _edge + rand_cases(_gen, 250), same=_same, show=_show, name="ppo_policy_loss")
+      - id: b
+        prompt: |
+          Implement the full PPO loss on padded sequences: clipped policy loss + clipped value loss - entropy bonus.
+          - all inputs (B, T) float: `new_logp`, `v`, `entropy` (require grad); `old_logp`, `adv`, `v_old` (values at
+            rollout), `ret` (returns); `mask` (B, T) bool, True = real step; `eps`, `eps_v`, `vf_coef`, `ent_coef` floats
+          - ρ = exp(new_logp - old_logp); pg = -mean(min(ρ·adv, clip(ρ, 1-eps, 1+eps)·adv));
+            v_clip = v_old + clip(v - v_old, -eps_v, eps_v); vl = mean(max((v - ret)², (v_clip - ret)²))
+          - returns `ppo_loss_masked(...)` 0-dim tensor = pg + vf_coef·vl - ent_coef·mean(entropy), every mean over the
+            real steps of the whole batch (padded entries hold arbitrary finite values)
+          - no gradient into `old_logp`, `adv`, `v_old`, `ret`; no Python loops
+        setup: |
+          import torch
+        starter: |
+          def ppo_loss_masked(new_logp, old_logp, adv, v, v_old, ret, entropy, mask, eps, eps_v, vf_coef, ent_coef):
+              raise NotImplementedError
+        solution: |
+          def ppo_loss_masked(new_logp, old_logp, adv, v, v_old, ret, entropy, mask, eps, eps_v, vf_coef, ent_coef):
+              m = mask.to(new_logp.dtype)                                    # (B, T)
+              n = m.sum()                                                    # number of real steps
+              mmean = lambda x: (x * m).sum() / n                            # mean over real steps
+              old_logp, adv, v_old, ret = (t.detach() for t in (old_logp, adv, v_old, ret))
+              ratio = (new_logp - old_logp).exp()                            # (B, T)
+              pg = -mmean(torch.min(ratio * adv, ratio.clamp(1 - eps, 1 + eps) * adv))
+              v_clip = v_old + (v - v_old).clamp(-eps_v, eps_v)              # (B, T)
+              vl = mmean(torch.max((v - ret) ** 2, (v_clip - ret) ** 2))
+              return pg + vf_coef * vl - ent_coef * mmean(entropy)
+          # Follow-ups:
+          # why divide by mask.sum(), not B*T or per sequence? B*T shrinks the loss with padding; per-sequence
+          #   means overweight steps of short sequences.
+          # why max in the value loss? pessimistic like the policy clip: no credit for moving V beyond v_old ± eps_v.
+          # if padded logps were -inf, x*mask gives NaN (inf*0): select real steps first (x[mask]) instead.
+        check: |
+          import torch
+          from cardtest import against, rand_cases
+
+          _NAMES = ["new_logp", "old_logp", "adv", "v", "v_old", "ret", "entropy"]
+          _GRAD = {"new_logp", "v", "entropy"}
+
+          def _run(new, old, adv, v, vo, ret, ent, mask, eps, eps_v, vc, ec):
+              ts = [t.clone().requires_grad_(True) for t in (new, old, adv, v, vo, ret, ent)]
+              loss = ppo_loss_masked(*ts, mask.clone(), eps, eps_v, vc, ec)
+              assert isinstance(loss, torch.Tensor) and loss.dim() == 0, \
+                  f"expected a 0-dim tensor, got {getattr(loss, 'shape', type(loss))}"
+              assert loss.requires_grad, "loss has no gradient"
+              loss.backward()
+              grads = {}
+              for name, t in zip(_NAMES, ts):
+                  grads[name] = None if t.grad is None or not t.grad.any().item() else t.grad.tolist()
+              return (loss.item(), grads)
+
+          def _ref(new, old, adv, v, vo, ret, ent, mask, eps, eps_v, vc, ec):
+              B, T = mask.shape
+              M = int(mask.sum())
+              rr = torch.exp(new - old)
+              zero = [[0.0] * T for _ in range(B)]
+              gnew, gv, gent = [r[:] for r in zero], [r[:] for r in zero], [r[:] for r in zero]
+              loss = 0.0
+              for b in range(B):
+                  for t in range(T):
+                      if not mask[b, t]:
+                          continue
+                      r, a = rr[b, t].item(), adv[b, t].item()
+                      c = min(max(r, 1 - eps), 1 + eps)
+                      if r * a <= c * a:
+                          loss -= r * a / M
+                          gnew[b][t] = -a * r / M
+                      else:
+                          loss -= c * a / M
+                      vv, o, R = v[b, t].item(), vo[b, t].item(), ret[b, t].item()
+                      u1 = (vv - R) ** 2
+                      u2 = (o + min(max(vv - o, -eps_v), eps_v) - R) ** 2
+                      if u1 >= u2:
+                          loss += vc * u1 / M
+                          gv[b][t] = vc * 2 * (vv - R) / M
+                      else:                                                  # clipped branch: no gradient
+                          loss += vc * u2 / M
+                      loss -= ec * ent[b, t].item() / M
+                      gent[b][t] = -ec / M
+              nz = lambda g: g if any(x != 0 for row in g for x in row) else None
+              return (loss, {"new_logp": nz(gnew), "old_logp": None, "adv": None, "v": nz(gv), "v_old": None,
+                             "ret": None, "entropy": nz(gent)})
+
+          def _close(a, b):
+              if a is None or b is None:
+                  return a is None and b is None
+              return torch.allclose(torch.tensor(a, dtype=torch.float64), torch.tensor(b, dtype=torch.float64),
+                                    rtol=1e-4, atol=1e-6)
+
+          def _same(got, exp):
+              return (abs(got[0] - exp[0]) < 1e-5 + 1e-5 * abs(exp[0])
+                      and all(_close(got[1][k], exp[1][k]) for k in _NAMES))
+
+          def _show(new, old, adv, v, vo, ret, ent, mask, eps, eps_v, vc, ec):
+              f = lambda t: [[round(x, 3) for x in row] for row in t.tolist()]
+              return ("(" + ", ".join(f"{k}={f(t)}" for k, t in zip(_NAMES, (new, old, adv, v, vo, ret, ent)))
+                      + f", mask={mask.int().tolist()}, eps={eps}, eps_v={eps_v}, vf_coef={vc}, ent_coef={ec})"
+                      + "\n  as (loss, gradients; None = no gradient)")
+
+          def _case(gg, B, T, mask, scale_new=0.3):
+              old = torch.randn(B, T, generator=gg) - 1
+              new = old + torch.randn(B, T, generator=gg) * scale_new
+              adv = torch.randn(B, T, generator=gg)
+              vo = torch.randn(B, T, generator=gg)
+              v = vo + torch.randn(B, T, generator=gg) * 0.4
+              ret = vo + torch.randn(B, T, generator=gg)
+              ent = torch.rand(B, T, generator=gg) * 2
+              pad = ~mask                                                    # garbage in padded entries
+              for t in (new, old, adv, v, vo, ret, ent):
+                  t[pad] = torch.randn(int(pad.sum()), generator=gg) * 5 + 3
+              return [new, old, adv, v, vo, ret, ent, mask]
+
+          def _ok(c, eps, eps_v):
+              new, old, adv, v, vo, ret, ent, mask = c
+              r = torch.exp(new - old)
+              d = (v - vo)
+              u1, u2 = (v - ret) ** 2, (vo + d.clamp(-eps_v, eps_v) - ret) ** 2
+              far = (((r - 1).abs() - eps).abs() > 1e-4) & (((d.abs() - eps_v).abs() > 1e-4)) \
+                  & (((u1 - u2).abs() > 1e-4) | (d.abs() < eps_v))
+              return bool(far[mask].all())
+
+          g0 = torch.Generator().manual_seed(0)
+          M = lambda rows: torch.tensor(rows, dtype=torch.bool)
+          _edge = []
+          for mask, eps, eps_v, vc, ec in [
+              (M([[True]]), 0.2, 0.2, 0.5, 0.01),
+              (M([[True, True, True]]), 0.2, 0.2, 0.5, 0.0),
+              (M([[True, True, True, False, False], [True, False, False, False, False]]), 0.2, 0.2, 0.5, 0.01),
+              (M([[True, True], [False, False], [True, False]]), 0.1, 0.5, 1.0, 0.1),
+              (M([[True, True, True, True], [True, True, False, False]]), 0.2, 0.1, 0.5, 0.05),
+          ]:
+              while True:
+                  c = _case(g0, *mask.shape, mask, scale_new=0.5)
+                  if _ok(c, eps, eps_v):
+                      break
+              _edge.append(tuple(c) + (eps, eps_v, vc, ec))
+
+          def _gen(r):
+              gg = torch.Generator().manual_seed(r.randint(0, 10**9))
+              B, T = r.randint(1, 4), r.randint(1, 6)
+              eps, eps_v = r.choice([0.1, 0.2, 0.3]), r.choice([0.1, 0.2, 0.5])
+              vc, ec = r.choice([0.5, 1.0]), r.choice([0.0, 0.01, 0.1])
+              while True:
+                  lens = [r.randint(0, T) for _ in range(B)]
+                  if sum(lens) == 0:
+                      continue
+                  mask = torch.arange(T)[None, :] < torch.tensor(lens)[:, None]
+                  c = _case(gg, B, T, mask, scale_new=r.choice([0.1, 0.3, 0.6]))
+                  if _ok(c, eps, eps_v):
+                      return tuple(c) + (eps, eps_v, vc, ec)
+
+          against(_run, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show, name="ppo_loss_masked")
+
+  - id: rl-ppo.update
+    name: PPO update (epochs × minibatches)
+    teach: |
+      One PPO update on a rollout of N samples: for each epoch, shuffle (`torch.randperm(N, generator=g)`), cut into
+      consecutive minibatches, normalize advantages per minibatch Â = (A - mean) / (std + 1e-8), and take one optimizer
+      step on loss = L_clip + c_v·L_value - c_e·mean(entropy). The policy returns a `Categorical`; `old_logp`, `adv`,
+      `returns` come from the rollout and are constants. Monitor approx KL; stop the whole update when it exceeds a target.
+    cards:
+      - id: a
+        prompt: |
+          Implement one PPO update: `epochs` passes of minibatch gradient steps on the clipped objective.
+          - `policy(obs)` -> `Categorical` (batch (n,)); `value_fn(obs)` -> (n,); `opt`: optimizer over both modules
+          - `batch` dict, first dim N: `obs` (N, D), `actions` (N,) int64, `old_logp`, `adv`, `returns` (N,)
+          - each epoch: `perm = torch.randperm(N, generator=g)`, minibatches = consecutive slices of `perm` of size
+            `minibatch_size` (last may be smaller); per minibatch one zero_grad / backward / step on
+            loss = -mean(min(ρ·Â, clip(ρ, 1-eps, 1+eps)·Â)) + vf_coef·mean((V(obs) - returns)²) - ent_coef·mean(entropy),
+            ρ = exp(new_logp - old_logp), Â = (adv - mean) / (std + 1e-8) over the minibatch (std with `unbiased=False`)
+          - returns `ppo_update(...)` list of floats: each minibatch's loss, in order; don't modify `batch`
+        setup: |
+          import torch
+          import torch.nn as nn
+          from torch.distributions import Categorical
+
+          class Policy(nn.Module):
+              """obs (n, D) -> Categorical over n_actions, batch shape (n,)."""
+              def __init__(self, D, n_actions):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(D, 16), nn.Tanh(), nn.Linear(16, n_actions))
+              def forward(self, obs):
+                  return Categorical(logits=self.net(obs))
+
+          class ValueFn(nn.Module):
+              """obs (n, D) -> V(obs) (n,)."""
+              def __init__(self, D):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(D, 16), nn.Tanh(), nn.Linear(16, 1))
+              def forward(self, obs):
+                  return self.net(obs).squeeze(-1)
+        starter: |
+          def ppo_update(policy, value_fn, opt, batch, epochs, minibatch_size, eps, vf_coef, ent_coef, g):
+              raise NotImplementedError
+        solution: |
+          def ppo_update(policy, value_fn, opt, batch, epochs, minibatch_size, eps, vf_coef, ent_coef, g):
+              N = batch["adv"].shape[0]
+              losses = []
+              for _ in range(epochs):
+                  perm = torch.randperm(N, generator=g)                      # (N,)
+                  for s in range(0, N, minibatch_size):
+                      idx = perm[s:s + minibatch_size]                       # (M,)
+                      obs, act = batch["obs"][idx], batch["actions"][idx]
+                      adv = batch["adv"][idx]
+                      adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
+                      dist = policy(obs)
+                      ratio = (dist.log_prob(act) - batch["old_logp"][idx]).exp()          # (M,)
+                      pg = -torch.min(ratio * adv, ratio.clamp(1 - eps, 1 + eps) * adv).mean()
+                      vl = ((value_fn(obs) - batch["returns"][idx]) ** 2).mean()
+                      loss = pg + vf_coef * vl - ent_coef * dist.entropy().mean()
+                      opt.zero_grad()
+                      loss.backward()
+                      opt.step()
+                      losses.append(loss.item())
+              return losses
+          # Follow-ups:
+          # why several epochs on one rollout? sample efficiency; the clip keeps the new policy near the old one.
+          # why normalize advantages per minibatch? fixes the scale of the policy gradient across rollouts/rewards.
+          # why can we reuse old_logp for every epoch? ρ must always compare to the policy that collected the data.
+        check: |
+          import torch
+          from cardtest import against, rand_cases
+
+          _KEYS = ["obs", "actions", "old_logp", "adv", "returns"]
+
+          def _build(seed, N, D, nA, noise, lr):
+              torch.manual_seed(seed)
+              pol, vf = Policy(D, nA).double(), ValueFn(D).double()
+              gg = torch.Generator().manual_seed(seed + 1)
+              obs = torch.randn(N, D, generator=gg, dtype=torch.float64)
+              with torch.no_grad():
+                  logits = pol.net(obs)
+                  act = torch.multinomial(torch.softmax(logits, -1), 1, generator=gg).squeeze(-1)
+                  old = torch.log_softmax(logits, -1).gather(1, act[:, None]).squeeze(1)
+                  old = old + noise * torch.randn(N, generator=gg, dtype=torch.float64)
+                  ret = vf(obs) + torch.randn(N, generator=gg, dtype=torch.float64)
+              adv = torch.randn(N, generator=gg, dtype=torch.float64) * 2 + 0.5
+              opt = torch.optim.SGD(list(pol.parameters()) + list(vf.parameters()), lr=lr)
+              return pol, vf, opt, {"obs": obs, "actions": act, "old_logp": old, "adv": adv, "returns": ret}
+
+          def _params(pol, vf):
+              return [p.detach().clone() for p in list(pol.parameters()) + list(vf.parameters())]
+
+          def _learner(seed, N, D, nA, noise, lr, epochs, mb, eps, vc, ec):
+              pol, vf, opt, batch = _build(seed, N, D, nA, noise, lr)
+              before = {k: t.clone() for k, t in batch.items()}
+              out = ppo_update(pol, vf, opt, batch, epochs, mb, eps, vc, ec, torch.Generator().manual_seed(seed + 2))
+              assert all(torch.equal(batch[k], before[k]) for k in _KEYS), "ppo_update modified batch"
+              assert isinstance(out, list), f"return a list of floats, got {type(out).__name__}"
+              return ([float(x) for x in out], _params(pol, vf))
+
+          def _ref(seed, N, D, nA, noise, lr, epochs, mb, eps, vc, ec):
+              pol, vf, opt, batch = _build(seed, N, D, nA, noise, lr)
+              g = torch.Generator().manual_seed(seed + 2)
+              losses = []
+              for _ in range(epochs):
+                  order = torch.randperm(N, generator=g).tolist()
+                  for start in range(0, N, mb):
+                      idx = order[start:start + mb]
+                      M = len(idx)
+                      a = batch["adv"][idx]
+                      mu = a.sum() / M
+                      a = (a - mu) / (((a - mu) ** 2).sum() / M).sqrt().add(1e-8)
+                      logp_all = torch.log_softmax(pol.net(batch["obs"][idx]), -1)                    # (M, nA)
+                      lp = logp_all[torch.arange(M), batch["actions"][idx]]
+                      r = torch.exp(lp - batch["old_logp"][idx])
+                      pg = -torch.stack([r * a, torch.clamp(r, 1 - eps, 1 + eps) * a]).min(0).values.sum() / M
+                      vl = ((vf.net(batch["obs"][idx])[:, 0] - batch["returns"][idx]) ** 2).sum() / M
+                      ent = -(logp_all.exp() * logp_all).sum() / M
+                      loss = pg + vc * vl - ec * ent
+                      for p in list(pol.parameters()) + list(vf.parameters()):
+                          p.grad = None
+                      loss.backward()
+                      opt.step()
+                      losses.append(loss.item())
+              return (losses, _params(pol, vf))
+
+          def _same(got, exp):
+              return (len(got[0]) == len(exp[0]) and all(abs(x - y) < 1e-7 + 1e-7 * abs(y) for x, y in zip(got[0], exp[0]))
+                      and all(torch.allclose(p, q, rtol=1e-7, atol=1e-9) for p, q in zip(got[1], exp[1])))
+
+          def _show(seed, N, D, nA, noise, lr, epochs, mb, eps, vc, ec):
+              return (f"(N={N}, obs dim={D}, n_actions={nA}, old_logp noise={noise}, SGD lr={lr}, epochs={epochs}, "
+                      f"minibatch_size={mb}, eps={eps}, vf_coef={vc}, ent_coef={ec}, seed={seed})\n"
+                      f"  as (losses, parameters after the update)")
+
+          _edge = [
+              (0, 6, 3, 2, 0.0, 0.5, 0, 2, 0.2, 0.5, 0.01),                    # epochs = 0: nothing happens
+              (1, 1, 2, 3, 0.0, 0.5, 2, 1, 0.2, 0.5, 0.01),                    # N = 1: Â = 0
+              (2, 5, 3, 2, 0.3, 0.5, 1, 8, 0.2, 0.5, 0.0),                     # one minibatch bigger than N
+              (3, 7, 3, 3, 0.3, 0.5, 2, 3, 0.2, 0.5, 0.05),                    # last minibatch smaller
+              (4, 8, 2, 4, 0.0, 1.0, 3, 4, 0.1, 1.0, 0.1),                     # several epochs, clipping happens
+          ]
+
+          def _gen(r):
+              return (r.randint(0, 10**6), r.randint(1, 12), r.randint(1, 4), r.randint(2, 4),
+                      r.choice([0.0, 0.3]), r.choice([0.1, 0.5, 1.0]), r.randint(1, 3), r.randint(1, 6),
+                      r.choice([0.1, 0.2]), r.choice([0.5, 1.0]), r.choice([0.0, 0.01, 0.1]))
+
+          against(_learner, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show, name="ppo_update")
+      - id: b
+        prompt: |
+          Extend the PPO update with a clipped value loss, global gradient clipping and KL early stopping.
+          - same `policy`, `value_fn`, `opt`, `g`, minibatching, Â and policy loss as `ppo_update`; `batch` also has
+            `values` (N,): V at rollout; value loss = mean(max((V - ret)², (v_clip - ret)²)), v_clip = values + clip(V - values, ±eps_v)
+          - per minibatch, before stepping: approx_kl = mean((ρ - 1) - log ρ) (no grad); if approx_kl > `target_kl`,
+            stop the whole update without stepping; else zero_grad, backward, clip the global L2 grad norm over both
+            modules to `max_grad_norm` (`clip_grad_norm_`), step
+          - returns `ppo_update_kl(...)` = `(n_steps, kls)`: number of optimizer steps taken (int) and the list of every
+            approx_kl computed (floats, incl. the one that stopped); don't modify `batch`
+        setup: |
+          import torch
+          import torch.nn as nn
+          from torch.distributions import Categorical
+
+          class Policy(nn.Module):
+              """obs (n, D) -> Categorical over n_actions, batch shape (n,)."""
+              def __init__(self, D, n_actions):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(D, 16), nn.Tanh(), nn.Linear(16, n_actions))
+              def forward(self, obs):
+                  return Categorical(logits=self.net(obs))
+
+          class ValueFn(nn.Module):
+              """obs (n, D) -> V(obs) (n,)."""
+              def __init__(self, D):
+                  super().__init__()
+                  self.net = nn.Sequential(nn.Linear(D, 16), nn.Tanh(), nn.Linear(16, 1))
+              def forward(self, obs):
+                  return self.net(obs).squeeze(-1)
+        starter: |
+          def ppo_update_kl(policy, value_fn, opt, batch, epochs, minibatch_size, eps, eps_v, vf_coef, ent_coef,
+                            max_grad_norm, target_kl, g):
+              raise NotImplementedError
+        solution: |
+          def ppo_update_kl(policy, value_fn, opt, batch, epochs, minibatch_size, eps, eps_v, vf_coef, ent_coef,
+                            max_grad_norm, target_kl, g):
+              N = batch["adv"].shape[0]
+              params = list(policy.parameters()) + list(value_fn.parameters())
+              n_steps, kls = 0, []
+              for _ in range(epochs):
+                  perm = torch.randperm(N, generator=g)
+                  for s in range(0, N, minibatch_size):
+                      idx = perm[s:s + minibatch_size]                                   # (M,)
+                      obs, act = batch["obs"][idx], batch["actions"][idx]
+                      adv = batch["adv"][idx]
+                      adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
+                      dist = policy(obs)
+                      log_ratio = dist.log_prob(act) - batch["old_logp"][idx]            # (M,)
+                      ratio = log_ratio.exp()
+                      pg = -torch.min(ratio * adv, ratio.clamp(1 - eps, 1 + eps) * adv).mean()
+                      v, v_old, ret = value_fn(obs), batch["values"][idx], batch["returns"][idx]
+                      v_clip = v_old + (v - v_old).clamp(-eps_v, eps_v)
+                      vl = torch.max((v - ret) ** 2, (v_clip - ret) ** 2).mean()
+                      loss = pg + vf_coef * vl - ent_coef * dist.entropy().mean()
+                      with torch.no_grad():
+                          kl = ((ratio - 1) - log_ratio).mean().item()
+                      kls.append(kl)
+                      if kl > target_kl:
+                          return n_steps, kls                                            # stop everything
+                      opt.zero_grad()
+                      loss.backward()
+                      torch.nn.utils.clip_grad_norm_(params, max_grad_norm)              # one global norm
+                      opt.step()
+                      n_steps += 1
+              return n_steps, kls
+          # Follow-ups:
+          # why early-stop on KL? the clip only removes the incentive per sample; many epochs can still drift far.
+          # why check before the step? the KL of the current policy vs old says the trust region is already left.
+          # global vs per-module clip? global keeps the gradient direction; per-module rescales the parts differently.
+        check: |
+          import math
+          import torch
+          from cardtest import against, rand_cases
+
+          _KEYS = ["obs", "actions", "old_logp", "adv", "returns", "values"]
+
+          def _build(seed, N, D, nA, noise, lr):
+              torch.manual_seed(seed)
+              pol, vf = Policy(D, nA).double(), ValueFn(D).double()
+              gg = torch.Generator().manual_seed(seed + 1)
+              obs = torch.randn(N, D, generator=gg, dtype=torch.float64)
+              with torch.no_grad():
+                  logits = pol.net(obs)
+                  act = torch.multinomial(torch.softmax(logits, -1), 1, generator=gg).squeeze(-1)
+                  old = torch.log_softmax(logits, -1).gather(1, act[:, None]).squeeze(1)
+                  old = old + noise * torch.randn(N, generator=gg, dtype=torch.float64)
+                  values = vf(obs) + 0.3 * torch.randn(N, generator=gg, dtype=torch.float64)
+                  ret = values + torch.randn(N, generator=gg, dtype=torch.float64)
+              adv = torch.randn(N, generator=gg, dtype=torch.float64) * 2 + 0.5
+              opt = torch.optim.SGD(list(pol.parameters()) + list(vf.parameters()), lr=lr)
+              return pol, vf, opt, {"obs": obs, "actions": act, "old_logp": old, "adv": adv, "returns": ret,
+                                    "values": values}
+
+          def _params(pol, vf):
+              return [p.detach().clone() for p in list(pol.parameters()) + list(vf.parameters())]
+
+          def _learner(seed, N, D, nA, noise, lr, epochs, mb, eps, eps_v, vc, ec, mgn, tkl):
+              pol, vf, opt, batch = _build(seed, N, D, nA, noise, lr)
+              before = {k: t.clone() for k, t in batch.items()}
+              out = ppo_update_kl(pol, vf, opt, batch, epochs, mb, eps, eps_v, vc, ec, mgn, tkl,
+                                  torch.Generator().manual_seed(seed + 2))
+              assert all(torch.equal(batch[k], before[k]) for k in _KEYS), "ppo_update_kl modified batch"
+              assert isinstance(out, tuple) and len(out) == 2, "return a tuple (n_steps, kls)"
+              return (int(out[0]), [float(x) for x in out[1]], _params(pol, vf))
+
+          def _ref(seed, N, D, nA, noise, lr, epochs, mb, eps, eps_v, vc, ec, mgn, tkl):
+              pol, vf, opt, batch = _build(seed, N, D, nA, noise, lr)
+              params = list(pol.parameters()) + list(vf.parameters())
+              g = torch.Generator().manual_seed(seed + 2)
+              steps, kls = 0, []
+              for _ in range(epochs):
+                  order = torch.randperm(N, generator=g).tolist()
+                  for start in range(0, N, mb):
+                      idx = order[start:start + mb]
+                      M = len(idx)
+                      a = batch["adv"][idx]
+                      mu = a.sum() / M
+                      a = (a - mu) / (((a - mu) ** 2).sum() / M).sqrt().add(1e-8)
+                      logp_all = torch.log_softmax(pol.net(batch["obs"][idx]), -1)
+                      lp = logp_all[torch.arange(M), batch["actions"][idx]]
+                      lr_ = lp - batch["old_logp"][idx]
+                      r = torch.exp(lr_)
+                      pg = -torch.stack([r * a, torch.clamp(r, 1 - eps, 1 + eps) * a]).min(0).values.sum() / M
+                      V = vf.net(batch["obs"][idx])[:, 0]
+                      vo, R = batch["values"][idx], batch["returns"][idx]
+                      Vc = torch.where(V > vo + eps_v, vo + eps_v, torch.where(V < vo - eps_v, vo - eps_v, V))
+                      vl = torch.stack([(V - R) ** 2, (Vc - R) ** 2]).max(0).values.sum() / M
+                      ent = -(logp_all.exp() * logp_all).sum() / M
+                      loss = pg + vc * vl - ec * ent
+                      kl = sum((x - 1 - math.log(x)) for x in r.tolist()) / M
+                      kls.append(kl)
+                      if kl > tkl:
+                          return (steps, kls, _params(pol, vf))
+                      for p in params:
+                          p.grad = None
+                      loss.backward()
+                      norm = math.sqrt(sum((p.grad.double() ** 2).sum().item() for p in params))
+                      scale = min(1.0, mgn / (norm + 1e-6))
+                      for p in params:
+                          p.grad.mul_(scale)
+                      opt.step()
+                      steps += 1
+              return (steps, kls, _params(pol, vf))
+
+          def _same(got, exp):
+              return (got[0] == exp[0] and len(got[1]) == len(exp[1])
+                      and all(abs(x - y) < 1e-9 + 1e-6 * abs(y) for x, y in zip(got[1], exp[1]))
+                      and all(torch.allclose(p, q, rtol=1e-7, atol=1e-9) for p, q in zip(got[2], exp[2])))
+
+          def _show(seed, N, D, nA, noise, lr, epochs, mb, eps, eps_v, vc, ec, mgn, tkl):
+              return (f"(N={N}, obs dim={D}, n_actions={nA}, old_logp noise={noise}, SGD lr={lr}, epochs={epochs}, "
+                      f"minibatch_size={mb}, eps={eps}, eps_v={eps_v}, vf_coef={vc}, ent_coef={ec}, "
+                      f"max_grad_norm={mgn}, target_kl={tkl:.6g}, seed={seed})\n"
+                      f"  as (n_steps, kls, parameters after the update)")
+
+          def _pick_target(r, case):
+              """target_kl strictly between two KLs of the run without stopping (or inf), so no near-ties."""
+              ks = sorted(set(_ref(*case, math.inf)[1]))
+              mids = [(a + b) / 2 for a, b in zip(ks, ks[1:]) if b - a > 1e-8]
+              return r.choice(mids + [math.inf]) if mids and r.random() < 0.8 else math.inf
+
+          _base = [
+              (0, 6, 3, 2, 0.0, 0.5, 0, 2, 0.2, 0.2, 0.5, 0.01, 0.5),          # epochs = 0
+              (1, 1, 2, 3, 0.0, 0.5, 2, 1, 0.2, 0.2, 0.5, 0.01, 0.5),          # N = 1
+              (2, 7, 3, 3, 0.3, 0.5, 2, 3, 0.2, 0.1, 0.5, 0.05, 100.0),        # no grad clipping binds
+              (3, 8, 2, 4, 0.0, 1.0, 3, 4, 0.1, 0.1, 1.0, 0.1, 0.05),          # strong grad clipping
+          ]
+          import random as _random
+          _rr = _random.Random(1)
+          _edge = [c + (math.inf,) for c in _base]
+          _edge.append((4, 8, 3, 3, 0.5, 0.5, 2, 4, 0.2, 0.2, 0.5, 0.01, 0.5, 1e-9))   # stops at the first minibatch
+          for c in _base[2:]:
+              _edge.append(c + (_pick_target(_rr, c),))
+
+          def _gen(r):
+              case = (r.randint(0, 10**6), r.randint(1, 10), r.randint(1, 3), r.randint(2, 4),
+                      r.choice([0.0, 0.3]), r.choice([0.5, 1.0]), r.randint(1, 3), r.randint(1, 5),
+                      r.choice([0.1, 0.2]), r.choice([0.1, 0.5]), r.choice([0.5, 1.0]), r.choice([0.0, 0.05]),
+                      r.choice([0.1, 0.5, 100.0]))
+              return case + (_pick_target(r, case),)
+
+          against(_learner, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show, name="ppo_update_kl")

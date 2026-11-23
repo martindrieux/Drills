@@ -1,0 +1,355 @@
+id: collections
+title: defaultdict & Counter
+intro: |
+  `defaultdict` and `Counter` are dicts that handle missing keys for you. They remove the
+  "is the key there yet?" boilerplate from grouping and counting problems.
+problems:
+  - Group Anagrams
+  - Top K Frequent Elements
+  - Valid Anagram
+  - Longest Repeating Character Replacement
+  - Minimum Window Substring
+  - Course Schedule
+atoms: [py-dict-counter, graph-adjacency]
+skills:
+  - id: collections.defaultdict-list
+    name: defaultdict(list) for grouping
+    teach: |
+      ```python
+      from collections import defaultdict
+      # defaultdict(list): a dict where a missing key starts as []
+      groups = defaultdict(list)
+      groups[3].append("ant")      # groups == {3: ['ant']}
+      # dict(dd) -> a plain dict copy
+      dict(groups)                 # {3: ['ant']}
+      ```
+      Pitfall: just **reading** `groups[k]` inserts `[]`. Test with `k in groups`.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `words` (`list[str]` of non-empty words); `defaultdict` is imported.
+          - **Set** `groups`: a `defaultdict(list)`, first letter → `list[str]` of the words starting with it, in `words` order.
+          - **Set** `res`: a plain `dict` copy of `groups` (its type must be exactly `dict`).
+        setup: |
+          from collections import defaultdict
+          words = ["ant", "bee", "ape"]
+        solution: |
+          groups = defaultdict(list)
+          for w in words:
+              groups[w[0]].append(w)
+          res = dict(groups)
+        check: |
+          assert dict(groups) == {"a": ["ant", "ape"], "b": ["bee"]}, f"groups = {dict(groups)!r}"
+          assert type(res) is dict and res == {"a": ["ant", "ape"], "b": ["bee"]}, f"res = {res!r} ({type(res).__name__})"
+      - id: b
+        prompt: |
+          - **Given**: `edges` (`list[tuple[int, int]]`, **undirected** `(u, v)` edges); `defaultdict` is imported.
+          - **Set** `graph`: a `defaultdict(list)`, node → `list[int]` of its neighbours; each edge adds `v` to `u`'s list and `u` to `v`'s list, in `edges` order.
+        setup: |
+          from collections import defaultdict
+          edges = [(0, 1), (1, 2)]
+        solution: |
+          graph = defaultdict(list)
+          for u, v in edges:
+              graph[u].append(v)
+              graph[v].append(u)
+        check: |
+          assert dict(graph) == {0: [1], 1: [0, 2], 2: [1]}, f"graph = {dict(graph)!r}"
+      - id: c
+        prompt: |
+          - **Given**: `words` (`list[str]`); `defaultdict` is imported.
+          - **Set** `res`: `list[list[str]]`, the groups of anagrams, built by keying each word by `"".join(sorted(w))` in a `defaultdict(list)`.
+          - Any order, both of the groups and of the words inside a group.
+        setup: |
+          from collections import defaultdict
+          words = ["eat", "tea", "tan", "nat", "bat"]
+        solution: |
+          groups = defaultdict(list)
+          for w in words:
+              groups["".join(sorted(w))].append(w)
+          res = list(groups.values())
+        check: |
+          got = sorted(sorted(g) for g in res)
+          assert got == [["bat"], ["eat", "tea"], ["nat", "tan"]], f"res = {res!r}"
+
+  - id: collections.defaultdict-int
+    name: defaultdict(int) and defaultdict(set)
+    teach: |
+      ```python
+      # defaultdict(f): a missing key starts as f()  (f is a function: int, list, set)
+      count = defaultdict(int)     # int() == 0
+      count["x"] += 1              # count == {'x': 1}
+      seen = defaultdict(set)      # set() == empty set
+      seen[0].add(5)               # seen == {0: {5}}
+      ```
+      Pitfall: `defaultdict(0)` is a TypeError (0 is not a function).
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s` (`str`), `cells` (`list[tuple[int, str]]` of `(row, digit)` pairs); `defaultdict` is imported.
+          - **Set** `count`: a `defaultdict(int)`, each character of `s` → its number of occurrences.
+          - **Set** `seen`: a `defaultdict(set)`, each row → `set[str]` of its digits.
+        setup: |
+          from collections import defaultdict
+          s = "abca"
+          cells = [(0, "5"), (0, "3"), (1, "5")]
+        solution: |
+          count = defaultdict(int)
+          for ch in s:
+              count[ch] += 1
+          seen = defaultdict(set)
+          for r, d in cells:
+              seen[r].add(d)
+        check: |
+          assert dict(count) == {"a": 2, "b": 1, "c": 1}, f"count = {dict(count)!r}"
+          assert isinstance(seen, defaultdict) and dict(seen) == {0: {"5", "3"}, 1: {"5"}}, f"seen = {seen!r}"
+      - id: b
+        prompt: |
+          - **Given**: `pairs` (`list[tuple[str, int]]` of `(name, amount)`); `defaultdict` is imported.
+          - **Set** `totals`: a `defaultdict(int)`, each name → the sum of its amounts.
+        setup: |
+          from collections import defaultdict
+          pairs = [("a", 2), ("b", 1), ("a", 5)]
+        solution: |
+          totals = defaultdict(int)
+          for name, amount in pairs:
+              totals[name] += amount
+        check: |
+          assert dict(totals) == {"a": 7, "b": 1}, f"totals = {dict(totals)!r}"
+      - id: c
+        prompt: |
+          - **Given**: `cells` (`list[tuple[int, str]]` of `(row, digit)` pairs); `defaultdict` is imported.
+          - **Set** `rows`: a `defaultdict(set)`, each row → `set[str]` of its digits (a repeated digit counts once).
+        setup: |
+          from collections import defaultdict
+          cells = [(0, "5"), (0, "3"), (1, "5"), (0, "5")]
+        solution: |
+          rows = defaultdict(set)
+          for r, d in cells:
+              rows[r].add(d)
+        check: |
+          assert dict(rows) == {0: {"5", "3"}, 1: {"5"}}, f"rows = {dict(rows)!r}"
+
+  - id: collections.counter-build
+    name: build and read a Counter
+    teach: |
+      ```python
+      from collections import Counter
+      # Counter(iterable) -> dict of item -> count
+      c = Counter("banana")     # Counter({'a': 3, 'n': 2, 'b': 1})
+      # c[key] -> its count, 0 for a missing key (no KeyError)
+      c["z"]                    # 0
+      # counts are plain dict values: edit them directly
+      c["a"] -= 1               # c["a"] == 2
+      # c.update(iterable): adds the counts of another iterable
+      c.update("ab")            # c["a"] == 3, c["b"] == 2
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s`, `more` (`str`s); `Counter` is imported.
+          - **Set** `c`: the `Counter` of the letters of `s`; then, in place, remove one `"p"` (count − 1) and add the letters of `more` in one call.
+          - **Set** `z`: `int`, the count of `"z"` in `c` (not present: must not raise).
+        setup: |
+          from collections import Counter
+          s = "apple"
+          more = "pa"
+        solution: |
+          c = Counter(s)
+          c["p"] -= 1
+          c.update(more)
+          z = c["z"]
+        check: |
+          assert isinstance(c, Counter) and c == {"a": 2, "p": 2, "l": 1, "e": 1}, f"c = {c!r}"
+          assert z == 0, f"z = {z!r}"
+      - id: b
+        prompt: |
+          - **Given**: `c` (a `Counter` of letters), `word` (`str`).
+          - **Set** `res`: `list[int]`, the count in `c` of each letter of `word`, in `word` order (`0` for a letter not in `c`).
+        setup: |
+          from collections import Counter
+          c = Counter("banana")
+          word = "axe"
+        solution: |
+          res = [c[ch] for ch in word]
+        check: |
+          assert res == [3, 0, 0], f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `c` (a `Counter` of letters), `more` (`str`).
+          - **Change** `c` in place: add the letter counts of `more`, in one call.
+        setup: |
+          from collections import Counter
+          c = Counter("ab")
+          more = "bcc"
+        solution: |
+          c.update(more)
+        check: |
+          assert c == {"a": 1, "b": 2, "c": 2}, f"c = {c!r}"
+      - id: d
+        prompt: |
+          - **Given**: `c` (a `Counter` of letters), `ch` (a letter in `c`).
+          - **Change** `c` in place: decrease the count of `ch` by 1, and add 2 to the count of `"z"` (not in `c` yet).
+        setup: |
+          from collections import Counter
+          c = Counter("aab")
+          ch = "a"
+        solution: |
+          c[ch] -= 1
+          c["z"] += 2
+        check: |
+          assert c == {"a": 1, "b": 1, "z": 2}, f"c = {c!r}"
+
+  - id: collections.most-common
+    name: most_common
+    teach: |
+      ```python
+      # c.most_common(k) -> the k biggest (key, count) pairs, biggest first (no k: all of them)
+      Counter("aabbbc").most_common(2)   # [('b', 3), ('a', 2)]
+      ```
+      Pitfall: it returns `(key, count)` **pairs**, not keys.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `nums` (`list[int]`, all counts different); `Counter` is imported.
+          - **Set** `res`: `int`, the most frequent value (the value only, not a pair).
+          - **Set** `pairs`: `list[tuple[int, int]]`, every `(value, count)` pair, most frequent first.
+        setup: |
+          from collections import Counter
+          nums = [1, 3, 3, 2, 3, 2]
+        solution: |
+          res = Counter(nums).most_common(1)[0][0]
+          pairs = Counter(nums).most_common()
+        check: |
+          assert res == 3, f"res = {res!r}"
+          assert pairs == [(3, 3), (2, 2), (1, 1)], f"pairs = {pairs!r}"
+      - id: b
+        prompt: |
+          - **Given**: `nums` (`list[int]`), `k` (`int`); no ties among the top `k` counts.
+          - **Set** `res`: `list[int]`, the `k` most frequent values (values only), most frequent first.
+        setup: |
+          from collections import Counter
+          nums = [1, 1, 1, 2, 2, 3]
+          k = 2
+        solution: |
+          res = [x for x, _ in Counter(nums).most_common(k)]
+        check: |
+          assert res == [1, 2], f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `s`, a `str` (one letter has the strictly smallest count).
+          - **Set** `res`: `tuple[str, int]`, the `(letter, count)` pair with the smallest count.
+        setup: |
+          from collections import Counter
+          s = "aaabbc"
+        solution: |
+          res = Counter(s).most_common()[-1]
+        check: |
+          assert res == ("c", 1), f"res = {res!r}"
+
+  - id: collections.counter-compare
+    name: compare and combine Counters
+    teach: |
+      ```python
+      # c1 == c2 -> True if every count matches (anagram check)
+      Counter("abc") == Counter("cab")   # True
+      # c1 - c2 -> subtracts counts, drops those <= 0
+      Counter("aab") - Counter("ab")     # Counter({'a': 1})
+      # c1 & c2 -> the smaller count of each key
+      Counter("aab") & Counter("abb")    # Counter({'a': 1, 'b': 1})
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `s`, `t`, `u` (`str`s); `Counter` is imported.
+          - **Set** `res`: `bool`, `True` if `s` and `t` are anagrams (same letters, same counts).
+          - **Set** `need`: `Counter`, for each letter, its count in `s` minus its count in `u` (only positive results kept).
+          - **Set** `common`: `Counter`, the letters in both `s` and `u`, each with the smaller of its two counts.
+        setup: |
+          from collections import Counter
+          s, t, u = "listen", "silent", "lists"
+        solution: |
+          res = Counter(s) == Counter(t)
+          need = Counter(s) - Counter(u)
+          common = Counter(s) & Counter(u)
+        check: |
+          assert res is True, f"res = {res!r}"
+          assert need == Counter({"e": 1, "n": 1}), f"need = {need!r}"
+          assert common == Counter({"l": 1, "i": 1, "s": 1, "t": 1}), f"common = {common!r}"
+      - id: b
+        prompt: |
+          - **Given**: `note`, `mag` (`str`s); `Counter` is imported.
+          - **Set** `res`: `Counter`, for each letter, how many more `note` needs than `mag` has (only positive counts kept).
+        setup: |
+          from collections import Counter
+          note, mag = "aab", "abc"
+        solution: |
+          res = Counter(note) - Counter(mag)
+        check: |
+          assert res == Counter({"a": 1}), f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `a`, `b` (`str`s); `Counter` is imported.
+          - **Set** `res`: `Counter`, the letters in both `a` and `b`, each with the smaller of its two counts.
+        setup: |
+          from collections import Counter
+          a, b = "bella", "label"
+        solution: |
+          res = Counter(a) & Counter(b)
+        check: |
+          assert res == Counter({"b": 1, "e": 1, "l": 2, "a": 1}), f"res = {res!r}"
+
+  - id: collections.tuple-keys
+    name: tuples as dict keys
+    teach: |
+      ```python
+      # tuple(iterable) -> a hashable copy usable as a dict key (a list key is a TypeError)
+      tuple(sorted("tea"))       # ('a', 'e', 't')
+      # ord(ch) -> its integer code; ord(ch) - ord("a") -> 0..25 for a lowercase letter
+      ord("c") - ord("a")        # 2
+      # a grid cell (r, c) is already a tuple key
+      dist = {(0, 0): 0}
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `w` (`str`), `ch` (one lowercase letter), `r`, `c` (`int`s).
+          - **Set** `key`: `tuple[str, ...]`, the letters of `w` in sorted order (usable as a dict key).
+          - **Set** `idx`: `int`, the position of `ch` in the alphabet (`'a'` → 0, `'z'` → 25).
+          - **Set** `dist`: `dict[tuple[int, int], int]`, mapping the cell `(r, c)` to `0`.
+        setup: |
+          w = "tea"
+          ch = "d"
+          r, c = 2, 1
+        solution: |
+          key = tuple(sorted(w))
+          idx = ord(ch) - ord("a")
+          dist = {(r, c): 0}
+        check: |
+          assert key == ("a", "e", "t"), f"key = {key!r}"
+          assert idx == 3, f"idx = {idx!r}"
+          assert dist == {(2, 1): 0}, f"dist = {dist!r}"
+      - id: b
+        prompt: |
+          - **Given**: `w`, a `str` of lowercase letters.
+          - **Set** `key`: `tuple[int, ...]` of length 26, `key[i]` = how many times the `i`-th letter (`'a'` → 0) appears in `w`.
+        setup: |
+          w = "bab"
+        solution: |
+          counts = [0] * 26
+          for ch in w:
+              counts[ord(ch) - ord("a")] += 1
+          key = tuple(counts)
+        check: |
+          assert isinstance(key, tuple) and len(key) == 26, f"key = {key!r}"
+          assert key[:3] == (1, 2, 0), f"key[:3] = {key[:3]!r}"
+      - id: c
+        prompt: |
+          - **Given**: `g`, a non-empty `list[list[int]]`.
+          - **Set** `cells`: `dict[tuple[int, int], int]`, every cell `(r, c)` → `g[r][c]`, in one line.
+        setup: |
+          g = [[1, 2], [3, 4]]
+        solution: |
+          cells = {(r, c): g[r][c] for r in range(len(g)) for c in range(len(g[0]))}
+        check: |
+          assert cells == {(0, 0): 1, (0, 1): 2, (1, 0): 3, (1, 1): 4}, f"cells = {cells!r}"

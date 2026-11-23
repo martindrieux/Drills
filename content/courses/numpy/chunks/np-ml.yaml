@@ -1,0 +1,354 @@
+id: np-ml
+title: ML from scratch in NumPy
+intro: |
+  The classic "implement it in NumPy" interview questions: a numerically stable softmax and cross-entropy,
+  feature standardization and distance matrices (k-NN), and linear / logistic regression.
+problems:
+  - Implement softmax and cross-entropy without overflow
+  - Implement k-nearest neighbours without loops over pairs
+  - Implement linear regression and logistic regression with gradient descent
+atoms: []
+skills:
+  - id: np-ml.softmax-xent
+    name: stable softmax, one-hot, cross-entropy
+    teach: |
+      ```python
+      # softmax per row: exp(z) / row sum of exp(z); subtract the row max first (no overflow)
+      def softmax(z):                          # (N, C) -> (N, C)
+          e = np.exp(z - z.max(axis=1, keepdims=True))
+          return e / e.sum(axis=1, keepdims=True)
+      # one-hot: rows of the identity
+      np.eye(3)[np.array([2, 0])]              # (2,) -> (2, 3): [[0, 0, 1], [1, 0, 0]]
+      # cross-entropy: mean over rows of -log p[i, y[i]]
+      -np.log(p[np.arange(len(y)), y]).mean()  # p (N, C), y (N,) -> float
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Write a numerically stable softmax, one-hot encoding, and cross-entropy.
+          - `softmax(z)`: `z` (N, C) float logits; returns (N, C): `out[i, c] = exp(z[i, c]) / Σ_c' exp(z[i, c'])`, finite even for logits of `±1000`
+          - `one_hot(y, C)`: `y` (N,) int labels in `[0, C)`; returns (N, C) float: `out[i, c] = 1.0` if `c == y[i]` else `0.0`
+          - `cross_entropy(p, y)`: `p` (N, C) probabilities, `y` (N,) int labels; returns float: mean over rows of `-log p[i, y[i]]`
+        setup: |
+          import numpy as np
+        solution: |
+          def softmax(z):
+              e = np.exp(z - z.max(axis=1, keepdims=True))
+              return e / e.sum(axis=1, keepdims=True)
+
+          def one_hot(y, C):
+              return np.eye(C)[y]
+
+          def cross_entropy(p, y):
+              return -np.log(p[np.arange(len(y)), y]).mean()
+        check: |
+          import math
+          import warnings
+          from cardtest import against, rand_cases
+          warnings.simplefilter("ignore", RuntimeWarning)
+
+          def _close(got, exp):
+              got = np.asarray(got, dtype=float)
+              return got.shape == np.shape(exp) and np.allclose(got, exp, rtol=1e-6, atol=1e-9)
+
+          def _ref_softmax(z):
+              out = []
+              for row in z.tolist():
+                  m = max(row)
+                  e = [math.exp(v - m) for v in row]
+                  out.append([v / sum(e) for v in e])
+              return np.array(out)
+
+          def _ref_one_hot(y, C):
+              return np.array([[1.0 if c == v else 0.0 for c in range(C)] for v in y.tolist()]).reshape(len(y), C)
+
+          def _ref_xent(p, y):
+              return sum(-math.log(p[i, y[i]]) for i in range(len(y))) / len(y)
+
+          def _gen_z(r):
+              n, c = r.randint(1, 6), r.randint(1, 5)
+              scale = r.choice([1, 10, 1000])
+              return (np.array([[r.gauss(0, 1) * scale for _ in range(c)] for _ in range(n)]),)
+
+          def _gen_y(r):
+              n, c = r.randint(1, 7), r.randint(1, 5)
+              return (np.array([r.randrange(c) for _ in range(n)]), c)
+
+          def _gen_p(r):
+              n, c = r.randint(1, 6), r.randint(1, 5)
+              p = _ref_softmax(np.array([[r.gauss(0, 2) for _ in range(c)] for _ in range(n)]))
+              return (p, np.array([r.randrange(c) for _ in range(n)]))
+
+          against(softmax, _ref_softmax, [(np.array([[0.0]]),), (np.array([[1.0, 1.0]]),), (np.array([[1000.0, 999.0, -1000.0]]),),
+                                          (np.array([[1.0, 2.0, 3.0], [-1000.0, 0.0, 1000.0]]),)] + rand_cases(_gen_z, 300), same=_close)
+          against(one_hot, _ref_one_hot, [(np.array([0]), 1), (np.array([2, 0, 2]), 3), (np.array([1, 1]), 4)] + rand_cases(_gen_y, 300), same=_close)
+          against(cross_entropy, _ref_xent, [(np.array([[1.0]]), np.array([0])), (np.array([[0.25, 0.75], [0.5, 0.5]]), np.array([1, 0])),
+                                             (np.array([[0.1, 0.2, 0.7], [0.3, 0.3, 0.4], [0.9, 0.05, 0.05]]), np.array([2, 2, 1]))]
+                  + rand_cases(_gen_p, 300), same=_close)
+      - id: b
+        prompt: |
+          Write `xent_from_logits(z, y)`: the mean cross-entropy computed directly from logits, stable for extreme values.
+          - `z` (N, C) float: logits; `y` (N,) int: true class of each row
+          - returns float: mean over rows of `-log p[i, y[i]]`, with `log p[i, c] = z[i, c] - m_i - log Σ_c' exp(z[i, c'] - m_i)`, `m_i` = max of row `i`
+          - must stay finite when a true-class logit is `-1000` (no softmax)
+        setup: |
+          import numpy as np
+        solution: |
+          def xent_from_logits(z, y):
+              m = z.max(axis=1, keepdims=True)
+              logp = z - m - np.log(np.exp(z - m).sum(axis=1, keepdims=True))
+              return -logp[np.arange(len(y)), y].mean()
+        check: |
+          import math
+          import warnings
+          from cardtest import against, rand_cases
+          warnings.simplefilter("ignore", RuntimeWarning)
+
+          def _ref(z, y):
+              tot = 0.0
+              for row, t in zip(z.tolist(), y.tolist()):
+                  m = max(row)
+                  tot += -(row[t] - m - math.log(sum(math.exp(v - m) for v in row)))
+              return tot / len(y)
+
+          def _gen(r):
+              n, c = r.randint(1, 6), r.randint(1, 5)
+              scale = r.choice([1, 10, 1000])
+              return (np.array([[r.gauss(0, 1) * scale for _ in range(c)] for _ in range(n)]), np.array([r.randrange(c) for _ in range(n)]))
+
+          _same = lambda got, exp: np.shape(got) == () and math.isfinite(float(got)) and math.isclose(float(got), exp, rel_tol=1e-6, abs_tol=1e-9)
+          against(xent_from_logits, _ref, [(np.array([[0.0]]), np.array([0])), (np.array([[2.0, 0.0]]), np.array([1])),
+                                           (np.array([[1000.0, -1000.0], [0.0, 0.0]]), np.array([1, 0]))] + rand_cases(_gen, 300), same=_same)
+
+  - id: np-ml.distances
+    name: standardize features, pairwise distances, cosine similarity
+    teach: |
+      ```python
+      # standardize columns (mean 0, std 1); + eps: a constant column gives 0, not nan
+      (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-8)        # (N, D) -> (N, D)
+      # squared distance between every row of A (n, D) and of B (m, D)
+      ((A[:, None] - B[None]) ** 2).sum(axis=-1)           # (n, 1, D) - (1, m, D) -> (n, m, D) -> (n, m)
+      # cosine similarity: rows scaled to length 1, then all dot products
+      unit = lambda M: M / np.linalg.norm(M, axis=1, keepdims=True)
+      unit(A) @ unit(B).T                                  # (n, D) @ (D, m) -> (n, m)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Write column standardization, all pairwise squared distances, and cosine similarity.
+          - `standardize(X)`: `X` (N, D); returns (N, D): each column minus its mean, divided by (its population std `+ 1e-8`)
+          - `pairwise_sq_dists(A, B)`: `A` (n, D), `B` (m, D); returns (n, m): `out[i, j] = Σ_k (A[i, k] - B[j, k])²`
+          - `cosine_sim(A, B)`: `A` (n, D), `B` (m, D), no zero rows; returns (n, m): `out[i, j] = A[i] · B[j] / (‖A[i]‖ ‖B[j]‖)`
+        setup: |
+          import numpy as np
+        solution: |
+          def standardize(X):
+              return (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-8)
+
+          def pairwise_sq_dists(A, B):
+              return ((A[:, None, :] - B[None, :, :]) ** 2).sum(axis=-1)
+
+          def cosine_sim(A, B):
+              An = A / np.linalg.norm(A, axis=1, keepdims=True)
+              Bn = B / np.linalg.norm(B, axis=1, keepdims=True)
+              return An @ Bn.T
+        check: |
+          import math
+          import warnings
+          from cardtest import against, rand_cases
+          warnings.simplefilter("ignore", RuntimeWarning)
+
+          def _close(got, exp):
+              got = np.asarray(got, dtype=float)
+              return got.shape == np.shape(exp) and np.allclose(got, exp, rtol=1e-6, atol=1e-7)
+
+          def _ref_std(X):
+              cols = list(zip(*X.tolist()))
+              mu = [sum(c) / len(c) for c in cols]
+              sd = [math.sqrt(sum((v - m) ** 2 for v in c) / len(c)) for c, m in zip(cols, mu)]
+              return np.array([[(v - mu[j]) / (sd[j] + 1e-8) for j, v in enumerate(row)] for row in X.tolist()]).reshape(X.shape)
+
+          def _ref_d2(A, B):
+              return np.array([[sum((a - b) ** 2 for a, b in zip(ra, rb)) for rb in B.tolist()] for ra in A.tolist()]).reshape(len(A), len(B))
+
+          def _ref_cos(A, B):
+              nrm = lambda v: math.sqrt(sum(x * x for x in v))
+              return np.array([[sum(a * b for a, b in zip(ra, rb)) / (nrm(ra) * nrm(rb)) for rb in B.tolist()] for ra in A.tolist()]).reshape(len(A), len(B))
+
+          def _mat(r, n, d, scale=3):
+              return np.array([[r.gauss(0, scale) for _ in range(d)] for _ in range(n)])
+
+          def _gen_X(r):
+              X = _mat(r, r.randint(1, 7), r.randint(1, 4))
+              if r.random() < 0.2:
+                  X[:, r.randrange(X.shape[1])] = r.gauss(0, 3)
+              return (X,)
+
+          def _gen_AB(r):
+              d = r.randint(1, 4)
+              return (_mat(r, r.randint(1, 5), d), _mat(r, r.randint(1, 5), d))
+
+          against(standardize, _ref_std, [(np.array([[1.0, 5.0]]),), (np.array([[1.0, 2.0], [3.0, 2.0], [5.0, 2.0]]),)] + rand_cases(_gen_X, 300), 
+                  same=lambda g, e: _close(g, e) or (np.shape(g) == e.shape and np.allclose(g, e, rtol=1e-6, atol=1e-5)))
+          against(pairwise_sq_dists, _ref_d2, [(np.array([[0.0, 0.0]]), np.array([[3.0, 4.0], [1.0, 0.0], [0.0, 0.0]])),
+                                               (np.array([[1.0], [2.0]]), np.array([[5.0]]))] + rand_cases(_gen_AB, 300), same=_close)
+          against(cosine_sim, _ref_cos, [(np.array([[1.0, 0.0]]), np.array([[0.0, 2.0], [3.0, 0.0], [-1.0, -1.0]])),
+                                         (np.array([[1.0, 2.0], [2.0, 4.0]]), np.array([[-2.0, -4.0]]))] + rand_cases(_gen_AB, 300), same=_close)
+      - id: b
+        prompt: |
+          Implement `knn_predict(Xtr, ytr, Xte, k)`: k-nearest-neighbour classification.
+          - `Xtr` (n, D) float, `ytr` (n,) int: training points and labels; `Xte` (m, D): test points; `k` (1 ≤ k ≤ n)
+          - returns (m,) int: for each test row, the most frequent label among its `k` nearest training rows (Euclidean distance)
+          - ties between labels -> the smallest label; `pairwise_sq_dists(A, B)` (n, m) is in the setup
+        setup: |
+          import numpy as np
+
+          def pairwise_sq_dists(A, B):
+              return ((A[:, None, :] - B[None, :, :]) ** 2).sum(axis=-1)
+        solution: |
+          def knn_predict(Xtr, ytr, Xte, k):
+              d = pairwise_sq_dists(Xte, Xtr)
+              nn = d.argsort(axis=1)[:, :k]
+              out = []
+              for row in nn:
+                  vals, counts = np.unique(ytr[row], return_counts=True)
+                  out.append(vals[counts.argmax()])
+              return np.array(out)
+        check: |
+          from collections import Counter
+          from cardtest import against, rand_cases
+
+          def _ref(Xtr, ytr, Xte, k):
+              out = []
+              for t in Xte.tolist():
+                  order = sorted(range(len(Xtr)), key=lambda j: sum((a - b) ** 2 for a, b in zip(t, Xtr[j].tolist())))
+                  votes = Counter(ytr[j] for j in order[:k])
+                  best = max(votes.values())
+                  out.append(min(lab for lab, c in votes.items() if c == best))
+              return out
+
+          def _gen(r):
+              n, d, m = r.randint(1, 9), r.randint(1, 3), r.randint(1, 4)
+              Xtr = np.array([[r.gauss(0, 3) for _ in range(d)] for _ in range(n)])
+              ytr = np.array([r.randrange(3) for _ in range(n)])
+              Xte = np.array([[r.gauss(0, 3) for _ in range(d)] for _ in range(m)])
+              return (Xtr, ytr, Xte, r.randint(1, n))
+
+          _same = lambda got, exp: np.shape(got) == (len(exp),) and np.asarray(got).tolist() == exp
+          _X = np.array([[0.0], [1.0], [2.1], [10.0]])
+          _y = np.array([5, 3, 3, 5])
+          against(knn_predict, _ref, [(_X, _y, np.array([[0.2]]), 1), (_X, _y, np.array([[0.2], [9.0]]), 3),
+                                      (_X, _y, np.array([[1.4]]), 4), (_X, _y, np.array([[0.9]]), 2)] + rand_cases(_gen, 300), same=_same)
+
+  - id: np-ml.regression
+    name: linear regression (closed form), logistic regression (gradient descent)
+    teach: |
+      ```python
+      # linear regression: argmin ||X @ w - y||^2 solves (X^T X) w = X^T y
+      w = np.linalg.solve(X.T @ X, X.T @ y)  # X (N, D), y (N,) -> (D,)
+      # logistic regression: p = sigmoid(X @ w); mean cross-entropy gradient = X^T (p - y) / N
+      w = np.zeros(D)
+      for _ in range(steps):
+          p = 1 / (1 + np.exp(-(X @ w)))     # (N,)
+          w -= lr * X.T @ (p - y) / N        # (D,)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          Fit linear regression in closed form and logistic regression by gradient descent.
+          - `fit_linear(X, y)`: `X` (N, D) with `X.T @ X` invertible, `y` (N,); returns `w` (D,) minimizing `‖X @ w - y‖²`, using `np.linalg.solve`
+          - `logistic_gd(X, y, lr, steps)`: `X` (N, D), `y` (N,) of 0. / 1.; returns `w` (D,) after `steps` full-batch steps from `w = 0`, each `p = sigmoid(X @ w)`, `w -= lr * X.T @ (p - y) / N`
+        setup: |
+          import numpy as np
+        solution: |
+          def fit_linear(X, y):
+              return np.linalg.solve(X.T @ X, X.T @ y)
+
+          def logistic_gd(X, y, lr, steps):
+              N, D = X.shape
+              w = np.zeros(D)
+              for _ in range(steps):
+                  p = 1 / (1 + np.exp(-(X @ w)))
+                  w -= lr * X.T @ (p - y) / N
+              return w
+        check: |
+          import math
+          from cardtest import against, rand_cases
+
+          def _close(got, exp):
+              got = np.asarray(got, dtype=float)
+              return got.shape == np.shape(exp) and np.allclose(got, exp, rtol=1e-6, atol=1e-8)
+
+          def _ref_lin(X, y):
+              return np.linalg.lstsq(X, y, rcond=None)[0]
+
+          def _ref_log(X, y, lr, steps):
+              rows, ys = X.tolist(), y.tolist()
+              N, D = len(rows), len(rows[0])
+              w = [0.0] * D
+              for _ in range(steps):
+                  p = [1 / (1 + math.exp(-sum(a * b for a, b in zip(r, w)))) for r in rows]
+                  w = [w[j] - lr * sum(rows[i][j] * (p[i] - ys[i]) for i in range(N)) / N for j in range(D)]
+              return np.array(w)
+
+          def _gen_lin(r):
+              d = r.randint(1, 4)
+              n = r.randint(d + 1, d + 8)
+              X = np.array([[r.gauss(0, 2) for _ in range(d)] for _ in range(n)])
+              return (X, np.array([r.gauss(0, 5) for _ in range(n)]))
+
+          def _gen_log(r):
+              d, n = r.randint(1, 3), r.randint(1, 8)
+              X = np.array([[r.gauss(0, 2) for _ in range(d)] for _ in range(n)])
+              return (X, np.array([float(r.randrange(2)) for _ in range(n)]), r.choice([0.05, 0.1, 0.5]), r.randint(1, 25))
+
+          _X = np.array([[1.0, 0.0], [1.0, 1.0], [1.0, 2.0]])
+          against(fit_linear, _ref_lin, [(_X, np.array([1.0, 3.0, 5.0])), (np.array([[2.0]]), np.array([6.0])),
+                                         (_X, np.array([0.0, 1.0, 0.0]))] + rand_cases(_gen_lin, 300), same=_close)
+          against(logistic_gd, _ref_log, [(_X, np.array([0.0, 1.0, 1.0]), 0.1, 0), (np.array([[1.0, -2.0]]), np.array([1.0]), 0.5, 3),
+                                          (_X, np.array([0.0, 1.0, 1.0]), 0.1, 5)] + rand_cases(_gen_log, 300), same=_close)
+      - id: b
+        prompt: |
+          Implement `minibatch_gd(X, y, lr, epochs, bs)`: linear regression trained by mini-batch gradient descent on the mean squared error.
+          - `X` (N, D), `y` (N,): data; `lr`: step size; `epochs`: passes over the data; `bs`: batch size
+          - returns `w` (D,), starting from `w = 0`; each epoch takes one step per batch `X[i:i + bs]`, `y[i:i + bs]` for `i = 0, bs, 2 * bs, ...` in order (last batch may be smaller, no shuffling)
+          - step: `w -= lr * 2 * X_b.T @ (X_b @ w - y_b) / len(y_b)`
+        setup: |
+          import numpy as np
+        solution: |
+          def minibatch_gd(X, y, lr, epochs, bs):
+              w = np.zeros(X.shape[1])
+              for _ in range(epochs):
+                  for i in range(0, len(X), bs):
+                      Xb, yb = X[i:i + bs], y[i:i + bs]
+                      w -= lr * 2 * Xb.T @ (Xb @ w - yb) / len(yb)
+              return w
+        check: |
+          from cardtest import against, rand_cases
+
+          def _close(got, exp):
+              got = np.asarray(got, dtype=float)
+              return got.shape == np.shape(exp) and np.allclose(got, exp, rtol=1e-6, atol=1e-8)
+
+          def _ref(X, y, lr, epochs, bs):
+              rows, ys = X.tolist(), y.tolist()
+              N, D = len(rows), len(rows[0])
+              w = [0.0] * D
+              for _ in range(epochs):
+                  start = 0
+                  while start < N:
+                      idx = range(start, min(start + bs, N))
+                      err = {i: sum(a * b for a, b in zip(rows[i], w)) - ys[i] for i in idx}
+                      w = [w[j] - lr * 2 * sum(rows[i][j] * err[i] for i in idx) / len(idx) for j in range(D)]
+                      start += bs
+              return np.array(w)
+
+          def _gen(r):
+              d, n = r.randint(1, 3), r.randint(1, 10)
+              X = np.array([[r.gauss(0, 1) for _ in range(d)] for _ in range(n)])
+              return (X, np.array([r.gauss(0, 2) for _ in range(n)]), r.choice([0.01, 0.05, 0.1]), r.randint(1, 4), r.randint(1, 5))
+
+          _X = np.array([[1.0, 0.0], [1.0, 1.0], [1.0, 2.0], [1.0, 3.0], [1.0, 4.0]])
+          _y = np.array([1.0, 3.0, 5.0, 7.0, 9.0])
+          against(minibatch_gd, _ref, [(_X, _y, 0.05, 1, 1), (_X, _y, 0.05, 2, 10), (_X, _y, 0.05, 1, 2), (_X, _y, 0.05, 3, 3)]
+                  + rand_cases(_gen, 300), same=_close)

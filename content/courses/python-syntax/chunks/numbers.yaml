@@ -1,0 +1,444 @@
+id: numbers
+title: Numbers & math
+intro: |
+  Python ints never overflow, but division, negatives and bits have traps. This page covers integer
+  division, infinity sentinels, min/max options, digit loops, bit tricks and modular arithmetic.
+problems:
+  - Reverse Integer
+  - Number of 1 Bits
+  - Counting Bits
+  - Single Number
+  - Missing Number
+  - Pow(x, n)
+atoms: [py-numbers]
+skills:
+  - id: numbers.division
+    name: //, %, divmod, negatives
+    teach: |
+      ```python
+      # a // b -> floor division; a % b -> remainder; divmod(a, b) -> (a // b, a % b)
+      7 // 2, 7 % 2, divmod(7, 2)   # (3, 1, (3, 1))
+      # // floors DOWN, not toward 0; int(a / b) truncates toward 0 (C/Java style)
+      -7 // 2, int(-7 / 2)          # (-4, -3)
+      # % takes the sign of the divisor: handy to wrap indices around
+      -1 % 5                        # 4
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): ints `a`, `b > 0`; `total` a number of minutes; `n` the length of a circular array and `i` an index in it.
+
+          - **Set** `q`, `r`: ints, the quotient and remainder of `a` divided by `b`, with operators.
+          - **Set** `hours`, `mins`: ints, `total` split into hours and leftover minutes, in one line with `divmod`.
+          - **Set** `t`: int, `-7 / 2` truncated **toward zero**.
+          - **Set** `prev`: int, the index just before `i` (index 0 wraps to `n - 1`), using `%`.
+        setup: |
+          a, b = 17, 5
+          total = 135
+          n, i = 5, 0
+        solution: |
+          q = a // b
+          r = a % b
+          hours, mins = divmod(total, 60)
+          t = int(-7 / 2)
+          prev = (i - 1) % n
+        check: |
+          assert (q, r) == (3, 2), f"q, r = {q!r}, {r!r}"
+          assert (hours, mins) == (2, 15), f"hours, mins = {hours!r}, {mins!r}"
+          assert t == -3, f"t = {t!r} (-7 // 2 is -4, floor not truncation)"
+          assert prev == 4, f"prev = {prev!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): ints `a` and `b`.
+
+          - **Set** `res`: int, `a / b` truncated **toward zero** (like C or Java).
+        setup: |
+          a, b = -7, 2
+        solution: |
+          res = int(a / b)
+        check: |
+          assert res == -3, f"res = {res!r} (-7 // 2 is -4, floor not truncation)"
+      - id: c
+        prompt: |
+          **Given** (see setup): `total` an int number of minutes.
+
+          - **Set** `hours`, `mins`: ints, `total` split into hours and leftover minutes, in one line with `divmod`.
+        setup: |
+          total = 135
+        solution: |
+          hours, mins = divmod(total, 60)
+        check: |
+          assert (hours, mins) == (2, 15), f"hours, mins = {hours!r}, {mins!r}"
+      - id: d
+        prompt: |
+          **Given** (see setup): `n` the length of a circular array; `i` an index in it.
+
+          - **Set** `prev`: int, the index just **before** `i` (index 0 wraps to `n - 1`), using `%`.
+        setup: |
+          n, i = 5, 0
+        solution: |
+          prev = (i - 1) % n
+        check: |
+          assert prev == 4, f"prev = {prev!r}"
+
+  - id: numbers.infinity
+    name: infinity sentinels
+    teach: |
+      ```python
+      # float("inf") (or math.inf) -> +infinity: start a running min there; -float("inf") for a max
+      best = float("inf")
+      best = min(best, 7)      # 7
+      ```
+      If `best` is still `inf` after the loop, nothing was found (often return -1).
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `nums` a list of ints (all negative).
+
+          - **Set** `best`: start at positive infinity, then for each `x` in `nums` lower it to `x` when `x` is smaller.
+          - **Set** `hi`: start at **negative** infinity, then for each `x` in `nums` raise it to `x` when `x` is larger.
+        setup: |
+          nums = [-7, -3, -9]
+        solution: |
+          best = float("inf")
+          hi = -float("inf")
+          for x in nums:
+              best = min(best, x)
+              hi = max(hi, x)
+        check: |
+          assert best == -9, f"best = {best!r}"
+          assert hi == -3, f"hi = {hi!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `nums` a list of ints (all negative).
+
+          - **Set** `hi`: start at **negative** infinity, then keep the max of `hi` and each `x` in `nums`.
+        setup: |
+          nums = [-8, -2, -5]
+        solution: |
+          hi = -float("inf")
+          for x in nums:
+              hi = max(hi, x)
+        check: |
+          assert hi == -2, f"hi = {hi!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `best` a number that may still be infinity (no answer found).
+
+          - **Set** `res`: `-1` if `best` is infinity, else `best`.
+        setup: |
+          import math
+          best = math.inf
+        solution: |
+          res = -1 if best == float("inf") else best
+        check: |
+          assert res == -1, f"res = {res!r}"
+
+  - id: numbers.minmax
+    name: min / max with key= and default=
+    teach: |
+      ```python
+      # max(a, b, ...) or max(iterable) -> the largest; min works the same way
+      max(4, 11, 7), min([4, 11, 7])   # (11, 4)
+      # key=f: compare by f(item), but return the item itself
+      max(["hi", "hello"], key=len)    # 'hello'
+      # default=v: returned for an empty iterable (without it: ValueError)
+      max([], default=0)               # 0
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): ints `a`, `b`, `c`; `nums` a list of ints; `words` a list of strings; `none` an empty list. One call each.
+
+          - **Set** `res`: the largest of `a`, `b` and `c`.
+          - **Set** `lo`: the smallest item of `nums`.
+          - **Set** `word`: the longest string of `words` (with `key=`).
+          - **Set** `empty`: the largest item of `none`, or `0` since it is empty (with `default=`).
+        setup: |
+          a, b, c = 4, 11, 7
+          nums = [5, 2, 8]
+          words = ["hi", "hello", "hey"]
+          none = []
+        solution: |
+          res = max(a, b, c)
+          lo = min(nums)
+          word = max(words, key=len)
+          empty = max(none, default=0)
+        check: |
+          assert res == 11, f"res = {res!r}"
+          assert lo == 2, f"lo = {lo!r}"
+          assert word == "hello", f"word = {word!r}"
+          assert empty == 0, f"empty = {empty!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `nums` a list of ints.
+
+          - **Set** `res`: the item of `nums` closest to zero (smallest `abs(x)`), returned as-is (keep its sign), in one call.
+        setup: |
+          nums = [-7, 3, -2, 5]
+        solution: |
+          res = min(nums, key=abs)
+        check: |
+          assert res == -2, f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `nums` a list of ints, possibly empty.
+
+          - **Set** `res`: the smallest value of `nums`, or `0` if `nums` is empty, in one call.
+        setup: |
+          nums = []
+        solution: |
+          res = min(nums, default=0)
+        check: |
+          assert res == 0, f"res = {res!r}"
+
+  - id: numbers.digits
+    name: digits with % 10 and // 10
+    teach: |
+      ```python
+      # n % 10 -> last digit; n // 10 -> n without its last digit
+      4721 % 10, 4721 // 10    # (1, 472)
+      # visit digits right to left
+      while n: d = n % 10; n //= 10
+      # int(str(n)[::-1]) -> digits reversed via str
+      int(str(1200)[::-1])     # 21
+      ```
+      Negative `n`: work on `abs(n)` (absolute value, `abs(-5)` is 5) and restore the sign.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): positive ints `n`, `m`, `p`; a negative int `q`; `total = 0`.
+
+          - **Set** `last`: int, the last digit of `n`.
+          - **Set** `rest`: int, `n` without its last digit.
+          - **Set** `total`: int, the sum of the digits of `m`, with a `% 10` / `//= 10` loop.
+          - **Set** `rev`: int, the digits of `p` reversed (go through `str`; leading zeros vanish, `1200` gives `21`).
+          - **Set** `neg`: int, the digits of `q` reversed, keeping the minus sign (`-123` gives `-321`).
+        setup: |
+          n = 4721
+          m = 9045
+          p = 1200
+          q = -123
+          total = 0
+        solution: |
+          last = n % 10
+          rest = n // 10
+          while m:
+              total += m % 10
+              m //= 10
+          rev = int(str(p)[::-1])
+          neg = -int(str(abs(q))[::-1])
+        check: |
+          assert last == 1, f"last = {last!r}"
+          assert rest == 472, f"rest = {rest!r}"
+          assert total == 18, f"total = {total!r}"
+          assert rev == 21, f"rev = {rev!r}"
+          assert neg == -321, f"neg = {neg!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): a positive int `n`; `total = 0`.
+
+          - **Set** `total`: int, the sum of the digits of `n`, with a `% 10` / `//= 10` loop.
+        setup: |
+          n = 9045
+          total = 0
+        solution: |
+          while n:
+              total += n % 10
+              n //= 10
+        check: |
+          assert total == 18, f"total = {total!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): a positive int `n`.
+
+          - **Set** `res`: int, the digits of `n` reversed (go through `str`; leading zeros vanish, `1200` gives `21`).
+        setup: |
+          n = 1200
+        solution: |
+          res = int(str(n)[::-1])
+        check: |
+          assert res == 21, f"res = {res!r}"
+      - id: d
+        prompt: |
+          **Given** (see setup): a negative int `n`.
+
+          - **Set** `res`: int, the digits of `n` reversed, keeping the minus sign (`-123` gives `-321`).
+        setup: |
+          n = -123
+        solution: |
+          res = -int(str(abs(n))[::-1])
+        check: |
+          assert res == -321, f"res = {res!r}"
+
+  - id: numbers.bits
+    name: bit operators
+    teach: |
+      ```python
+      # a & b, a | b, a ^ b -> bitwise and, or, xor
+      6 & 3, 6 | 3, 6 ^ 3          # (2, 7, 5)
+      # x << k -> x * 2**k; x >> k -> x // 2**k
+      5 << 1, 5 >> 1               # (10, 2)
+      # x & 1 -> 1 if x is odd, else 0
+      7 & 1                        # 1
+      # bin(x) -> '0b...' string; count its '1's for the set bits
+      bin(11), bin(11).count("1")  # ('0b1011', 3)
+      # x & (x - 1) -> x with its lowest set bit cleared
+      12 & 11                      # 8
+      ```
+      XOR cancels pairs: `a ^ a == 0` and `a ^ 0 == a`.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): ints `a`, `b`, `n`; `nums` a list of ints where every value appears twice except one. Use bit operators.
+
+          - **Set** `common`, `either`, `diff`: ints, the bits set in both / in either / in exactly one of `a` and `b`.
+          - **Set** `low`: int (0 or 1), the lowest bit of `n`.
+          - **Set** `half`: int, `n` shifted right by one.
+          - **Set** `big`: int, `n` times 8, with a shift.
+          - **Set** `ones`: int, the number of `1` bits of `n`.
+          - **Set** `cleared`: int, `n` with its lowest set bit cleared.
+          - **Set** `single`: int, the value of `nums` that is not paired (XOR them all).
+        setup: |
+          a, b = 0b1100, 0b1010
+          n = 13
+          nums = [4, 1, 2, 1, 2]
+        solution: |
+          common = a & b
+          either = a | b
+          diff = a ^ b
+          low = n & 1
+          half = n >> 1
+          big = n << 3
+          ones = bin(n).count("1")
+          cleared = n & (n - 1)
+          single = 0
+          for x in nums:
+              single ^= x
+        check: |
+          assert common == 0b1000, f"common = {bin(common)}"
+          assert either == 0b1110, f"either = {bin(either)}"
+          assert diff == 0b0110, f"diff = {bin(diff)}"
+          assert low == 1, f"low = {low!r}"
+          assert half == 6, f"half = {half!r}"
+          assert big == 104, f"big = {big!r}"
+          assert ones == 3, f"ones = {ones!r}"
+          assert cleared == 12, f"cleared = {cleared!r}"
+          assert single == 4, f"single = {single!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): a positive int `n`.
+
+          - **Set** `res`: int, the number of `1` bits of `n` in binary.
+        setup: |
+          n = 11
+        solution: |
+          res = bin(n).count("1")
+        check: |
+          assert res == 3, f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `nums` a list of ints where every value appears twice except one; `res = 0`.
+
+          - **Set** `res`: int, the unpaired value, by XOR-ing every number into `res`.
+        setup: |
+          nums = [4, 1, 2, 1, 2]
+          res = 0
+        solution: |
+          for x in nums:
+              res ^= x
+        check: |
+          assert res == 4, f"res = {res!r}"
+      - id: d
+        prompt: |
+          **Write** `is_pow2(n)` using `n & (n - 1)`.
+
+          - **Given**: an int `n` (may be 0 or negative).
+          - **Returns**: bool, `True` when `n > 0` and `n` has exactly one set bit (a power of 2), else `False`.
+          - **Checked on**: every `n` from -20 to 69, each `2**k` and its neighbours up to `2**62`, plus random large ints of both signs.
+        solution: |
+          def is_pow2(n):
+              return n > 0 and n & (n - 1) == 0
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(n):
+              return n > 0 and bin(n).count("1") == 1
+
+          _edge = [(n,) for n in range(-20, 70)] + [(2**k + d,) for k in range(5, 63) for d in (-1, 0, 1)]
+          against(is_pow2, _ref, _edge + rand_cases(lambda r: (r.randint(-2**40, 2**40),), 200))
+      - id: e
+        prompt: |
+          **Given** (see setup): ints `x`, `a`, `b`.
+
+          - **Set** `big`: int, `x` times 8, using a shift.
+          - **Set** `either`: int, the bits set in `a` **or** `b`.
+          - **Set** `common`: int, the bits set in **both** `a` and `b`.
+        setup: |
+          x = 3
+          a, b = 0b1100, 0b1010
+        solution: |
+          big = x << 3
+          either = a | b
+          common = a & b
+        check: |
+          assert big == 24, f"big = {big!r}"
+          assert either == 0b1110, f"either = {bin(either)}"
+          assert common == 0b1000, f"common = {bin(common)}"
+
+  - id: numbers.mod-pow
+    name: mod 10**9 + 7, pow, 32-bit limits
+    teach: |
+      ```python
+      # MOD = 10**9 + 7 (** is power; 10^9 would be XOR); reduce after each multiply
+      MOD = 10**9 + 7
+      (10**9 * 10) % MOD      # 999999937
+      # pow(a, b, m) -> a**b % m, computed fast
+      pow(3, 4, 5)            # 1
+      # signed 32-bit range
+      -2**31, 2**31 - 1       # (-2147483648, 2147483647)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): ints `a`, `b`, `x`.
+
+          - **Set** `MOD`: int, 10 to the 9th plus 7.
+          - **Set** `res`: int, `(a * b) % MOD`.
+          - **Set** `p`: int, `3` to the power `200`, modulo `1000`, with the 3-argument built-in.
+          - **Set** `fits`: `x` if it fits in a signed 32-bit int (`-2**31 <= x <= 2**31 - 1`), otherwise `0`.
+        setup: |
+          a, b = 10**9, 100
+          x = 2**31
+        solution: |
+          MOD = 10**9 + 7
+          res = (a * b) % MOD
+          p = pow(3, 200, 1000)
+          fits = x if -2**31 <= x <= 2**31 - 1 else 0
+        check: |
+          assert MOD == 1000000007, f"MOD = {MOD!r}"
+          assert res == 999999307, f"res = {res!r}"
+          assert p == 3**200 % 1000, f"p = {p!r}"
+          assert fits == 0, f"fits = {fits!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): ints `a`, `b`, `m`.
+
+          - **Set** `res`: int, `a` to the power `b`, modulo `m`, with the 3-argument built-in.
+        setup: |
+          a, b, m = 3, 200, 1000
+        solution: |
+          res = pow(a, b, m)
+        check: |
+          assert res == 3**200 % 1000, f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): an int `x`.
+
+          - **Set** `res`: `x` if it fits in a signed 32-bit int (`-2**31 <= x <= 2**31 - 1`), otherwise `0`.
+        setup: |
+          x = 2**31
+        solution: |
+          res = x if -2**31 <= x <= 2**31 - 1 else 0
+        check: |
+          assert res == 0, f"res = {res!r}"

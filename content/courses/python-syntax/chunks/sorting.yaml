@@ -1,0 +1,438 @@
+id: sorting
+title: Sorting
+intro: |
+  Sorting is the first move in a huge number of problems: intervals, greedy choices, anagrams,
+  "top k". Python's sort is O(n log n) and **stable**, and `key=` lets you sort by anything.
+problems:
+  - Merge Intervals
+  - Non-overlapping Intervals
+  - Meeting Rooms
+  - Top K Frequent Elements
+  - Group Anagrams
+  - Largest Number
+atoms: [py-sorting, py-strings, py-dict-counter]
+skills:
+  - id: sorting.basics
+    name: sorted() vs .sort()
+    teach: |
+      ```python
+      # sorted(xs) -> NEW sorted list, from any iterable (set, dict keys, string)
+      sorted({3, 1, 2})          # [1, 2, 3]
+      # a.sort(reverse=False): sorts the list IN PLACE and returns None; reverse=True = descending
+      a = [2, 5, 1]
+      a.sort(reverse=True)       # a = [5, 2, 1]
+      ```
+      Pitfall: `a = a.sort()` sets `a` to `None`.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `nums` a list of ints; `seen` a set of ints; `b` a list of ints.
+
+          - **Set** `res`: a new list, `nums` sorted ascending (`nums` itself unchanged).
+          - **Set** `order`: list of the items of `seen`, ascending.
+          - **Modify** `b`: sort it in place, largest first.
+        setup: |
+          nums = [3, 1, 2]
+          seen = {9, 4, 6}
+          b = [2, 5, 1]
+        solution: |
+          res = sorted(nums)
+          order = sorted(seen)
+          b.sort(reverse=True)
+        check: |
+          assert res == [1, 2, 3], f"res = {res!r}"
+          assert nums == [3, 1, 2], f"nums changed: {nums!r}"
+          assert order == [4, 6, 9], f"order = {order!r}"
+          assert b == [5, 2, 1], f"b = {b!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `nums` a list of ints.
+
+          - **Modify** `nums`: sort it in place, largest first.
+        setup: |
+          nums = [2, 5, 1]
+        solution: |
+          nums.sort(reverse=True)
+        check: |
+          assert nums == [5, 2, 1], f"nums = {nums!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `d` a dict with int keys.
+
+          - **Set** `res`: list of the keys of `d`, largest first, in one call.
+        setup: |
+          d = {7: "x", 2: "y", 5: "z"}
+        solution: |
+          res = sorted(d, reverse=True)
+        check: |
+          assert res == [7, 5, 2], f"res = {res!r}"
+
+  - id: sorting.key
+    name: sort by a key function
+    teach: |
+      ```python
+      # key=f: items are ordered by f(item); pass the function itself (key=len), not a call
+      sorted(["ccc", "a", "bb"], key=len)                 # ['a', 'bb', 'ccc']
+      # lambda args: expr -> a tiny unnamed function
+      sorted([("a", 3), ("b", 1)], key=lambda p: p[1])    # [('b', 1), ('a', 3)]
+      # key=str.lower: case-insensitive order
+      sorted(["bob", "Al"], key=str.lower)                # ['Al', 'bob']
+      ```
+      Ties keep their original order (the sort is stable).
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `words` a list of strings; `pairs` a list of `(str, int)` tuples; `names` a list of strings in mixed case. Use `sorted` with a `key` for each.
+
+          - **Set** `res`: `words`, shortest first.
+          - **Set** `by2`: `pairs` sorted by their **second** element, ascending (lambda).
+          - **Set** `abc`: `names` in alphabetical order, ignoring upper/lower case.
+        setup: |
+          words = ["ccc", "a", "bb"]
+          pairs = [("a", 3), ("b", 1), ("c", 2)]
+          names = ["bob", "Carol", "alice"]
+        solution: |
+          res = sorted(words, key=len)
+          by2 = sorted(pairs, key=lambda p: p[1])
+          abc = sorted(names, key=str.lower)
+        check: |
+          assert res == ["a", "bb", "ccc"], f"res = {res!r}"
+          assert by2 == [("b", 1), ("c", 2), ("a", 3)], f"by2 = {by2!r}"
+          assert abc == ["alice", "bob", "Carol"], f"abc = {abc!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `pairs` a list of `(str, int)` tuples.
+
+          - **Set** `res`: a new list of the pairs, sorted by their **second** element, ascending.
+        setup: |
+          pairs = [("a", 3), ("b", 1), ("c", 2)]
+        solution: |
+          res = sorted(pairs, key=lambda p: p[1])
+        check: |
+          assert res == [("b", 1), ("c", 2), ("a", 3)], f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `names` a list of strings in mixed case.
+
+          - **Modify** `names`: sort it in place alphabetically, ignoring upper/lower case.
+        setup: |
+          names = ["bob", "Carol", "alice"]
+        solution: |
+          names.sort(key=str.lower)
+        check: |
+          assert names == ["alice", "bob", "Carol"], f"names = {names!r}"
+      - id: d
+        prompt: |
+          **Given** (see setup): `nums` a list of ints.
+
+          - **Set** `res`: a new list, `nums` sorted by absolute value ascending (ties keep their original order), with a built-in function as the key.
+        setup: |
+          nums = [3, -2, 2, -1]
+        solution: |
+          res = sorted(nums, key=abs)
+        check: |
+          assert res == [-1, -2, 2, 3], f"res = {res!r}"
+
+  - id: sorting.multi-key
+    name: tuple keys, mixed directions
+    teach: |
+      ```python
+      # key returns a tuple: sort by the 1st field, break ties with the next; negate a number to flip it
+      sorted([("bo", 30), ("al", 30), ("cy", 25)], key=lambda p: (-p[1], p[0]))
+      # [('al', 30), ('bo', 30), ('cy', 25)]   age DESC, then name ASC
+      ```
+      Pitfall: you can't negate a string; if a string must go descending, negate the numbers and use `reverse=True`.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `words` a list of strings; `count` a dict word → frequency (int).
+
+          - **Set** `res`: `words` sorted by length ascending, ties alphabetical.
+          - **Set** `top`: list of the words of `count`, most frequent first, ties alphabetical.
+        setup: |
+          words = ["bb", "c", "ab", "a"]
+          count = {"b": 2, "a": 2, "c": 5}
+        solution: |
+          res = sorted(words, key=lambda w: (len(w), w))
+          top = sorted(count, key=lambda w: (-count[w], w))
+        check: |
+          assert res == ["a", "c", "ab", "bb"], f"res = {res!r}"
+          assert top == ["c", "a", "b"], f"top = {top!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `count` a dict word → frequency (int).
+
+          - **Set** `res`: list of the words, most frequent first, ties alphabetical.
+        setup: |
+          count = {"b": 2, "a": 2, "c": 5}
+        solution: |
+          res = sorted(count, key=lambda w: (-count[w], w))
+        check: |
+          assert res == ["c", "a", "b"], f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `pts` a list of `(x, y)` tuples.
+
+          - **Set** `res`: list of the points sorted by `x` ascending, then by `y` **descending**.
+        setup: |
+          pts = [(1, 2), (0, 5), (1, 7)]
+        solution: |
+          res = sorted(pts, key=lambda p: (p[0], -p[1]))
+        check: |
+          assert res == [(0, 5), (1, 7), (1, 2)], f"res = {res!r}"
+
+  - id: sorting.intervals
+    name: sort and merge intervals
+    teach: |
+      ```python
+      # lists compare item by item, so intervals.sort() sorts by start
+      intervals.sort()
+      res = [intervals[0]]
+      for s, e in intervals[1:]:
+          if s <= res[-1][1]:                  # overlaps the last one: extend it
+              res[-1][1] = max(res[-1][1], e)  # max: [1, 10] then [2, 3] must not shrink the end
+          else:
+              res.append([s, e])
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Write** `merge(intervals)`.
+
+          - **Given**: `intervals` a non-empty list of `[start, end]` lists of ints (`start <= end`), in any order. You may sort or modify it.
+          - **Returns**: list of `[start, end]` lists, the merged intervals (no two overlap), sorted by start. Overlapping or touching intervals (`[1, 2]` and `[2, 3]`) merge into one.
+          - **Checked on**: one interval, nested intervals, touching intervals, zero-length intervals, duplicates, unsorted input, plus random lists.
+        solution: |
+          def merge(intervals):
+              intervals.sort()
+              res = [intervals[0]]
+              for s, e in intervals[1:]:
+                  if s <= res[-1][1]:
+                      res[-1][1] = max(res[-1][1], e)
+                  else:
+                      res.append([s, e])
+              return res
+        check: |
+          from cardtest import against, rand_cases
+
+          def _ref(intervals):  # absorb every overlapping interval, then sort
+              res = []
+              for s, e in intervals:
+                  keep = []
+                  for a, b in res:
+                      if a <= e and s <= b:
+                          s, e = min(s, a), max(e, b)
+                      else:
+                          keep.append([a, b])
+                  res = keep + [[s, e]]
+              return sorted(res)
+
+          def _gen(r):
+              out = []
+              for _ in range(r.randint(1, 7)):
+                  s = r.randint(0, 12)
+                  out.append([s, s + r.randint(0, 4)])
+              return (out,)
+
+          _edge = [[[5, 6], [1, 3], [2, 4]], [[1, 10], [2, 3]], [[1, 2], [2, 3]], [[4, 5]], [[8, 9], [1, 2]],
+                   [[1, 4], [0, 0]], [[1, 4], [4, 4]], [[2, 2], [2, 2]], [[1, 3], [5, 7], [2, 6]],
+                   [[6, 8], [1, 9], [2, 4], [4, 7]]]
+          against(merge, _ref, [(a,) for a in _edge] + rand_cases(_gen, 300))
+      - id: b
+        prompt: |
+          **Given** (see setup): `intervals` a list of `[start, end]` lists.
+
+          - **Set** `res`: a new list of the intervals sorted by **end** ascending (the greedy order for non-overlapping intervals).
+        setup: |
+          intervals = [[1, 9], [2, 3], [4, 5]]
+        solution: |
+          res = sorted(intervals, key=lambda i: i[1])
+        check: |
+          assert res == [[2, 3], [4, 5], [1, 9]], f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `intervals` a list of `[start, end]` lists sorted by start; `res` holds a copy of the first one.
+
+          - **Modify** `res`: merge the remaining intervals into it, in order (overlapping or touching intervals merge into one).
+        setup: |
+          intervals = [[1, 4], [2, 3], [3, 6], [8, 9]]
+          res = [[1, 4]]
+        solution: |
+          for s, e in intervals[1:]:
+              if s <= res[-1][1]:
+                  res[-1][1] = max(res[-1][1], e)
+              else:
+                  res.append([s, e])
+        check: |
+          assert res == [[1, 6], [8, 9]], f"res = {res!r}"
+
+  - id: sorting.by-value
+    name: sort a dict by its values
+    teach: |
+      ```python
+      d = {"a": 1, "b": 3}
+      # sorted(d) sorts the KEYS; key=d.get orders them by their value
+      sorted(d, key=d.get, reverse=True)        # ['b', 'a']
+      # sorted(d.items(), key=lambda kv: kv[1]) -> (key, value) pairs by value
+      sorted(d.items(), key=lambda kv: kv[1])   # [('a', 1), ('b', 3)]
+      ```
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `count` a dict letter → frequency (int, all different).
+
+          - **Set** `res`: list of the letters, most frequent first.
+          - **Set** `pairs`: list of `(letter, frequency)` tuples, lowest frequency first.
+        setup: |
+          count = {"a": 1, "b": 3, "c": 2}
+        solution: |
+          res = sorted(count, key=count.get, reverse=True)
+          pairs = sorted(count.items(), key=lambda kv: kv[1])
+        check: |
+          assert res == ["b", "c", "a"], f"res = {res!r}"
+          assert pairs == [("a", 1), ("c", 2), ("b", 3)], f"pairs = {pairs!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `scores` a dict name → score (int, all different).
+
+          - **Set** `res`: list of `(name, score)` tuples, lowest score first.
+        setup: |
+          scores = {"x": 30, "y": 10, "z": 20}
+        solution: |
+          res = sorted(scores.items(), key=lambda kv: kv[1])
+        check: |
+          assert res == [("y", 10), ("z", 20), ("x", 30)], f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `count` a dict value → frequency (int, all different); an int `k`.
+
+          - **Set** `res`: list of the `k` most frequent values, most frequent first.
+        setup: |
+          count = {4: 1, 7: 5, 2: 3}
+          k = 2
+        solution: |
+          res = sorted(count, key=count.get, reverse=True)[:k]
+        check: |
+          assert res == [7, 2], f"res = {res!r}"
+
+  - id: sorting.cmp
+    name: custom comparator with cmp_to_key
+    teach: |
+      ```python
+      from functools import cmp_to_key
+      # cmp(a, b) -> number: negative = a first, positive = b first, 0 = tie
+      # cmp_to_key(cmp) -> a key built from that comparator
+      sorted(["3", "30", "9"], key=cmp_to_key(lambda a, b: -1 if a + b > b + a else 1))
+      # ['9', '3', '30']   Largest Number order: is a+b > b+a?
+      ```
+      Pitfall: passing `key=cmp` directly raises TypeError; return a number, not a bool.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `cmp_to_key` imported; `nums` a list of ints; `strs` a list of digit strings.
+
+          - **Set** `res`: `nums` sorted ascending using the comparator `lambda a, b: a - b`.
+          - **Set** `big`: str, the strings of `strs` joined in the order that makes the concatenation as large as possible.
+        setup: |
+          from functools import cmp_to_key
+          nums = [3, 1, 2]
+          strs = ["3", "30", "9"]
+        solution: |
+          res = sorted(nums, key=cmp_to_key(lambda a, b: a - b))
+          big = "".join(sorted(strs, key=cmp_to_key(lambda a, b: -1 if a + b > b + a else 1)))
+        check: |
+          assert res == [1, 2, 3], f"res = {res!r}"
+          assert big == "9330", f"big = {big!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): `cmp_to_key` imported; `strs` a list of digit strings.
+
+          - **Set** `res`: str, the strings of `strs` joined in the order that makes the concatenation as large as possible.
+        setup: |
+          from functools import cmp_to_key
+          strs = ["3", "30", "34", "5", "9"]
+        solution: |
+          strs.sort(key=cmp_to_key(lambda a, b: -1 if a + b > b + a else 1))
+          res = "".join(strs)
+        check: |
+          assert res == "9534330", f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `cmp_to_key` imported; `nums` a list of non-negative ints.
+
+          - **Set** `res`: str, the largest number formed by concatenating all of `nums`, without leading zeros (`[0, 0]` gives `"0"`).
+        setup: |
+          from functools import cmp_to_key
+          nums = [0, 0]
+        solution: |
+          strs = sorted(map(str, nums), key=cmp_to_key(lambda a, b: -1 if a + b > b + a else 1))
+          res = "".join(strs).lstrip("0") or "0"
+        check: |
+          assert res == "0", f"res = {res!r}"
+
+  - id: sorting.strings
+    name: sorting strings and characters
+    teach: |
+      ```python
+      # sorted(s) on a string -> LIST of chars; "".join it to get the anagram key
+      "".join(sorted("cab"))         # 'abc'
+      # strings compare letter by letter, uppercase before lowercase
+      sorted(["bob", "al", "Zed"])   # ['Zed', 'al', 'bob']
+      ```
+      Pitfall: strings are immutable, so there is no `s.sort()`.
+    cards:
+      - id: a
+        prompt: |
+          **Given** (see setup): `s` a string; `words` a list of strings in mixed case.
+
+          - **Set** `res`: str, the letters of `s` in sorted order.
+          - **Set** `order`: list, `words` sorted with plain string order (uppercase before lowercase).
+        setup: |
+          s = "tea"
+          words = ["bob", "Zed", "al"]
+        solution: |
+          res = "".join(sorted(s))
+          order = sorted(words)
+        check: |
+          assert res == "aet", f"res = {res!r}"
+          assert order == ["Zed", "al", "bob"], f"order = {order!r}"
+      - id: b
+        prompt: |
+          **Given** (see setup): strings `s` and `t`.
+
+          - **Set** `res`: bool, whether `s` and `t` are anagrams (same letters, same counts), by sorting.
+        setup: |
+          s = "listen"
+          t = "silent"
+        solution: |
+          res = sorted(s) == sorted(t)
+        check: |
+          assert res is True, f"res = {res!r}"
+      - id: c
+        prompt: |
+          **Given** (see setup): `words` a list of strings; `groups` a `defaultdict(list)`.
+
+          - **Modify** `groups`: append each word, in order, to `groups[key]`, where `key` is the word's letters sorted, as a string.
+        setup: |
+          from collections import defaultdict
+          words = ["eat", "tea", "tan"]
+          groups = defaultdict(list)
+        solution: |
+          for w in words:
+              groups["".join(sorted(w))].append(w)
+        check: |
+          assert dict(groups) == {"aet": ["eat", "tea"], "ant": ["tan"]}, f"groups = {dict(groups)!r}"
+      - id: d
+        prompt: |
+          **Given** (see setup): `words` a list of strings in mixed case.
+
+          - **Set** `a`: list, `words` sorted with plain string order (uppercase before lowercase).
+          - **Set** `b`: list, `words` sorted ignoring upper/lower case.
+        setup: |
+          words = ["bob", "Zed", "al"]
+        solution: |
+          a = sorted(words)
+          b = sorted(words, key=str.lower)
+        check: |
+          assert a == ["Zed", "al", "bob"], f"a = {a!r}"
+          assert b == ["al", "bob", "Zed"], f"b = {b!r}"

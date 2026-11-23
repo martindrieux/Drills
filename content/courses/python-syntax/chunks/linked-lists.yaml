@@ -1,0 +1,994 @@
+id: linked-lists
+title: Linked list idioms
+intro: |
+  Every linked-list problem is a few fixed moves on `ListNode`s: walk, build with a dummy head,
+  reverse, fast/slow pointers, a gap of n, merge. Each card gives you `ListNode`, `build(vals)` and
+  often `to_list(head)`, so you only write the idiom.
+problems:
+  - Reverse Linked List
+  - Merge Two Sorted Lists
+  - Linked List Cycle
+  - Remove Nth Node From End of List
+  - Reorder List
+  - Middle of the Linked List
+atoms: []
+skills:
+  - id: linked-lists.traverse
+    name: walk with while cur
+    teach: |
+      ```python
+      cur = head
+      while cur:              # ends with cur = None, after the last node
+          total += cur.val
+          cur = cur.next      # forget this line -> infinite loop
+      # while cur.next: ... stops ON the last node (to get the tail)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `ListNode` and `build(vals)` (see setup); `head: ListNode | None`.
+          - **Write** `total(head)`. **Returns** an `int`: the sum of all values, `0` for an empty list (`head is None`).
+          - **Write** `tail_of(head)` for a **non-empty** list. **Returns** the last `ListNode` itself (its `next` is `None`), not its value.
+          - **Checked on**: empty, 1 node, negatives, duplicates, 300 random lists; `tail_of` must return the list's own last node.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+        solution: |
+          def total(head):
+              s = 0
+              cur = head
+              while cur:
+                  s += cur.val
+                  cur = cur.next
+              return s
+
+          def tail_of(head):
+              cur = head
+              while cur.next:
+                  cur = cur.next
+              return cur
+        check: |
+          from cardtest import against, rand_cases
+
+          def _nodes(head):  # every node from head, stopping on a cycle
+              out = []
+              while head is not None:
+                  if len(out) > 100:
+                      raise AssertionError("the returned list never ends: some .next points back to an earlier node (a cycle)")
+                  out.append(head)
+                  head = head.next
+              return out
+          def _fmt(vals):
+              return " -> ".join(map(str, vals)) or "None"
+
+          def _gen(r):
+              return ([r.randint(-9, 9) for _ in range(r.randint(0, 10))],)
+          cases = [([],), ([5],), ([0],), ([-3],), ([4, 8, 15, 16],), ([1, -1],), ([2, 2, 2],)] + rand_cases(_gen, 300)
+          _show = lambda vals: f"({_fmt(vals)})"
+          against(lambda vals: total(build(vals)), sum, cases, show=_show, name="total")
+          def _tail(vals):
+              nodes = _nodes(build(vals))
+              t = tail_of(nodes[0])
+              if t is nodes[-1]:
+                  return "the last node"
+              if isinstance(t, ListNode):
+                  return f"a node holding {t.val!r} that is not the last node"
+              return f"{t!r} (not a node)"
+          against(_tail, lambda vals: "the last node", [c for c in cases if c[0]], show=_show, name="tail_of")
+      - id: b
+        prompt: |
+          - **Given**: `head`, a 3-node list (see setup, with `ListNode` and `build`).
+          - **Set** `vals`: a Python `list` of the values in list order, collected with `while cur:`.
+          - **Checked on**: the given list.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          head = build([3, 1, 2])
+        solution: |
+          vals = []
+          cur = head
+          while cur:
+              vals.append(cur.val)
+              cur = cur.next
+        check: |
+          assert vals == [3, 1, 2], f"vals = {vals!r}"
+      - id: c
+        prompt: |
+          - **Given**: `head`, a 3-node list (see setup).
+          - **Set** `tail`: the last **node** (the `ListNode` whose `next` is `None`), not its value.
+          - **Checked on**: the given list.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          head = build([5, 6, 7])
+        solution: |
+          tail = head
+          while tail.next:
+              tail = tail.next
+        check: |
+          assert isinstance(tail, ListNode), f"tail = {tail!r} (should be a node)"
+          assert tail.val == 7 and tail.next is None, f"tail.val = {tail.val!r}"
+
+  - id: linked-lists.dummy
+    name: dummy head + tail
+    teach: |
+      ```python
+      dummy = tail = ListNode(0)   # fake first node: no special case for the head
+      for v in vals:
+          tail.next = ListNode(v)
+          tail = tail.next
+      head = dummy.next            # the real head
+      # ListNode(0, head): a dummy in front of an existing list, so the head can be deleted like any node
+      cur = dummy = ListNode(0, head)
+      cur.next = cur.next.next     # unlinks the node after cur (here the head); don't advance cur after a delete
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `ListNode`, `build(vals)`, `to_list(head)` (see setup).
+          - **Write** `from_vals(vals)` with a dummy node + `tail`. **Returns** the head (`ListNode | None`) of a new list holding `vals` in order; `None` for `[]`.
+          - **Write** `remove_val(head, val)` with `dummy = ListNode(0, head)`. **Returns** the new head (`ListNode | None`) after unlinking every node whose value is `val`; keep the other nodes (no copies); `None` if nothing is left.
+          - **Checked on**: empty lists, the head removed, consecutive matches (`7 -> 7 -> 1`), everything removed, `val` absent, 300 random lists.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+        solution: |
+          def from_vals(vals):
+              dummy = tail = ListNode(0)
+              for v in vals:
+                  tail.next = ListNode(v)
+                  tail = tail.next
+              return dummy.next
+
+          def remove_val(head, val):
+              dummy = ListNode(0, head)
+              cur = dummy
+              while cur.next:
+                  if cur.next.val == val:
+                      cur.next = cur.next.next
+                  else:
+                      cur = cur.next
+              return dummy.next
+        check: |
+          from cardtest import against, rand_cases
+
+          def _nodes(head):  # every node from head, stopping on a cycle
+              out = []
+              while head is not None:
+                  if len(out) > 100:
+                      raise AssertionError("the returned list never ends: some .next points back to an earlier node (a cycle)")
+                  out.append(head)
+                  head = head.next
+              return out
+          def _fmt(vals):
+              return " -> ".join(map(str, vals)) or "None"
+
+          def _gen1(r):
+              return ([r.randint(-9, 9) for _ in range(r.randint(0, 10))],)
+          against(lambda vals: [n.val for n in _nodes(from_vals(vals))], lambda vals: list(vals),
+                  [([],), ([7],), ([0, 0],), ([1, 2, 3],)] + rand_cases(_gen1, 200),
+                  show=lambda vals: f"({vals!r}))", name="to_list(from_vals")
+          assert from_vals([]) is None, f"from_vals([]) = {from_vals([])!r} (should be None)"
+          x, y = from_vals([1, 2]), from_vals([1, 2])
+          assert isinstance(x, ListNode) and x is not y, "from_vals must build new ListNodes on every call"
+          def _rm(vals, val):
+              nodes = _nodes(build(vals))
+              got = _nodes(remove_val(nodes[0] if nodes else None, val))
+              if any(all(g is not n for n in nodes) for g in got):
+                  return "new nodes: unlink the removed nodes, keep the original others"
+              return [g.val for g in got]
+          def _gen2(r):
+              vals = [r.randint(-3, 3) for _ in range(r.randint(0, 10))]
+              return (vals, r.choice(vals) if vals and r.random() < 0.8 else r.randint(-3, 3))
+          edge = [([], 1), ([7], 7), ([7], 1), ([7, 7, 1], 7), ([1, 7, 7], 7), ([5, 5], 5), ([5, 5, 5], 5),
+                  ([7, 1, 7, 2], 7), ([1, 2], 3), ([0, 1, 0], 0)]
+          against(_rm, lambda vals, val: [v for v in vals if v != val], edge + rand_cases(_gen2, 300),
+                  show=lambda vals, val: f"({_fmt(vals)}, {val}))", name="to_list(remove_val")
+      - id: b
+        prompt: |
+          - **Given**: `head`, a list of 5 ints (see setup, with `ListNode`, `build`, `to_list`).
+          - **Set** `res`: the head of a **new** list (dummy + tail, new `ListNode`s) holding only the even values of `head`, in order.
+          - **Checked on**: `to_list(res)` for the given list.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+
+          head = build([1, 4, 3, 6, 8])
+        solution: |
+          dummy = tail = ListNode(0)
+          cur = head
+          while cur:
+              if cur.val % 2 == 0:
+                  tail.next = ListNode(cur.val)
+                  tail = tail.next
+              cur = cur.next
+          res = dummy.next
+        check: |
+          assert to_list(res) == [4, 6, 8], f"to_list(res) = {to_list(res)!r}"
+      - id: c
+        prompt: |
+          - **Given**: `head` = `7 -> 1 -> 7 -> 2` and `val = 7` (see setup, with `ListNode`, `build`, `to_list`).
+          - **Set** `res`: the head of the list after unlinking every node whose value is `val` (the head too), using `dummy = ListNode(0, head)`.
+          - **Checked on**: `to_list(res)` for the given list.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+
+          head = build([7, 1, 7, 2])
+          val = 7
+        solution: |
+          dummy = ListNode(0, head)
+          cur = dummy
+          while cur.next:
+              if cur.next.val == val:
+                  cur.next = cur.next.next
+              else:
+                  cur = cur.next
+          res = dummy.next
+        check: |
+          assert to_list(res) == [1, 2], f"to_list(res) = {to_list(res)!r}"
+
+  - id: linked-lists.reverse
+    name: reverse in place
+    teach: |
+      ```python
+      prev, cur = None, head
+      while cur:
+          nxt = cur.next
+          cur.next = prev          # turn this arrow around
+          prev = cur
+          cur = nxt
+      # prev is the new head
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `ListNode`, `build`, `to_list` (see setup); `head: ListNode | None`.
+          - **Write** `reverse(head)`: reverse the list **in place** (turn each `next` around; no new nodes).
+          - **Returns**: the new head (`ListNode | None`, the old tail); `None` for an empty list.
+          - **Checked on**: empty, 1 and 2 nodes, odd/even lengths, duplicates, 300 random lists; the result must reuse the same node objects.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+        solution: |
+          def reverse(head):
+              prev, cur = None, head
+              while cur:
+                  nxt = cur.next
+                  cur.next = prev
+                  prev = cur
+                  cur = nxt
+              return prev
+        check: |
+          from cardtest import against, rand_cases
+
+          def _nodes(head):  # every node from head, stopping on a cycle
+              out = []
+              while head is not None:
+                  if len(out) > 100:
+                      raise AssertionError("the returned list never ends: some .next points back to an earlier node (a cycle)")
+                  out.append(head)
+                  head = head.next
+              return out
+          def _fmt(vals):
+              return " -> ".join(map(str, vals)) or "None"
+
+          def _rev(vals):
+              nodes = _nodes(build(vals))
+              got = _nodes(reverse(nodes[0] if nodes else None))
+              if len(got) == len(nodes) and any(g is not n for g, n in zip(got, reversed(nodes))):
+                  return "new nodes: reverse the original nodes in place"
+              return [g.val for g in got]
+          def _gen(r):
+              return ([r.randint(-9, 9) for _ in range(r.randint(0, 10))],)
+          edge = [([],), ([5],), ([1, 2],), ([1, 2, 3],), ([4, 4, 1],), ([1, 2, 3, 4],)]
+          against(_rev, lambda vals: vals[::-1], edge + rand_cases(_gen, 300),
+                  show=lambda vals: f"({_fmt(vals)}))", name="to_list(reverse")
+      - id: b
+        prompt: |
+          - **Given**: `ListNode`, `build`, `to_list` (see setup); `head: ListNode | None`.
+          - **Write** `reverse(head)` in place, with a **one-line** loop body `cur.next, prev, cur = ...` (the whole right side is evaluated first, then the targets are assigned left to right).
+          - **Returns**: the new head (`ListNode | None`); `None` for an empty list.
+          - **Checked on**: empty, 1 and 2 nodes, odd/even lengths, 300 random lists; the result must reuse the same node objects.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+        solution: |
+          def reverse(head):
+              prev, cur = None, head
+              while cur:
+                  cur.next, prev, cur = prev, cur, cur.next
+              return prev
+        check: |
+          from cardtest import against, rand_cases
+
+          def _nodes(head):  # every node from head, stopping on a cycle
+              out = []
+              while head is not None:
+                  if len(out) > 100:
+                      raise AssertionError("the returned list never ends: some .next points back to an earlier node (a cycle)")
+                  out.append(head)
+                  head = head.next
+              return out
+          def _fmt(vals):
+              return " -> ".join(map(str, vals)) or "None"
+
+          def _rev(vals):
+              nodes = _nodes(build(vals))
+              got = _nodes(reverse(nodes[0] if nodes else None))
+              if len(got) == len(nodes) and any(g is not n for g, n in zip(got, reversed(nodes))):
+                  return "new nodes: reverse the original nodes in place"
+              return [g.val for g in got]
+          def _gen(r):
+              return ([r.randint(-9, 9) for _ in range(r.randint(0, 10))],)
+          edge = [([],), ([5],), ([1, 2],), ([1, 2, 3],), ([4, 4, 1],), ([1, 2, 3, 4],)]
+          against(_rev, lambda vals: vals[::-1], edge + rand_cases(_gen, 300),
+                  show=lambda vals: f"({_fmt(vals)}))", name="to_list(reverse")
+      - id: c
+        prompt: |
+          - **Given**: `head` = `1 -> 2 -> 3` (see setup, with `ListNode`, `build`, `to_list`).
+          - **Set** `rev`: the head of a **new** list with the values in reverse order, built by walking `head` and prepending each value with `rev = ListNode(cur.val, rev)`.
+          - `head` must stay unchanged.
+          - **Checked on**: `to_list(rev)` and `to_list(head)` afterwards.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+
+          head = build([1, 2, 3])
+        solution: |
+          rev = None
+          cur = head
+          while cur:
+              rev = ListNode(cur.val, rev)
+              cur = cur.next
+        check: |
+          assert to_list(rev) == [3, 2, 1], f"to_list(rev) = {to_list(rev)!r}"
+          assert to_list(head) == [1, 2, 3], f"head changed: {to_list(head)!r}"
+
+  - id: linked-lists.fast-slow
+    name: fast and slow pointers
+    teach: |
+      ```python
+      slow = fast = head
+      while fast and fast.next:        # fast moves 2 steps, slow 1
+          slow = slow.next
+          fast = fast.next.next
+          # cycle check goes here: if slow is fast: return True
+      # slow = the middle (the 2nd middle on even length; for the 1st: while fast.next and fast.next.next)
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `ListNode`, `build` (see setup), and `looped`, the list `1 -> 2 -> 3 -> 4` whose `4` points back to `2`.
+          - **Write** `middle(head)` with fast/slow pointers, `head` non-empty. **Returns** the middle `ListNode` (not its value): index `len // 2`, i.e. the **2nd** middle on even length.
+          - **Write** `first_middle(head)`, `head` non-empty. **Returns** the middle `ListNode`, the **1st** middle on even length (index `(len - 1) // 2`).
+          - **Write** `has_cycle(head)`. **Returns** `True` if following `next` loops back to an earlier node, else `False` (`False` for `None`).
+          - **Checked on**: lengths 1 to 12 (odd and even) with duplicate values; for `has_cycle`: `None`, no cycle, and a cycle back to every position (incl. a node pointing to itself).
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          looped = build([1, 2, 3, 4])
+          looped.next.next.next.next = looped.next   # 4 -> 2
+        solution: |
+          def middle(head):
+              slow = fast = head
+              while fast and fast.next:
+                  slow = slow.next
+                  fast = fast.next.next
+              return slow
+
+          def first_middle(head):
+              slow = fast = head
+              while fast.next and fast.next.next:
+                  slow = slow.next
+                  fast = fast.next.next
+              return slow
+
+          def has_cycle(head):
+              slow = fast = head
+              while fast and fast.next:
+                  slow = slow.next
+                  fast = fast.next.next
+                  if slow is fast:
+                      return True
+              return False
+        check: |
+          from cardtest import against, rand_cases
+
+          def _nodes(head):  # every node from head, stopping on a cycle
+              out = []
+              while head is not None:
+                  if len(out) > 100:
+                      raise AssertionError("the returned list never ends: some .next points back to an earlier node (a cycle)")
+                  out.append(head)
+                  head = head.next
+              return out
+          def _fmt(vals):
+              return " -> ".join(map(str, vals)) or "None"
+
+          def _pick(fn):
+              def run(vals):
+                  nodes = _nodes(build(vals))
+                  m = fn(nodes[0])
+                  for i, n in enumerate(nodes):
+                      if n is m:
+                          return f"the node at index {i} (val {n.val})"
+                  return f"{m!r} (not one of the list's nodes)"
+              return run
+          def _at(k):
+              return lambda vals: f"the node at index {k(len(vals))} (val {vals[k(len(vals))]})"
+          def _gen(r):
+              return ([r.randint(0, 4) for _ in range(r.randint(1, 12))],)
+          cases = [([7],), ([1, 2],), ([1, 2, 3],), ([1, 2, 3, 4],), ([1, 2, 3, 4, 5],), ([5, 5, 5, 5],)] + rand_cases(_gen, 250)
+          _show = lambda vals: f"({_fmt(vals)})"
+          against(_pick(middle), _at(lambda n: n // 2), cases, show=_show, name="middle")
+          against(_pick(first_middle), _at(lambda n: (n - 1) // 2), cases, show=_show, name="first_middle")
+          assert has_cycle(looped) is True, f"has_cycle(looped) = {has_cycle(looped)!r}"
+
+          def _cyc(vals, pos):  # the tail points back to index pos (-1 = no cycle)
+              nodes = [ListNode(v) for v in vals]
+              for x, y in zip(nodes, nodes[1:]):
+                  x.next = y
+              if pos >= 0:
+                  nodes[-1].next = nodes[pos]
+              return has_cycle(nodes[0] if nodes else None)
+          def _gen_c(r):
+              n = r.randint(0, 12)
+              return ([r.randint(0, 3) for _ in range(n)], r.randint(-1, n - 1) if n else -1)
+          def _show_c(vals, pos):
+              return f"({_fmt(vals)}" + (f", tail.next -> index {pos})" if pos >= 0 else ", no cycle)")
+          edge_c = [([], -1), ([1], -1), ([1], 0), ([1, 2], -1), ([1, 2], 0), ([1, 2], 1), ([1, 2, 3, 4], 1),
+                    ([1, 1, 1], -1), ([2, 1, 2, 1], -1)] + [([0, 1, 2, 3, 4, 5], p) for p in range(-1, 6)]
+          against(_cyc, lambda vals, pos: pos >= 0, edge_c + rand_cases(_gen_c, 300),
+                  same=lambda got, want: got is want, show=_show_c, name="has_cycle")
+      - id: b
+        prompt: |
+          - **Given**: `head` = `1 -> 2 -> 3 -> 4` (even length; see setup).
+          - **Set** `mid`: the **first** of the two middle nodes (the `ListNode` itself, not its value), found with fast/slow pointers.
+          - **Checked on**: the given list.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          head = build([1, 2, 3, 4])
+        solution: |
+          slow = fast = head
+          while fast.next and fast.next.next:
+              slow = slow.next
+              fast = fast.next.next
+          mid = slow
+        check: |
+          assert isinstance(mid, ListNode), f"mid = {mid!r} (should be a node)"
+          assert mid.val == 2, f"mid.val = {mid.val!r}"
+      - id: c
+        prompt: |
+          - **Given**: `ListNode`, `build` (see setup), and `looped` (`1 -> 2 -> 3 -> 4`, with `4` pointing back to `2`).
+          - **Write** `has_cycle(head)` with fast/slow pointers.
+          - **Returns**: `True` if following `next` loops back to an earlier node, else `False` (`False` for `None`).
+          - **Checked on**: `None`, 1 node, no cycle, and a cycle back to every position (incl. a node pointing to itself), with duplicate values.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          looped = build([1, 2, 3, 4])
+          looped.next.next.next.next = looped.next   # 4 -> 2
+        solution: |
+          def has_cycle(head):
+              slow = fast = head
+              while fast and fast.next:
+                  slow = slow.next
+                  fast = fast.next.next
+                  if slow is fast:
+                      return True
+              return False
+        check: |
+          from cardtest import against, rand_cases
+          def _fmt(vals):
+              return " -> ".join(map(str, vals)) or "None"
+          assert has_cycle(looped) is True, f"has_cycle(looped) = {has_cycle(looped)!r}"
+
+          def _cyc(vals, pos):  # the tail points back to index pos (-1 = no cycle)
+              nodes = [ListNode(v) for v in vals]
+              for x, y in zip(nodes, nodes[1:]):
+                  x.next = y
+              if pos >= 0:
+                  nodes[-1].next = nodes[pos]
+              return has_cycle(nodes[0] if nodes else None)
+          def _gen_c(r):
+              n = r.randint(0, 12)
+              return ([r.randint(0, 3) for _ in range(n)], r.randint(-1, n - 1) if n else -1)
+          def _show_c(vals, pos):
+              return f"({_fmt(vals)}" + (f", tail.next -> index {pos})" if pos >= 0 else ", no cycle)")
+          edge_c = [([], -1), ([1], -1), ([1], 0), ([1, 2], -1), ([1, 2], 0), ([1, 2], 1), ([1, 2, 3, 4], 1),
+                    ([1, 1, 1], -1), ([2, 1, 2, 1], -1)] + [([0, 1, 2, 3, 4, 5], p) for p in range(-1, 6)]
+          against(_cyc, lambda vals, pos: pos >= 0, edge_c + rand_cases(_gen_c, 300),
+                  same=lambda got, want: got is want, show=_show_c, name="has_cycle")
+
+  - id: linked-lists.gap
+    name: two pointers n apart
+    teach: |
+      ```python
+      # fast starts k steps ahead; when fast falls off, slow is k nodes from the end
+      dummy = ListNode(0, head)
+      slow = fast = dummy
+      for _ in range(n + 1):           # n + 1 from a dummy: slow stops just BEFORE the n-th from the end
+          fast = fast.next
+      while fast:
+          slow, fast = slow.next, fast.next
+      slow.next = slow.next.next       # remove it
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `ListNode`, `build`, `to_list` (see setup); a non-empty `head` and `1 <= n <= length`.
+          - **Write** `remove_nth(head, n)`: unlink the `n`-th node **from the end** (`n = 1` is the last node) with a dummy and two pointers `n` apart.
+          - **Returns**: the new head (`ListNode | None`; `None` if the only node was removed). Keep the other nodes (no copies).
+          - **Checked on**: removing the head (`n = length`), the last node (`n = 1`), a 1-node list, duplicates, 300 random lists.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+        solution: |
+          def remove_nth(head, n):
+              dummy = ListNode(0, head)
+              slow = fast = dummy
+              for _ in range(n + 1):
+                  fast = fast.next
+              while fast:
+                  slow, fast = slow.next, fast.next
+              slow.next = slow.next.next
+              return dummy.next
+        check: |
+          from cardtest import against, rand_cases
+
+          def _nodes(head):  # every node from head, stopping on a cycle
+              out = []
+              while head is not None:
+                  if len(out) > 100:
+                      raise AssertionError("the returned list never ends: some .next points back to an earlier node (a cycle)")
+                  out.append(head)
+                  head = head.next
+              return out
+          def _fmt(vals):
+              return " -> ".join(map(str, vals)) or "None"
+
+          def _rm(vals, n):
+              nodes = _nodes(build(vals))
+              got = _nodes(remove_nth(nodes[0], n))
+              if any(all(g is not x for x in nodes) for g in got):
+                  return "new nodes: unlink one node, keep the original others"
+              return [g.val for g in got]
+          def _ref(vals, n):
+              out = list(vals)
+              del out[len(vals) - n]
+              return out
+          def _gen(r):
+              vals = [r.randint(0, 9) for _ in range(r.randint(1, 10))]
+              return (vals, r.randint(1, len(vals)))
+          edge = [([9], 1), ([1, 2], 1), ([1, 2], 2), ([1, 2, 3], 3), ([1, 2, 3], 1), ([1, 2, 3, 4, 5], 2), ([4, 4, 4], 2)]
+          against(_rm, _ref, edge + rand_cases(_gen, 300),
+                  show=lambda vals, n: f"({_fmt(vals)}, n={n}))", name="to_list(remove_nth")
+      - id: b
+        prompt: |
+          - **Given**: `head` = `1 -> 2 -> 3 -> 4 -> 5` and `n = 2` (see setup, with `ListNode`, `build`, `to_list`).
+          - **Set** `res`: the head of the list after unlinking the `n`-th node from the end (`n = 1` is the last), using `dummy = ListNode(0, head)` and two pointers.
+          - **Checked on**: `to_list(res)` for the given list.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+
+          head = build([1, 2, 3, 4, 5])
+          n = 2
+        solution: |
+          dummy = ListNode(0, head)
+          slow = fast = dummy
+          for _ in range(n + 1):
+              fast = fast.next
+          while fast:
+              slow, fast = slow.next, fast.next
+          slow.next = slow.next.next
+          res = dummy.next
+        check: |
+          assert to_list(res) == [1, 2, 3, 5], f"to_list(res) = {to_list(res)!r}"
+      - id: c
+        prompt: |
+          - **Given**: `ListNode`, `build` (see setup); a non-empty `head` and `1 <= n <= length`.
+          - **Write** `nth_from_end(head, n)` with two pointers `n` apart and no dummy.
+          - **Returns**: the `n`-th **node** from the end (the list's own `ListNode`, not its value); `n = 1` is the last node, `n = length` the head.
+          - **Checked on**: `n = 1`, `n = length`, a 1-node list, duplicates, 300 random lists.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+        solution: |
+          def nth_from_end(head, n):
+              slow = fast = head
+              for _ in range(n):
+                  fast = fast.next
+              while fast:
+                  slow, fast = slow.next, fast.next
+              return slow
+        check: |
+          from cardtest import against, rand_cases
+
+          def _nodes(head):  # every node from head, stopping on a cycle
+              out = []
+              while head is not None:
+                  if len(out) > 100:
+                      raise AssertionError("the returned list never ends: some .next points back to an earlier node (a cycle)")
+                  out.append(head)
+                  head = head.next
+              return out
+          def _fmt(vals):
+              return " -> ".join(map(str, vals)) or "None"
+
+          def _nth(vals, n):
+              nodes = _nodes(build(vals))
+              m = nth_from_end(nodes[0], n)
+              for i, x in enumerate(nodes):
+                  if x is m:
+                      return f"the node at index {i} (val {x.val})"
+              return f"{m!r} (not one of the list's nodes)"
+          def _ref(vals, n):
+              i = len(vals) - n
+              return f"the node at index {i} (val {vals[i]})"
+          def _gen(r):
+              vals = [r.randint(0, 9) for _ in range(r.randint(1, 10))]
+              return (vals, r.randint(1, len(vals)))
+          edge = [([9], 1), ([1, 2], 1), ([1, 2], 2), ([1, 2, 3], 3), ([1, 2, 3], 1), ([1, 2, 3, 4, 5], 2), ([4, 4, 4], 2)]
+          against(_nth, _ref, edge + rand_cases(_gen, 300), show=lambda vals, n: f"({_fmt(vals)}, n={n})", name="nth_from_end")
+
+  - id: linked-lists.merge
+    name: merge two sorted lists
+    teach: |
+      ```python
+      dummy = tail = ListNode()
+      while l1 and l2:               # take the smaller head each time
+          if l1.val <= l2.val:
+              tail.next, l1 = l1, l1.next
+          else:
+              tail.next, l2 = l2, l2.next
+          tail = tail.next
+      tail.next = l1 or l2       # the leftover list (or None)
+      return dummy.next
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `ListNode`, `build`, `to_list` (see setup); `a`, `b`: lists sorted in non-decreasing order, each `ListNode | None`.
+          - **Write** `merge(a, b)` with a dummy + `tail`, **relinking the existing nodes** (no new `ListNode` except the dummy).
+          - **Returns**: the head (`ListNode | None`) of the merged non-decreasing list; `None` if both are empty.
+          - **Checked on**: one or both empty, equal values across the lists, negatives, very different lengths, 300 random pairs; every result node must be an input node.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+        solution: |
+          def merge(a, b):
+              dummy = tail = ListNode()
+              while a and b:
+                  if a.val <= b.val:
+                      tail.next, a = a, a.next
+                  else:
+                      tail.next, b = b, b.next
+                  tail = tail.next
+              tail.next = a or b
+              return dummy.next
+        check: |
+          from cardtest import against, rand_cases
+
+          def _nodes(head):  # every node from head, stopping on a cycle
+              out = []
+              while head is not None:
+                  if len(out) > 100:
+                      raise AssertionError("the returned list never ends: some .next points back to an earlier node (a cycle)")
+                  out.append(head)
+                  head = head.next
+              return out
+          def _fmt(vals):
+              return " -> ".join(map(str, vals)) or "None"
+
+          def _mg(x, y):
+              na, nb = _nodes(build(x)), _nodes(build(y))
+              got = _nodes(merge(na[0] if na else None, nb[0] if nb else None))
+              ids = {id(n) for n in na + nb}
+              if any(id(g) not in ids for g in got):
+                  return "new nodes: relink the input nodes"
+              return [g.val for g in got]
+          def _gen(r):
+              return (sorted(r.randint(-5, 5) for _ in range(r.randint(0, 8))),
+                      sorted(r.randint(-5, 5) for _ in range(r.randint(0, 8))))
+          edge = [([], []), ([], [4]), ([3], []), ([1, 4], [2, 5, 6]), ([1, 2], [1, 3]), ([1, 1], [1, 1]),
+                  ([5, 6, 7], [1]), ([1], [5, 6, 7]), ([-3, 0], [-3, -1, 9])]
+          against(_mg, lambda x, y: sorted(x + y), edge + rand_cases(_gen, 300),
+                  show=lambda x, y: f"({_fmt(x)}, {_fmt(y)}))", name="to_list(merge")
+      - id: b
+        prompt: |
+          - **Given**: `l1`, `l2`: two lists sorted in non-decreasing order (see setup, with `ListNode`, `build`, `to_list`).
+          - **Set** `res`: the head of one sorted list made by relinking their nodes (dummy + tail).
+          - **Checked on**: `to_list(res)` for the given lists.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+
+          l1, l2 = build([1, 3, 5]), build([2, 3, 4])
+        solution: |
+          dummy = tail = ListNode()
+          while l1 and l2:
+              if l1.val <= l2.val:
+                  tail.next, l1 = l1, l1.next
+              else:
+                  tail.next, l2 = l2, l2.next
+              tail = tail.next
+          tail.next = l1 or l2
+          res = dummy.next
+        check: |
+          assert to_list(res) == [1, 2, 3, 3, 4, 5], f"to_list(res) = {to_list(res)!r}"
+      - id: c
+        prompt: |
+          - **Given**: `ListNode`, `build`, `to_list` (see setup); `a`, `b`: lists sorted in **non-increasing** order, each `ListNode | None`.
+          - **Write** `merge_desc(a, b)` with a dummy + `tail`, relinking the existing nodes (no new `ListNode` except the dummy).
+          - **Returns**: the head (`ListNode | None`) of the merged non-increasing list; `None` if both are empty.
+          - **Checked on**: one or both empty, equal values across the lists, negatives, 300 random pairs; every result node must be an input node.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          def build(vals):  # build([1, 2]) -> 1 -> 2
+              head = None
+              for v in reversed(vals):
+                  head = ListNode(v, head)
+              return head
+
+          def to_list(head):  # 1 -> 2 -> [1, 2]
+              out = []
+              while head:
+                  out.append(head.val)
+                  head = head.next
+              return out
+        solution: |
+          def merge_desc(a, b):
+              dummy = tail = ListNode()
+              while a and b:
+                  if a.val >= b.val:
+                      tail.next, a = a, a.next
+                  else:
+                      tail.next, b = b, b.next
+                  tail = tail.next
+              tail.next = a or b
+              return dummy.next
+        check: |
+          from cardtest import against, rand_cases
+
+          def _nodes(head):  # every node from head, stopping on a cycle
+              out = []
+              while head is not None:
+                  if len(out) > 100:
+                      raise AssertionError("the returned list never ends: some .next points back to an earlier node (a cycle)")
+                  out.append(head)
+                  head = head.next
+              return out
+          def _fmt(vals):
+              return " -> ".join(map(str, vals)) or "None"
+
+          def _mg(x, y):
+              na, nb = _nodes(build(x)), _nodes(build(y))
+              got = _nodes(merge_desc(na[0] if na else None, nb[0] if nb else None))
+              ids = {id(n) for n in na + nb}
+              if any(id(g) not in ids for g in got):
+                  return "new nodes: relink the input nodes"
+              return [g.val for g in got]
+          def _gen(r):
+              return (sorted((r.randint(-5, 5) for _ in range(r.randint(0, 8))), reverse=True),
+                      sorted((r.randint(-5, 5) for _ in range(r.randint(0, 8))), reverse=True))
+          edge = [([], []), ([], [4]), ([3], []), ([3, 2], [3, 1]), ([9, 5], [7]), ([1, 1], [1, 1]), ([7, 6, 5], [9]), ([0, -3], [9, -1, -3])]
+          against(_mg, lambda x, y: sorted(x + y, reverse=True), edge + rand_cases(_gen, 300),
+                  show=lambda x, y: f"({_fmt(x)}, {_fmt(y)}))", name="to_list(merge_desc")

@@ -1,0 +1,211 @@
+id: normalization
+title: Normalization & residuals
+intro: |
+  Every transformer block is "norm, sublayer, add". Know LayerNorm, RMSNorm and BatchNorm
+  by heart (which dims they normalize, what is learned, train vs eval), and the pre-norm residual
+  pattern that wraps every sublayer.
+problems:
+  - Write a transformer block from existing modules
+  - LayerNorm vs BatchNorm, and why transformers use LayerNorm
+  - What does RMSNorm drop compared to LayerNorm?
+  - Pre-norm vs post-norm, and why pre-norm trains more stably
+atoms: []
+skills:
+  - id: normalization.layernorm
+    name: nn.LayerNorm / F.layer_norm
+    teach: |
+      ```python
+      # nn.LayerNorm(D) -> module: normalizes each token over the last dim, then * weight (init 1) + bias (init 0), both (D,)
+      nn.LayerNorm(8)(torch.randn(2, 5, 8)).shape                          # (2, 5, 8)
+      # F.layer_norm(x, normalized_shape) -> tensor: functional, normalizes over the trailing dims in the tuple
+      F.layer_norm(torch.tensor([[1., 3.]]), (2,))                         # tensor([[-1.0000, 1.0000]])
+      ```
+      Pitfall: it uses the **biased** variance (`unbiased=False`) with `eps=1e-5` inside the sqrt.
+    cards:
+      - id: a
+        prompt: |
+          `x` has shape `(2, 5, 8)`. Set: `ln` = a LayerNorm module over the 8 features · `y = ln(x)` ·
+          `z` = `x` normalized over its last dim with `F.layer_norm`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8) * 3 + 1
+        solution: |
+          ln = nn.LayerNorm(8)
+          y = ln(x)
+          z = F.layer_norm(x, (8,))
+        check: |
+          assert isinstance(ln, nn.LayerNorm), f"ln = {ln}"
+          ref = (x - x.mean(-1, keepdim=True)) / torch.sqrt(x.var(-1, unbiased=False, keepdim=True) + 1e-5)
+          assert y.shape == (2, 5, 8), f"y.shape = {tuple(y.shape)}"
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0] = {y[0, 0]}"
+          assert torch.allclose(z, ref, atol=1e-5), f"z[0, 0] = {z[0, 0]}"
+      - id: b
+        prompt: "`x` is a batch of images `(2, 3, 4, 4)`. With `F.layer_norm`, normalize each image over its **last three dims** `(C, H, W)` into `y`."
+        setup: |
+          import torch
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          x = torch.randn(2, 3, 4, 4) * 3 + 1
+        solution: |
+          y = F.layer_norm(x, (3, 4, 4))
+        check: |
+          dims = (1, 2, 3)
+          ref = (x - x.mean(dims, keepdim=True)) / torch.sqrt(x.var(dims, unbiased=False, keepdim=True) + 1e-5)
+          assert y.shape == (2, 3, 4, 4), f"y.shape = {tuple(y.shape)}"
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0, 0] = {y[0, 0, 0]}"
+
+  - id: normalization.rmsnorm
+    name: nn.RMSNorm
+    teach: |
+      ```python
+      # nn.RMSNorm(D, eps) -> module (LLaMA, torch >= 2.4): x / sqrt(mean(x**2, last dim) + eps) * weight (D,); no mean, no bias
+      nn.RMSNorm(8, eps=1e-6)(torch.randn(2, 5, 8)).shape     # (2, 5, 8)
+      # torch.rsqrt(t) -> tensor: 1 / sqrt(t), elementwise
+      torch.rsqrt(torch.tensor(4.))                           # tensor(0.5000)
+      ```
+      Pitfall: the default `eps=None` means `torch.finfo(x.dtype).eps`, not `1e-5` like LayerNorm.
+    cards:
+      - id: a
+        prompt: |
+          `x` has shape `(2, 5, 8)`. Set: `norm` = an RMSNorm module over the 8 features with `eps = 1e-6` · `y = norm(x)` ·
+          `inv` = `1 / sqrt(ms)` with `torch.rsqrt`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8) * 2 + 1
+          ms = torch.tensor([4.0, 0.25])
+        solution: |
+          norm = nn.RMSNorm(8, eps=1e-6)
+          y = norm(x)
+          inv = torch.rsqrt(ms)
+        check: |
+          assert isinstance(norm, nn.RMSNorm), f"norm = {norm}"
+          assert norm.eps == 1e-6, f"norm.eps = {norm.eps}"
+          ref = x / torch.sqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6)
+          assert y.shape == (2, 5, 8), f"y.shape = {tuple(y.shape)}"
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0] = {y[0, 0]}"
+          assert torch.allclose(inv, torch.tensor([0.5, 2.0])), f"inv = {inv}"
+      - id: b
+        prompt: Sanity check. Compute RMSNorm **by hand** (no weight, `eps = 1e-6`) of `x` over the last dim into `y`.
+        setup: |
+          import torch
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8) * 2 + 1
+        solution: |
+          y = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6)
+        check: |
+          import torch.nn as nn
+          ref = nn.RMSNorm(8, eps=1e-6, elementwise_affine=False)(x)
+          assert y.shape == (2, 5, 8), f"y.shape = {tuple(y.shape)}"
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0] = {y[0, 0]}\nref = {ref[0, 0]}"
+
+  - id: normalization.batchnorm
+    name: nn.BatchNorm1d / 2d, running stats
+    teach: |
+      ```python
+      # nn.BatchNorm1d(C) -> module: normalizes each channel (dim 1) of x (N, C) or (N, C, L) over N (and L)
+      nn.BatchNorm1d(4)(torch.randn(6, 4)).mean(0)     # ~tensor([0., 0., 0., 0.])
+      # nn.BatchNorm2d(C) -> module: same for x (N, C, H, W), stats over N, H, W
+      bn = nn.BatchNorm2d(3)
+      # train mode: uses batch stats and updates running_mean = 0.9 * running_mean + 0.1 * batch_mean
+      bn.train(); bn(x); bn.running_mean               # 0.1 * x.mean((0, 2, 3))
+      # eval mode: normalizes with running_mean / running_var, no update
+      bn.eval(); y = bn(x)
+      ```
+      Pitfall: the channel must be dim 1, so a `(B, T, D)` sequence needs `x.transpose(1, 2)`.
+    cards:
+      - id: a
+        prompt: |
+          Set: `bn` = BatchNorm for `x` `(6, 4)` · `y = bn(x)` (train mode) · `bn2` = BatchNorm for images `imgs` `(4, 3, 5, 5)` ·
+          run one train-mode pass of `bn2` on `imgs` (updates its running stats), then switch it to eval mode and set `z = bn2(imgs)`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.randn(6, 4) * 3 + 2
+          imgs = torch.randn(4, 3, 5, 5) * 2 + 1
+        solution: |
+          bn = nn.BatchNorm1d(4)
+          y = bn(x)
+          bn2 = nn.BatchNorm2d(3)
+          bn2.train()
+          bn2(imgs)
+          bn2.eval()
+          z = bn2(imgs)
+        check: |
+          assert isinstance(bn, nn.BatchNorm1d), f"bn = {bn}"
+          ref = (x - x.mean(0)) / torch.sqrt(x.var(0, unbiased=False) + 1e-5)
+          assert torch.allclose(y, ref, atol=1e-4), f"y[0] = {y[0]}"
+          assert torch.allclose(bn.running_mean, 0.1 * x.mean(0), atol=1e-5), f"bn.running_mean = {bn.running_mean}"
+          assert isinstance(bn2, nn.BatchNorm2d), f"bn2 = {bn2}"
+          assert not bn2.training, "bn2 is still in train mode"
+          assert torch.allclose(bn2.running_mean, 0.1 * imgs.mean((0, 2, 3)), atol=1e-5), f"bn2.running_mean = {bn2.running_mean} (one train pass?)"
+          rm, rv = bn2.running_mean[None, :, None, None], bn2.running_var[None, :, None, None]
+          assert torch.allclose(z, (imgs - rm) / torch.sqrt(rv + 1e-5), atol=1e-5), "z does not use the running stats"
+      - id: b
+        prompt: "`x` is `(B, T, D) = (2, 5, 8)`. Apply the given `bn = nn.BatchNorm1d(8)` over the feature dim `D` and get `y` back as `(2, 5, 8)`."
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8) * 3 + 2
+          bn = nn.BatchNorm1d(8)
+        solution: |
+          y = bn(x.transpose(1, 2)).transpose(1, 2)
+        check: |
+          assert y.shape == (2, 5, 8), f"y.shape = {tuple(y.shape)}"
+          ref = (x - x.mean((0, 1))) / torch.sqrt(x.var((0, 1), unbiased=False) + 1e-5)
+          assert torch.allclose(y, ref, atol=1e-4), f"per-feature mean of y = {y.mean((0, 1))}"
+
+  - id: normalization.prenorm-residual
+    name: pre-norm vs post-norm residual
+    teach: |
+      ```python
+      # pre-norm (GPT-2, LLaMA): norm inside the branch, the residual stream x stays untouched
+      x = x + attn(ln1(x))
+      # post-norm (original Transformer): norm after the add
+      x = ln1(x + attn(x))
+      ```
+      Pitfall: a pre-norm stack needs one **final** LayerNorm before the output head.
+    cards:
+      - id: a
+        prompt: "Apply the sublayer `ff` to `x` with a residual using `ln`: `y` = **pre-norm** version · `z` = **post-norm** version."
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8)
+          ln = nn.LayerNorm(8)
+          ff = nn.Linear(8, 8)
+        solution: |
+          y = x + ff(ln(x))
+          z = ln(x + ff(x))
+        check: |
+          ref = x + ff(ln(x))
+          assert torch.allclose(y, ref, atol=1e-6), f"y[0, 0] = {y[0, 0]} (pre-norm: x + ff(ln(x)))"
+          refz = ln(x + ff(x))
+          assert torch.allclose(z, refz, atol=1e-6), f"z[0, 0] = {z[0, 0]} (post-norm: ln(x + ff(x)))"
+      - id: d
+        prompt: Run a 2-sublayer **pre-norm** stack on `x`, `attn` (with `ln1`) then `mlp` (with `ln2`), and finish with the final norm `lnf`. Store the result in `y`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          x = torch.randn(2, 5, 8)
+          ln1, ln2, lnf = nn.LayerNorm(8), nn.LayerNorm(8), nn.LayerNorm(8)
+          attn, mlp = nn.Linear(8, 8), nn.Linear(8, 8)
+          with torch.no_grad():
+              lnf.weight.fill_(2.0)
+        solution: |
+          h = x + attn(ln1(x))
+          h = h + mlp(ln2(h))
+          y = lnf(h)
+        check: |
+          h = x + attn(ln1(x))
+          ref = lnf(h + mlp(ln2(h)))
+          assert y.shape == (2, 5, 8), f"y.shape = {tuple(y.shape)}"
+          assert torch.allclose(y, ref, atol=1e-5), f"y[0, 0] = {y[0, 0]}\nref = {ref[0, 0]}"

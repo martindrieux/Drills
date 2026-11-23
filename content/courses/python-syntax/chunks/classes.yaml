@@ -1,0 +1,609 @@
+id: classes
+title: Classes & LeetCode's node types
+intro: |
+  LeetCode wraps every answer in `class Solution`, gives you `ListNode` and `TreeNode` objects, and
+  asks "design" questions (Min Stack, LRU Cache) that are a class with `__init__`. This page is the
+  class syntax you need for all of them.
+problems:
+  - Two Sum
+  - Min Stack
+  - Implement Trie (Prefix Tree)
+  - LRU Cache
+  - Maximum Depth of Binary Tree
+  - Merge k Sorted Lists
+atoms: [py-heapq, py-sorting]
+skills:
+  - id: classes.solution
+    name: class Solution and self
+    teach: |
+      ```python
+      # every method takes self first; call another method as self.helper(...)
+      class Solution:
+          def twoSum(self, nums, target):
+              return self.helper(nums, target)
+          def helper(self, nums, target): ...
+      # Solution() makes an instance; then call its method
+      Solution().twoSum([2, 7], 9)
+      ```
+      Pitfall: `helper(...)` without `self.` raises NameError.
+    cards:
+      - id: a
+        prompt: |
+          - **Write** `class Solution` with two methods:
+            - `double(self, x)`: returns `2 * x`;
+            - `quad(self, x)`: returns `4 * x` by calling `self.double` twice (not by multiplying directly).
+          - **Set** `res`: `quad(3)` called on a new instance `Solution()`.
+          - **Checked on**: 0, negatives, a float, 200 random ints; `quad` must go through `self.double` (tested with a subclass that changes `double`).
+        solution: |
+          class Solution:
+              def double(self, x):
+                  return 2 * x
+
+              def quad(self, x):
+                  return self.double(self.double(x))
+
+          res = Solution().quad(3)
+        check: |
+          from cardtest import against, rand_cases
+          def _gen(r):
+              return (r.randint(-1000, 1000),)
+          cases = [(0,), (1,), (-3,), (2.5,)] + rand_cases(_gen, 200)
+          against(Solution().double, lambda x: 2 * x, cases, name="Solution().double")
+          against(Solution().quad, lambda x: 4 * x, cases, name="Solution().quad")
+          class _Spy(Solution):
+              def double(self, x):
+                  return x + 10
+          got = _Spy().quad(3)
+          assert got == 23, f"quad should call self.double twice: with double(x) = x + 10, quad(3) gave {got!r} (expected 23)"
+          assert res == 12, f"res = {res!r}"
+      - id: b
+        prompt: |
+          - **Given**: `class Solution` with a method `maxOf(self, nums)` (see setup).
+          - **Set** `res`: `maxOf` called on a new instance, with the list `[3, 9, 2]`.
+          - **Checked on**: that call.
+        setup: |
+          class Solution:
+              def maxOf(self, nums):
+                  return max(nums)
+        solution: |
+          res = Solution().maxOf([3, 9, 2])
+        check: |
+          assert res == 9, f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given** (starter): `isVowel(self, ch)` returns `True` for `"a"`, `"e"`, `"i"`, `"o"`, `"u"` (lowercase only).
+          - **Write** `countVowels(self, s)` by calling `self.isVowel` on each character.
+          - **Returns**: an `int`: how many characters of `s` are vowels (`0` for `""`).
+          - **Checked on**: `""`, no vowels, only vowels, uppercase letters (not vowels here), 300 random strings; it must use `self.isVowel` (tested with a subclass that changes `isVowel`).
+        starter: |
+          class Solution:
+              def isVowel(self, ch):
+                  return ch in "aeiou"
+
+              def countVowels(self, s):
+                  pass
+        solution: |
+          class Solution:
+              def isVowel(self, ch):
+                  return ch in "aeiou"
+
+              def countVowels(self, s):
+                  return sum(self.isVowel(ch) for ch in s)
+        check: |
+          from cardtest import against, rand_cases
+          def _gen(r):
+              return ("".join(r.choice("aeiouAEbcdz ") for _ in range(r.randint(0, 12))),)
+          edge = [("",), ("xyz",), ("aeiou",), ("leetcode",), ("AEIOU",), ("a a",)]
+          against(Solution().countVowels, lambda s: sum(ch in "aeiou" for ch in s), edge + rand_cases(_gen, 300), name="countVowels")
+          class _Spy(Solution):
+              def isVowel(self, ch):
+                  return ch == "z"
+          got = _Spy().countVowels("zzaz")
+          assert got == 3, f"countVowels should call self.isVowel: with isVowel = (ch == 'z'), countVowels('zzaz') gave {got!r} (expected 3)"
+
+  - id: classes.init
+    name: __init__ and self attributes
+    teach: |
+      ```python
+      # __init__(self, ...) runs on ClassName(...): store state as self.<name>; other methods read / change it
+      class MinStack:
+          def __init__(self):
+              self.stack = []
+          def push(self, x):
+              self.stack.append(x)
+      ```
+      Pitfall: `stack = []` without `self.` is a local variable that vanishes when `__init__` returns.
+    cards:
+      - id: a
+        prompt: |
+          - **Write** `Counter`: `__init__` sets the instance attribute `self.count = 0`; `inc()` adds 1 to `self.count` (returns nothing).
+          - **Checked on**: `count` right after creation, after 1 to 20 `inc()` calls, and two counters staying independent.
+        starter: |
+          class Counter:
+              def __init__(self):
+                  pass  # start self.count at 0
+
+              def inc(self):
+                  pass  # add 1
+        solution: |
+          class Counter:
+              def __init__(self):
+                  self.count = 0
+
+              def inc(self):
+                  self.count += 1
+        check: |
+          c = Counter()
+          assert "count" in vars(c), "set self.count in __init__ (an instance attribute, not a class attribute)"
+          assert c.count == 0, f"count right after Counter() = {c.count!r}"
+          for n in range(1, 21):
+              c.inc()
+              assert c.count == n, f"count after {n} inc() = {c.count!r}"
+          a, b = Counter(), Counter()
+          a.inc()
+          a.inc()
+          b.inc()
+          assert (a.count, b.count) == (2, 1), f"two counters: a.inc() x2, b.inc() x1 -> (a.count, b.count) = {(a.count, b.count)!r}"
+      - id: b
+        prompt: |
+          - **Write** `Cart`: `__init__(self, limit)` stores `self.limit = limit` and `self.items = []` (a new list for each cart).
+          - **Write** `add(self, x)`: appends `x` to `self.items` only while there are fewer than `limit` items (later items are ignored).
+          - **Checked on**: `limit` 0 to 5 with up to 8 adds (300 random sequences), the stored `limit`, and two carts not sharing `items`.
+        starter: |
+          class Cart:
+              def __init__(self, limit):
+                  pass
+
+              def add(self, x):
+                  pass
+        solution: |
+          class Cart:
+              def __init__(self, limit):
+                  self.limit = limit
+                  self.items = []
+
+              def add(self, x):
+                  if len(self.items) < self.limit:
+                      self.items.append(x)
+        check: |
+          from cardtest import against, rand_cases
+          def _run(limit, xs):
+              c = Cart(limit)
+              for x in xs:
+                  c.add(x)
+              return c.limit, c.items
+          def _gen(r):
+              return (r.randint(0, 5), [r.choice("abcdefgh") for _ in range(r.randint(0, 8))])
+          edge = [(2, list("abc")), (0, list("ab")), (3, []), (1, list("a")), (3, list("abc")), (3, list("abcd"))]
+          against(_run, lambda limit, xs: (limit, xs[:limit]), edge + rand_cases(_gen, 300),
+                  show=lambda limit, xs: f"({limit}) then add() each of {xs!r} -> (limit, items)", name="Cart")
+          a, b = Cart(3), Cart(3)
+          a.add("x")
+          assert b.items == [], f"b.items = {b.items!r} after a.add('x'): each cart needs its own list (self.items = [] in __init__)"
+      - id: c
+        prompt: |
+          - **Write** `push(self, x)`: appends the tuple `(x, smallest_so_far)` to `self.stack`, where `smallest_so_far = min(x, previous top's smallest)` (just `x` on an empty stack).
+          - **Write** `getMin(self)`: returns the smallest value currently in the (non-empty) stack, read from the top tuple.
+          - **Checked on**: the exact tuples in `self.stack`, `getMin()` after every push and after popping `self.stack`, duplicates, negatives, 300 random sequences.
+        starter: |
+          class MinStack:
+              def __init__(self):
+                  self.stack = []
+
+              def push(self, x):
+                  pass
+
+              def getMin(self):
+                  pass
+        solution: |
+          class MinStack:
+              def __init__(self):
+                  self.stack = []
+
+              def push(self, x):
+                  m = min(x, self.stack[-1][1]) if self.stack else x
+                  self.stack.append((x, m))
+
+              def getMin(self):
+                  return self.stack[-1][1]
+        check: |
+          from cardtest import against, rand_cases
+          def _run(xs):
+              s = MinStack()
+              mins = []
+              for x in xs:
+                  s.push(x)
+                  mins.append(s.getMin())
+              stack = list(s.stack)
+              after = []
+              while len(s.stack) > 1:
+                  s.stack.pop()
+                  after.append(s.getMin())
+              return stack, mins, after
+          def _ref(xs):
+              stack = []
+              for x in xs:
+                  stack.append((x, min(x, stack[-1][1]) if stack else x))
+              mins = [m for _, m in stack]
+              return stack, mins, mins[-2::-1]
+          def _gen(r):
+              return ([r.randint(-5, 5) for _ in range(r.randint(1, 10))],)
+          edge = [([5],), ([5, 2, 7],), ([2, 5],), ([3, 3, 1, 1],), ([-1, -4, 0],), ([4, 3, 2, 1],), ([1, 2, 3, 4],)]
+          against(_run, _ref, edge + rand_cases(_gen, 300),
+                  show=lambda xs: f" pushing {xs!r} -> (stack, getMin() after each push, getMin() after each pop)", name="MinStack")
+
+  - id: classes.listnode
+    name: ListNode, build and walk
+    teach: |
+      ```python
+      # LeetCode's linked-list node; head is just the first node
+      class ListNode:
+          def __init__(self, val=0, next=None):
+              self.val = val
+              self.next = next
+      head = ListNode(1, ListNode(2))   # 1 -> 2
+      # walk: follow .next until it is None
+      node = head
+      while node: node = node.next
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `ListNode` (see setup).
+          - **Set** `head`: the first node of the list `1 -> 2 -> 3`, built by hand with nested `ListNode(val, next)` calls.
+          - **Set** `vals`: a `list` of the values walked from `head` with `while node:`.
+          - **Checked on**: the values reachable from `head`, and `vals`.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+        solution: |
+          head = ListNode(1, ListNode(2, ListNode(3)))
+          vals = []
+          node = head
+          while node:
+              vals.append(node.val)
+              node = node.next
+        check: |
+          got, n = [], head
+          while n:
+              got.append(n.val)
+              n = n.next
+          assert got == [1, 2, 3], f"list from head = {got!r}"
+          assert vals == [1, 2, 3], f"vals = {vals!r}"
+      - id: b
+        prompt: |
+          - **Given**: `head`, a 3-node list (see setup).
+          - **Set** `res`: the value (an `int`) of the **second** node.
+          - **Checked on**: the given list.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          head = ListNode(4, ListNode(5, ListNode(6)))
+        solution: |
+          res = head.next.val
+        check: |
+          assert res == 5, f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `head`, a 3-node list (see setup).
+          - **Set** `vals`: a `list` of all its values in order, collected with `while node:`.
+          - **Checked on**: the given list.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          head = ListNode(7, ListNode(8, ListNode(9)))
+        solution: |
+          vals = []
+          node = head
+          while node:
+              vals.append(node.val)
+              node = node.next
+        check: |
+          assert vals == [7, 8, 9], f"vals = {vals!r}"
+      - id: d
+        prompt: |
+          - **Given**: `head`, a 3-node list (see setup).
+          - **Set** `res`: the value of the **last** node (the one whose `next` is `None`), reached by walking with `while node.next:`.
+          - **Checked on**: the given list.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          head = ListNode(7, ListNode(8, ListNode(9)))
+        solution: |
+          node = head
+          while node.next:
+              node = node.next
+          res = node.val
+        check: |
+          assert res == 9, f"res = {res!r}"
+
+  - id: classes.treenode
+    name: TreeNode, build and access
+    teach: |
+      ```python
+      # LeetCode's binary-tree node; a missing child is None
+      class TreeNode:
+          def __init__(self, val=0, left=None, right=None):
+              self.val = val
+              self.left = left
+              self.right = right
+      root = TreeNode(1, TreeNode(2), TreeNode(3, TreeNode(4)))
+      root.right.left.val    # 4
+      ```
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `TreeNode(val, left, right)` (see setup).
+          - **Set** `root`, in one expression: value `2` at the root, `1` as its left child, `3` as its right child, and `4` as the left child of that `3`.
+          - **Set** `res`: the value of the left child of the right child of `root`, reached from `root`.
+          - **Checked on**: the four nodes' values and positions, and `res`.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val = val
+                  self.left = left
+                  self.right = right
+        solution: |
+          root = TreeNode(2, TreeNode(1), TreeNode(3, TreeNode(4)))
+          res = root.right.left.val
+        check: |
+          got = (root.val, root.left.val, root.right.val)
+          assert got == (2, 1, 3), f"(root, left, right) = {got!r}"
+          assert root.right.left is not None and root.right.left.val == 4, "root.right.left should hold 4"
+          assert res == 4, f"res = {res!r}"
+      - id: b
+        prompt: |
+          - **Given**: `root`, a 5-node tree (see setup).
+          - **Set** `res`: the value of the **left child of the right child** of `root`.
+          - **Checked on**: the given tree.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val = val
+                  self.left = left
+                  self.right = right
+
+          root = TreeNode(1, TreeNode(2), TreeNode(3, TreeNode(4), TreeNode(5)))
+        solution: |
+          res = root.right.left.val
+        check: |
+          assert res == 4, f"res = {res!r}"
+      - id: c
+        prompt: |
+          - **Given**: `root`, a node with a left and a right child (see setup).
+          - **Do**: attach a new `TreeNode` with value `7` as the **right** child of `root.left`.
+          - **Checked on**: `root.left.right` afterwards.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val = val
+                  self.left = left
+                  self.right = right
+
+          root = TreeNode(5, TreeNode(3), TreeNode(8))
+        solution: |
+          root.left.right = TreeNode(7)
+        check: |
+          r = root.left.right
+          assert r is not None and r.val == 7, f"root.left.right = {r and r.val!r}"
+
+  - id: classes.none-checks
+    name: None checks on nodes
+    teach: |
+      ```python
+      # a missing node is None (falsy; any node object is truthy): check before touching .val / .next
+      if not node: return 0     # same as: if node is None
+      # x and y -> x if x is falsy, else y: a safe access in one expression
+      v = node and node.val     # None if node is None, else node.val
+      ```
+      Pitfall: `if not node.val` is **not** a None check, it is also true for a node holding `0`.
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `TreeNode` and `t`, a node with no left child and a right child holding `0` (see setup).
+          - **Write** `get_val(node)`: **returns** `node.val`, or `-1` if `node` is `None` (test it with `not node`).
+          - **Set** `lv` / `rv`, one `and` expression each: the value of `t.left` / `t.right`, or `None` when that child is missing.
+          - **Checked on**: `get_val` on `None` and on nodes holding `0`, negatives and other values (200 random); `lv` and `rv`.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val = val
+                  self.left = left
+                  self.right = right
+
+          t = TreeNode(5, None, TreeNode(0))
+        solution: |
+          def get_val(node):
+              if not node:
+                  return -1
+              return node.val
+          lv = t.left and t.left.val
+          rv = t.right and t.right.val
+        check: |
+          from cardtest import against, rand_cases
+          def _gen(r):
+              return (None if r.random() < 0.3 else r.randint(-5, 5),)
+          against(lambda v: get_val(None if v is None else TreeNode(v)), lambda v: -1 if v is None else v,
+                  [(None,), (0,), (5,), (-3,)] + rand_cases(_gen, 200),
+                  show=lambda v: "(None)" if v is None else f"(TreeNode({v}))", name="get_val")
+          assert lv is None, f"lv = {lv!r}"
+          assert rv == 0 and rv is not None and rv is not False, f"rv = {rv!r}"
+      - id: b
+        prompt: |
+          - **Given**: `a`, a single `ListNode`, and `b`, a 2-node list (see setup).
+          - **Set** `ra` / `rb`, one `and` expression each: the value of `a.next` / `b.next`, or `None` when there is no next node.
+          - **Checked on**: these two nodes.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          a = ListNode(5)
+          b = ListNode(1, ListNode(2))
+        solution: |
+          ra = a.next and a.next.val
+          rb = b.next and b.next.val
+        check: |
+          assert ra is None, f"ra = {ra!r}"
+          assert rb == 2, f"rb = {rb!r}"
+      - id: c
+        prompt: |
+          - **Given**: `TreeNode` (see setup); `node: TreeNode | None`.
+          - **Write** the recursive `size(node)`, returning `0` early when `node` is `None`.
+          - **Returns**: an `int`: the number of nodes in the tree.
+          - **Checked on**: `None`, one node, nodes with a single child, nodes holding `0`, 300 random trees.
+        setup: |
+          class TreeNode:
+              def __init__(self, val=0, left=None, right=None):
+                  self.val = val
+                  self.left = left
+                  self.right = right
+        solution: |
+          def size(node):
+              if not node:
+                  return 0
+              return 1 + size(node.left) + size(node.right)
+        check: |
+          from cardtest import against, rand_cases
+          def _tree(d):  # d = (val, left, right) or None
+              return None if d is None else TreeNode(d[0], _tree(d[1]), _tree(d[2]))
+          def _count(d):
+              return 0 if d is None else 1 + _count(d[1]) + _count(d[2])
+          def _gen(r):
+              def make(depth):
+                  if depth == 0 or r.random() < 0.3:
+                      return None
+                  return (r.randint(0, 3), make(depth - 1), make(depth - 1))
+              return (make(r.randint(0, 5)),)
+          edge = [(None,), ((1, None, None),), ((0, None, None),), ((1, (0, (4, None, None), None), (3, None, None)),),
+                  ((1, None, (2, None, (3, None, None))),), ((0, (0, None, None), None),)]
+          against(lambda d: size(_tree(d)), _count, edge + rand_cases(_gen, 300),
+                  show=lambda d: f" of the tree {d!r} (as (val, left, right))", name="size")
+
+  - id: classes.compare
+    name: making objects sortable / heapable
+    teach: |
+      ```python
+      # sort / min / heapq compare with <, which plain objects lack. Three ways around it:
+      heapq.heappush(h, (node.val, i, node))   # a unique i breaks ties: nodes never compared
+      nodes.sort(key=lambda n: n.val)          # sort / min / max only: compare a key instead
+      class Task:
+          def __lt__(self, other):             # define <: a < b calls a.__lt__(b)
+              return self.priority < other.priority
+      ```
+      Pitfall: `(node.val, node)` crashes on equal values with "'<' not supported".
+    cards:
+      - id: a
+        prompt: |
+          - **Given**: `heapq`, `ListNode`, `nodes` (3 nodes with values `1, 1, 0`) and an empty list `h` (see setup); `Task(priority, name)` in the starter.
+          - **Write** `Task.__lt__(self, other)`: `True` iff `self.priority < other.priority` (strict), so `sorted`, `min` and `heapq` order tasks by priority.
+          - **Set** `res`: push every node onto `h` as `(node.val, i, node)` (`i` = its index in `nodes`), then pop the smallest entry and keep its **node** (`h` keeps the other 2 entries).
+          - **Set** `order`: a new `list` of `nodes` sorted by `val` with `sorted(..., key=...)` (ties keep their original order).
+          - **Checked on**: `<` between tasks, `sorted` / `min` / `heapq` on 200 random task lists with equal priorities (`sorted` must keep ties in input order); `res`, the entries left in `h`, and `order`.
+        setup: |
+          import heapq
+
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          nodes = [ListNode(1), ListNode(1), ListNode(0)]
+          h = []
+        starter: |
+          class Task:
+              def __init__(self, priority, name):
+                  self.priority = priority
+                  self.name = name
+              # add __lt__ here
+        solution: |
+          class Task:
+              def __init__(self, priority, name):
+                  self.priority = priority
+                  self.name = name
+
+              def __lt__(self, other):
+                  return self.priority < other.priority
+
+          for i, node in enumerate(nodes):
+              heapq.heappush(h, (node.val, i, node))
+          res = heapq.heappop(h)[2]
+          order = sorted(nodes, key=lambda n: n.val)
+        check: |
+          from cardtest import against, rand_cases
+          assert "__lt__" in vars(Task), "define __lt__ in Task"
+          x, y, z = Task(1, "x"), Task(2, "y"), Task(1, "z")
+          assert (x < y, y < x, x < z) == (True, False, False), f"(Task(1) < Task(2), Task(2) < Task(1), Task(1) < Task(1)) = {(x < y, y < x, x < z)!r}"
+          def _tasks(ps):
+              return [Task(p, f"t{i}") for i, p in enumerate(ps)]
+          def _ref(ps):
+              return [f"t{i}" for i, _ in sorted(enumerate(ps), key=lambda e: e[1])]
+          def _gen(r):
+              return ([r.randint(0, 4) for _ in range(r.randint(1, 8))],)
+          _show = lambda ps: "(" + ", ".join(f"Task({p}, 't{i}')" for i, p in enumerate(ps)) + ") -> names"
+          cases = [([3, 1, 2],), ([1, 1],), ([2, 1, 2, 1],), ([5],)] + rand_cases(_gen, 200)
+          against(lambda ps: [t.name for t in sorted(_tasks(ps))], _ref, cases, show=_show, name="sorted")
+          against(lambda ps: min(_tasks(ps)).priority, min, cases, show=lambda ps: f"({ps!r}).priority", name="min")
+          def _heap(ps):
+              hh = []
+              for t in _tasks(ps):
+                  heapq.heappush(hh, t)
+              return [heapq.heappop(hh).priority for _ in ps]
+          against(_heap, sorted, cases, show=lambda ps: f" of tasks with priorities {ps!r}", name="heappush/heappop order")
+          assert [n.val for n in nodes] == [1, 1, 0], f"nodes was reordered (values {[n.val for n in nodes]!r}): leave it as is, sorted() returns a new list"
+          assert res is nodes[2], f"res = {res!r}: should be nodes[2], the node holding 0"
+          left = sorted((e[0], e[1]) for e in h)
+          assert left == [(1, 0), (1, 1)] and all(e[2] is nodes[e[1]] for e in h), f"h = {h!r}: should keep (1, 0, nodes[0]) and (1, 1, nodes[1])"
+          assert isinstance(order, list) and [id(n) for n in order] == [id(nodes[2]), id(nodes[0]), id(nodes[1])], \
+              f"order values = {[getattr(n, 'val', n) for n in order] if isinstance(order, list) else order!r}: should be [nodes[2], nodes[0], nodes[1]]"
+      - id: b
+        prompt: |
+          - **Given**: `heapq`, `ListNode`, `nodes` (3 nodes with values `1, 1, 0`) and an empty list `h` (see setup).
+          - **Set** `res`: push every node onto `h` as `(node.val, i, node)` (`i` = its index, a unique tie-breaker), then pop the smallest entry and keep its **node**.
+          - **Checked on**: `res` is the `ListNode` holding `0`, and `h` keeps 2 entries.
+        setup: |
+          import heapq
+
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          nodes = [ListNode(1), ListNode(1), ListNode(0)]
+          h = []
+        solution: |
+          for i, node in enumerate(nodes):
+              heapq.heappush(h, (node.val, i, node))
+          res = heapq.heappop(h)[2]
+        check: |
+          assert isinstance(res, ListNode), f"res = {res!r} (should be the node)"
+          assert res.val == 0 and len(h) == 2, f"res.val = {res.val!r}, len(h) = {len(h)}"
+      - id: c
+        prompt: |
+          - **Given**: `ListNode` (no `<` defined) and `nodes`, a list of 3 nodes (see setup).
+          - **Set** `res`: a new `list` of the nodes sorted by `val` ascending, with `sorted(..., key=lambda ...)`.
+          - **Checked on**: the values of `res`, in order.
+        setup: |
+          class ListNode:
+              def __init__(self, val=0, next=None):
+                  self.val = val
+                  self.next = next
+
+          nodes = [ListNode(3), ListNode(1), ListNode(2)]
+        solution: |
+          res = sorted(nodes, key=lambda n: n.val)
+        check: |
+          vals = [n.val for n in res]
+          assert vals == [1, 2, 3], f"vals of res = {vals!r}"

@@ -1,0 +1,297 @@
+id: embeddings
+title: Embeddings & positions
+intro: |
+  A language model starts with a lookup table: token ids in, vectors out. Add a learned or
+  sinusoidal position signal, handle padding, and tie the output head to the input embedding.
+problems:
+  - Build the input layer of a GPT (token + position embeddings)
+  - Implement sinusoidal positional encodings
+  - How does padding_idx work, and does the pad vector get trained?
+  - What is weight tying and why does it save parameters?
+atoms: []
+skills:
+  - id: embeddings.embedding
+    name: nn.Embedding(V, D)
+    teach: |
+      ```python
+      # nn.Embedding(V, D) -> module: trainable (V, D) table, init N(0, 1); emb(idx) = emb.weight[idx], appends a D dim
+      nn.Embedding(10, 4)(torch.tensor([[1, 4, 2]])).shape    # (1, 3, 4)
+      # F.embedding(idx, W) -> tensor: functional lookup W[idx], W: (V, D)
+      F.embedding(torch.tensor([1]), torch.eye(3))             # tensor([[0., 1., 0.]])
+      ```
+      Pitfall: ids must be integer (`long`/`int`) and `< V`. Float ids raise an error.
+    cards:
+      - id: a
+        prompt: |
+          Set: `emb` = an `nn.Embedding(10, 4)` · `out` = the lookup of the ids `idx` (shape `(2, 5)`) in `emb` ·
+          `out2` = the lookup of `idx` in the plain matrix `W` (shape `(10, 4)`) with `F.embedding`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          import torch.nn.functional as F
+          torch.manual_seed(0)
+          idx = torch.randint(0, 10, (2, 5))
+          W = torch.randn(10, 4)
+        solution: |
+          emb = nn.Embedding(10, 4)
+          out = emb(idx)
+          out2 = F.embedding(idx, W)
+        check: |
+          assert isinstance(emb, nn.Embedding) and emb.weight.shape == (10, 4), f"emb = {emb}"
+          assert out.shape == (2, 5, 4), f"out.shape = {tuple(out.shape)}"
+          assert torch.equal(out, emb.weight[idx]), "out != emb.weight[idx]"
+          assert torch.equal(out2, W[idx]), f"out2.shape = {tuple(out2.shape)} (out2 should be W[idx])"
+      - id: b
+        prompt: The ids arrived as floats in `ids`. Embed them with `emb` into `out` (shape `(1, 3, 8)`).
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          emb = nn.Embedding(10, 8)
+          ids = torch.tensor([[1., 3., 7.]])
+        solution: |
+          out = emb(ids.long())
+        check: |
+          assert out.shape == (1, 3, 8), f"out.shape = {tuple(out.shape)}"
+          assert torch.equal(out, emb.weight[torch.tensor([[1, 3, 7]])]), "wrong rows looked up"
+
+  - id: embeddings.padding-idx
+    name: padding_idx
+    teach: |
+      ```python
+      # padding_idx=p: row p starts at zeros and never gets a gradient, so pad tokens stay a zero vector
+      nn.Embedding(10, 4, padding_idx=0)(torch.tensor([0]))   # tensor([[0., 0., 0., 0.]], grad_fn=...)
+      ```
+      Pitfall: a custom init (`nn.init.normal_(emb.weight)`) overwrites the zero row. Re-zero it
+      under `torch.no_grad()`.
+    cards:
+      - id: a
+        prompt: |
+          Create `emb`, an `Embedding(10, 4)` whose id `0` is padding, and embed `idx` into `out`.
+          Then re-init `emb.weight` with `nn.init.normal_` (std `0.02`) and set its pad row back to zeros without breaking autograd.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          idx = torch.tensor([[5, 2, 0, 0], [7, 0, 0, 0]])
+        solution: |
+          emb = nn.Embedding(10, 4, padding_idx=0)
+          out = emb(idx)
+          nn.init.normal_(emb.weight, std=0.02)
+          with torch.no_grad():
+              emb.weight[0].zero_()
+        check: |
+          assert emb.padding_idx == 0, f"padding_idx = {emb.padding_idx}"
+          assert out.shape == (2, 4, 4), f"out.shape = {tuple(out.shape)}"
+          assert torch.all(out[idx == 0] == 0), f"pad vectors = {out[idx == 0]}"
+          assert emb.weight[1:].std() < 0.1, f"weight std = {emb.weight[1:].std():.3f} (re-init with nn.init.normal_(..., std=0.02))"
+          assert torch.all(emb.weight[0] == 0), f"weight[0] after re-init = {emb.weight[0]}"
+          assert emb.weight.requires_grad and emb.weight.is_leaf, "emb.weight lost requires_grad: zero it under torch.no_grad()"
+      - id: b
+        prompt: |
+          The pad token is `pad = 9`, the **last** id of a vocab of 10. Create `emb = Embedding(10, 4)` with that padding row, then set
+          `mean` `(2, 4)` = the average embedding of the **real** (non-pad) tokens of each sequence in `idx`. Pad vectors are zero, so a plain sum works.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          pad = 9
+          idx = torch.tensor([[5, 2, 9, 9], [7, 1, 3, 9]])
+        solution: |
+          emb = nn.Embedding(10, 4, padding_idx=pad)
+          mean = emb(idx).sum(1) / (idx != pad).sum(1, keepdim=True)
+        check: |
+          assert emb.padding_idx == 9, f"padding_idx = {emb.padding_idx}"
+          assert torch.all(emb.weight[9] == 0), f"weight[9] = {emb.weight[9]}"
+          ref = torch.stack([emb.weight[r[r != pad]].mean(0) for r in idx])
+          assert mean.shape == (2, 4), f"mean.shape = {tuple(mean.shape)}"
+          assert torch.allclose(mean, ref, atol=1e-6), f"mean = {mean}\nref = {ref} (divide by the number of non-pad tokens)"
+
+  - id: embeddings.positional
+    name: learned positional embedding
+    teach: |
+      ```python
+      # pos_emb = nn.Embedding(T_max, D) indexed by 0..T-1; (B, T, D) + (T, D) broadcasts over the batch
+      x = tok_emb(idx) + pos_emb(torch.arange(T, device=idx.device))    # (B, T, D)
+      # variant: a raw parameter self.pos = nn.Parameter(torch.zeros(1, T_max, D)), sliced to T
+      x = tok_emb(idx) + self.pos[:, :T]                                 # (B, T, D)
+      ```
+      Pitfall: use the current `T`, not `T_max`, and create `arange` on the input's device.
+    cards:
+      - id: a
+        prompt: |
+          For `idx` (shape `(2, 5)`), set: `x` = token embeddings plus learned position embeddings from the table `pos_emb`
+          (positions created on `idx`'s device) · `x2` = token embeddings plus the raw parameter `pos` (shape `(1, 16, 4)`) sliced to the current length.
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+          tok_emb = nn.Embedding(10, 4)
+          pos_emb = nn.Embedding(16, 4)
+          pos = nn.Parameter(torch.randn(1, 16, 4))
+          idx = torch.randint(0, 10, (2, 5))
+        solution: |
+          B, T = idx.shape
+          x = tok_emb(idx) + pos_emb(torch.arange(T, device=idx.device))
+          x2 = tok_emb(idx) + pos[:, :T]
+        check: |
+          ref = tok_emb.weight[idx] + pos_emb.weight[:5]
+          assert x.shape == (2, 5, 4), f"x.shape = {tuple(x.shape)}"
+          assert torch.allclose(x, ref), f"x[0, 0] = {x[0, 0]}"
+          assert x2.shape == (2, 5, 4), f"x2.shape = {tuple(x2.shape)} (slice pos to T)"
+          assert torch.allclose(x2, tok_emb.weight[idx] + pos[0, :5]), f"x2[0, 0] = {x2[0, 0]}"
+      - id: c
+        prompt: Complete `Embed(V, D, T_max)` with tables `self.tok` and `self.pos`, whose `forward(idx)` returns token + position embeddings for any `T <= T_max`.
+        starter: |
+          class Embed(nn.Module):
+              def __init__(self, V, D, T_max):
+                  super().__init__()
+
+              def forward(self, idx):
+                  pass
+        setup: |
+          import torch
+          import torch.nn as nn
+          torch.manual_seed(0)
+        solution: |
+          class Embed(nn.Module):
+              def __init__(self, V, D, T_max):
+                  super().__init__()
+                  self.tok = nn.Embedding(V, D)
+                  self.pos = nn.Embedding(T_max, D)
+
+              def forward(self, idx):
+                  T = idx.shape[1]
+                  return self.tok(idx) + self.pos(torch.arange(T, device=idx.device))
+        check: |
+          m = Embed(10, 4, 8)
+          for T in (3, 5):
+              idx = torch.randint(0, 10, (2, T))
+              out = m(idx)
+              assert out is not None and out.shape == (2, T, 4), f"T={T}: out = {out}"
+              assert torch.allclose(out, m.tok.weight[idx] + m.pos.weight[:T]), f"T={T}: wrong values"
+
+  - id: embeddings.sinusoidal
+    name: sinusoidal positional encoding
+    teach: |
+      Fixed, not learned. `PE[t, 2i] = sin(t / 10000^(2i/D))`, `PE[t, 2i+1] = cos(same)`.
+
+      ```python
+      pos = torch.arange(T).unsqueeze(1)                                   # (T, 1)
+      div = torch.exp(torch.arange(0, D, 2) * (-math.log(10000.0) / D))    # (D/2,) = 1 / 10000^(2i/D)
+      pe = torch.zeros(T, D)
+      pe[:, 0::2] = torch.sin(pos * div)                                   # even columns
+      pe[:, 1::2] = torch.cos(pos * div)                                   # odd columns
+      # module.register_buffer(name, t): saved in state_dict and moved by .to(device), but not a parameter
+      self.register_buffer("pe", pe)
+      ```
+      Pitfall: an attribute `self.pe = pe` is neither saved in `state_dict` nor moved by `.to()`.
+    cards:
+      - id: a
+        prompt: Build the sinusoidal table `pe` of shape `(T, D) = (5, 8)`, then register it on the module `m` as a buffer named `pe`.
+        setup: |
+          import math
+          import torch
+          import torch.nn as nn
+          T, D = 5, 8
+          m = nn.Module()
+        solution: |
+          pos = torch.arange(T).unsqueeze(1)
+          div = torch.exp(torch.arange(0, D, 2) * (-math.log(10000.0) / D))
+          pe = torch.zeros(T, D)
+          pe[:, 0::2] = torch.sin(pos * div)
+          pe[:, 1::2] = torch.cos(pos * div)
+          m.register_buffer("pe", pe)
+        check: |
+          assert "pe" in m.state_dict(), f"m.state_dict() keys = {list(m.state_dict())} (use m.register_buffer)"
+          ref = torch.tensor([[math.sin(t / 10000 ** (2 * (j // 2) / D)) if j % 2 == 0 else
+                               math.cos(t / 10000 ** (2 * (j // 2) / D)) for j in range(D)] for t in range(T)])
+          assert pe.shape == (5, 8), f"pe.shape = {tuple(pe.shape)}"
+          assert torch.allclose(pe, ref, atol=1e-5), f"pe[1] = {pe[1]}\nref[1] = {ref[1]}"
+      - id: b
+        prompt: Complete `PosEnc(T_max, D)`. `__init__` builds the sinusoidal table `(T_max, D)` and stores it as a **buffer** named `pe`; `forward(x)` adds `pe[:T]` to `x` of shape `(B, T, D)`.
+        starter: |
+          class PosEnc(nn.Module):
+              def __init__(self, T_max, D):
+                  super().__init__()
+
+              def forward(self, x):
+                  pass
+        setup: |
+          import math
+          import torch
+          import torch.nn as nn
+        solution: |
+          class PosEnc(nn.Module):
+              def __init__(self, T_max, D):
+                  super().__init__()
+                  pos = torch.arange(T_max).unsqueeze(1)
+                  div = torch.exp(torch.arange(0, D, 2) * (-math.log(10000.0) / D))
+                  pe = torch.zeros(T_max, D)
+                  pe[:, 0::2] = torch.sin(pos * div)
+                  pe[:, 1::2] = torch.cos(pos * div)
+                  self.register_buffer("pe", pe)
+
+              def forward(self, x):
+                  return x + self.pe[: x.shape[1]]
+        check: |
+          def ref_pe(T, D):
+              return torch.tensor([[math.sin(t / 10000 ** (2 * (j // 2) / D)) if j % 2 == 0 else
+                                    math.cos(t / 10000 ** (2 * (j // 2) / D)) for j in range(D)] for t in range(T)])
+          m = PosEnc(16, 8)
+          assert "pe" in dict(m.named_buffers()), "pe is not a registered buffer"
+          assert len(list(m.parameters())) == 0, "pe must not be a parameter"
+          assert m.pe.shape == (16, 8), f"pe.shape = {tuple(m.pe.shape)}"
+          assert torch.allclose(m.pe, ref_pe(16, 8), atol=1e-5), f"pe[1] = {m.pe[1]}\nref[1] = {ref_pe(16, 8)[1]}"
+          for T in (1, 5):
+              x = torch.randn(2, T, 8)
+              out = m(x)
+              assert out is not None and out.shape == (2, T, 8), f"T={T}: out = {out}"
+              assert torch.allclose(out, x + ref_pe(T, 8), atol=1e-5), f"T={T}: out != x + pe[:T]"
+          m2 = PosEnc(10, 16)
+          assert torch.allclose(m2.pe, ref_pe(10, 16), atol=1e-5), "wrong table for (T_max, D) = (10, 16)"
+
+  - id: embeddings.weight-tying
+    name: weight tying (lm_head.weight = tok_emb.weight)
+    teach: |
+      ```python
+      # nn.Linear(D, V, bias=False).weight is (V, D), same shape as nn.Embedding(V, D).weight -> share it
+      lm_head.weight = tok_emb.weight      # one Parameter, two uses; model.parameters() lists it once
+      ```
+      Pitfall: assign the Parameter itself. `copy_` or `.data =` makes two independent tensors.
+    cards:
+      - id: a
+        prompt: Tie the weights of `lm_head` to `tok_emb`.
+        setup: |
+          import torch
+          import torch.nn as nn
+          tok_emb = nn.Embedding(10, 4)
+          lm_head = nn.Linear(4, 10, bias=False)
+        solution: |
+          lm_head.weight = tok_emb.weight
+        check: |
+          assert lm_head.weight is tok_emb.weight, "lm_head.weight is not the same object as tok_emb.weight"
+      - id: b
+        prompt: Complete `LM(V, D)` with `self.tok = nn.Embedding(V, D)` and a bias-free `self.head`, tied to `self.tok`.
+        starter: |
+          class LM(nn.Module):
+              def __init__(self, V, D):
+                  super().__init__()
+                  self.tok = nn.Embedding(V, D)
+                  self.head = nn.Linear(D, V, bias=False)
+                  # tie here
+        setup: |
+          import torch
+          import torch.nn as nn
+        solution: |
+          class LM(nn.Module):
+              def __init__(self, V, D):
+                  super().__init__()
+                  self.tok = nn.Embedding(V, D)
+                  self.head = nn.Linear(D, V, bias=False)
+                  self.head.weight = self.tok.weight
+        check: |
+          m = LM(10, 4)
+          assert m.head.weight is m.tok.weight, "head.weight is not tok.weight"
+          n = sum(p.numel() for p in m.parameters())
+          assert n == 40, f"{n} parameters, expected 40 (one shared 10x4 matrix)"

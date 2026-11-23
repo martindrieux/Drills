@@ -1,0 +1,5 @@
+id: patterns
+title: LeetCode patterns
+blob: python-toolkit
+summary: The classic templates as bare skeletons. Recognise the shape, write it in 30 seconds, fill in the blanks.
+chunks: [windows-pointers, stacks-heaps-intervals, graphs-recursion, trees]

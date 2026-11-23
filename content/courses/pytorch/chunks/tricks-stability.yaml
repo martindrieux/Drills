@@ -1,0 +1,468 @@
+id: tricks-stability
+title: "Tricks: probability, sampling & numerical stability"
+intro: |
+  Interview problems where the naive formula overflows, underflows or loops: a log-softmax that stays finite
+  for any logits, a log-sum-exp computed block by block (the trick behind FlashAttention), and drawing samples
+  for a whole batch at once, plain or restricted to the top k classes. (Stable softmax, cross-entropy and
+  `ignore_index` are drilled in "From scratch: core layers"; `torch.topk` + `multinomial` in "Sampling".)
+problems:
+  - Implement log-softmax without overflow for logits around ±1000
+  - Online / streaming softmax normaliser (FlashAttention)
+  - Sample from a categorical distribution for a batch without torch.multinomial
+  - Top-k sampling for a language model, batched, keeping exactly k tokens
+atoms: []
+skills:
+  - id: tricks-stability.log-softmax
+    name: Stable log-softmax and streaming log-sum-exp (Medium)
+    teach: |
+      Write `log_softmax(x, dim=-1)` from basic ops: `out = x - log(sum(exp(x)))` along `dim`, same shape and dtype.
+
+      ```python
+      x = torch.tensor([[1000., 1000.], [0., -200.]])   # (2, 2)
+      # out -> [[-0.6931, -0.6931], [0., -200.]]        # (2, 2): not nan, not -inf
+      ```
+      Exact for logits `±1000` (float32 `exp` overflows above ~88); `-inf` in -> `-inf` out.
+      No built-in `logsumexp` / `softmax` / `log_softmax`, no loops.
+      Follow-up: the same normaliser when columns arrive block by block.
+    cards:
+      - id: a
+        prompt: |
+          Implement `log_softmax(x, dim=-1)` from basic ops, exact even for logits around ±1000.
+          - `x` (any shape) float, may contain `-inf` (each slice keeps a finite value); `dim` (int, may be negative): the axis to normalize
+          - returns same shape and dtype: `out = x - log(Σ exp(x))`, the sum along `dim` (cross-check: `torch.log_softmax(x, dim)`); `-inf` in -> `-inf` out
+          - no Python loops, no `logsumexp` / `softmax` / `log_softmax`
+
+          <details><summary>Hint 1</summary>The sum is dominated by its largest term: factor it out before `exp`.</details>
+          <details><summary>Hint 2</summary>`log Σ exp(x) = m + log Σ exp(x - m)`; with `m` = the max, the sum lies in `[1, C]`.</details>
+          <details><summary>Hint 3</summary>`z = x - x.amax(dim, keepdim=True)`, then `z - z.exp().sum(dim, keepdim=True).log()`.</details>
+        setup: |
+          import torch
+        starter: |
+          def log_softmax(x, dim=-1):
+              raise NotImplementedError
+        solution: |
+          def log_softmax(x, dim=-1):
+              z = x - x.amax(dim, keepdim=True)                 # (..., C, ...): max of each slice is now 0
+              return z - z.exp().sum(dim, keepdim=True).log()   # sum in [1, C] -> log is finite
+
+          # Trick: log Σ exp(x) = m + log Σ exp(x - m); with m = slice max, exp never overflows and the sum is >= 1.
+          # O(B·C) time, one extra buffer; keepdim keeps m (B, 1) so it broadcasts back over C.
+          # NumPy: z = x - x.max(axis=dim, keepdims=True); z - np.log(np.exp(z).sum(axis=dim, keepdims=True)).
+          # Mistakes: log(softmax(x)) (underflows to log 0 = -inf); one global max instead of per slice.
+          # Follow-up: a fully -inf slice gives nan (guard fully masked attention rows).
+        check: |
+          import dis
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          def _no_loops(fn):
+              codes = [fn.__code__]
+              while codes:
+                  c = codes.pop()
+                  ops = {i.opname for i in dis.get_instructions(c)}
+                  assert "FOR_ITER" not in ops and "JUMP_BACKWARD" not in ops, f"{fn.__name__} must not use Python loops"
+                  codes += [k for k in c.co_consts if hasattr(k, "co_code")]
+
+          _BANNED = [(torch, "logsumexp"), (torch, "softmax"), (torch, "log_softmax"), (F, "softmax"),
+                     (F, "log_softmax"), (torch.Tensor, "logsumexp"), (torch.Tensor, "softmax"),
+                     (torch.Tensor, "log_softmax"), (torch.special, "logsumexp"), (torch.special, "log_softmax")]
+
+          def _banned_call(fn, *args):
+              saved = [(o, a, getattr(o, a)) for o, a in _BANNED]
+              def _boom(name):
+                  def f(*a, **k):
+                      raise AssertionError(f"don't use {name}")
+                  return f
+              for o, a, _ in saved:
+                  setattr(o, a, _boom(a))
+              try:
+                  return fn(*args)
+              finally:
+                  for o, a, v in saved:
+                      setattr(o, a, v)
+
+          _no_loops(log_softmax)
+
+          def _yours(x, dim):
+              return _banned_call(log_softmax, x, dim)
+          _yours.__name__ = "log_softmax"
+
+          def _ref(x, dim):
+              return torch.log_softmax(x, dim)
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, rtol=1e-4, atol=2e-4))   # x - (m + lse) rounds at |x| ~ 1000
+
+          def _show(x, dim):
+              v = x.tolist() if x.numel() <= 8 else f"tensor of shape {tuple(x.shape)}"
+              return f"({v}, dim={dim}) [shape {tuple(x.shape)}, {x.dtype}]"
+
+          inf = float("inf")
+          T = torch.tensor
+          _edge = [
+              (T([[1000., 1000.]]), -1),
+              (T([[0., -200.]]), -1),
+              (T([[1000., 999., -1000.], [-1000., -1001., -999.]]), -1),
+              (T([[1000.], [-5.]]), -1),
+              (T([[0., -inf, 2.], [-inf, -inf, 3.]]), -1),
+              (T([[1000., -1000.], [0., 500.]]), 0),
+              (T([[1., 2., 3.]], dtype=torch.float64) * 700, 1),
+              (torch.arange(24.).reshape(2, 3, 4) * 100 - 1000, 1),
+              (torch.arange(12.).reshape(3, 4).t() * 300, -1),
+          ]
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              shape = [r.randint(1, 5) for _ in range(r.randint(1, 3))]
+              x = torch.randn(*shape, generator=g) * r.choice([1, 30, 1000])
+              if r.random() < 0.3:
+                  x = x.to(torch.float64)
+              dim = r.randint(-len(shape), len(shape) - 1)
+              if r.random() < 0.3 and x.shape[dim] > 1:                 # mask some entries, keep the slice max finite
+                  m = torch.rand(x.shape, generator=g) < 0.3
+                  m &= x < x.amax(dim, keepdim=True)
+                  x = x.masked_fill(m, -inf)
+              if r.random() < 0.3 and x.dim() >= 2:
+                  x, dim = x.transpose(0, -1).contiguous().transpose(0, -1), dim
+              return (x, dim)
+
+          against(_yours, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+      - id: b
+        prompt: |
+          Follow-up: implement `stream_logsumexp(blocks)`: the log-sum-exp of each row when its columns arrive block by block.
+          - `blocks`: a one-shot iterator of (B, n_i) float tensors (same `B` and dtype, `n_i >= 1`); values may be in the thousands or `-inf`, but each row has a finite value in some block
+          - returns (B,), same dtype: `out[b] = log Σ exp(x)` over row `b` of all blocks (cross-check: `torch.logsumexp(torch.cat(blocks, 1), 1)`)
+          - one pass over the iterator; no `torch.cat` / `stack`, no `logsumexp` / `softmax`
+
+          <details><summary>Hint 1</summary>Keep per row a running max and a running sum of `exp(x - max)`.</details>
+          <details><summary>Hint 2</summary>When the max grows from `m` to `m'`, multiply the old sum by `exp(m - m')`; the answer is `m + log(s)`.</details>
+          <details><summary>Hint 3</summary>While a row's max is still `-inf`, `-inf - -inf` is nan: shift by 0 instead (`torch.where`).</details>
+        setup: |
+          import torch
+        starter: |
+          def stream_logsumexp(blocks):
+              raise NotImplementedError
+        solution: |
+          def stream_logsumexp(blocks):
+              m = s = None
+              for blk in blocks:                                    # blk: (B, n)
+                  if m is None:
+                      m = torch.full(blk.shape[:1], float("-inf"), dtype=blk.dtype)   # (B,) running max
+                      s = torch.zeros(blk.shape[:1], dtype=blk.dtype)                 # (B,) Σ exp(x - m)
+                  m_new = torch.maximum(m, blk.amax(1))             # (B,)
+                  shift = torch.where(torch.isinf(m_new), torch.zeros_like(m_new), m_new)  # avoid -inf - -inf
+                  s = s * torch.exp(m - shift) + torch.exp(blk - shift[:, None]).sum(1)
+                  m = m_new
+              return m + s.log()                                    # (B,)
+
+          # Trick (online softmax): keep (m, s), s = Σ exp(x - m); when m grows to m', rescale s by exp(m - m').
+          # Memory O(B) instead of O(B·N), one pass. FlashAttention rescales its output accumulator the same way.
+          # NumPy: same with np.maximum, np.where, np.isinf, blk.max(axis=1).
+          # Mistakes: fixing m from the first block; not rescaling s; nan from (-inf) - (-inf).
+          # Follow-up: merge two states: m = max(m1, m2), s = s1·e^(m1-m) + s2·e^(m2-m) (split-K).
+        check: |
+          import torch.nn.functional as F
+          from cardtest import against, rand_cases
+
+          _BANNED = [(torch, "logsumexp"), (torch, "softmax"), (torch, "log_softmax"), (F, "softmax"),
+                     (F, "log_softmax"), (torch.Tensor, "logsumexp"), (torch.Tensor, "softmax"),
+                     (torch.Tensor, "log_softmax"), (torch.special, "logsumexp"), (torch, "cat"),
+                     (torch, "stack"), (torch, "hstack"), (torch, "column_stack"), (torch, "concat"), (torch, "concatenate")]
+
+          def _banned_call(fn, *args):
+              saved = [(o, a, getattr(o, a)) for o, a in _BANNED]
+              def _boom(name):
+                  def f(*a, **k):
+                      raise AssertionError(f"don't use {name}")
+                  return f
+              for o, a, _ in saved:
+                  setattr(o, a, _boom(a))
+              try:
+                  return fn(*args)
+              finally:
+                  for o, a, v in saved:
+                      setattr(o, a, v)
+
+          def _yours(bl):
+              return _banned_call(stream_logsumexp, (b for b in bl))
+          _yours.__name__ = "stream_logsumexp"
+
+          def _ref(bl):
+              return torch.logsumexp(torch.cat(bl, 1), 1)
+
+          def _same(got, exp):
+              return (torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype
+                      and torch.allclose(got, exp, rtol=1e-5, atol=1e-5))
+
+          def _show(bl):
+              if sum(b.numel() for b in bl) <= 10:
+                  return "(blocks " + str([b.tolist() for b in bl]) + ")"
+              return f"(blocks of shapes {[tuple(b.shape) for b in bl]}, {bl[0].dtype})"
+
+          inf = float("inf")
+          T = torch.tensor
+          _edge = [
+              ([T([[1., 2., 3.]])],),
+              ([T([[0.]]), T([[1.]]), T([[2.]])],),
+              ([T([[0., 1.]]), T([[100., 90.]]), T([[1000., 999.]])],),
+              ([T([[-1000., -1001.]]), T([[-1002.]])],),
+              ([T([[1000.]]), T([[-1000.]]), T([[999.]])],),
+              ([T([[-inf, -inf], [0., 1.]]), T([[-inf], [2.]]), T([[5., -inf], [-inf, 3.]])],),
+              ([T([[-inf]]), T([[1000.]])],),
+              ([T([[1., 2.], [3., 4.]], dtype=torch.float64) * 600, T([[-1.], [5.]], dtype=torch.float64) * 600],),
+          ]
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              B = r.randint(1, 4)
+              scale = r.choice([1, 50, 1000])
+              dt = torch.float64 if r.random() < 0.3 else torch.float32
+              bl = [torch.randn(B, r.randint(1, 4), generator=g, dtype=dt) * scale + r.choice([0, scale])
+                    for _ in range(r.randint(1, 5))]
+              if r.random() < 0.4:                                       # some masked entries / fully masked first blocks
+                  for i in range(len(bl) - 1):
+                      bl[i] = bl[i].masked_fill(torch.rand(bl[i].shape, generator=g) < 0.5, -inf)
+              return (bl,)
+
+          against(_yours, _ref, _edge + rand_cases(_gen, 200), same=_same, show=_show)
+
+  - id: tricks-stability.categorical
+    name: Batched categorical sampling, then top-k sampling (Medium)
+    teach: |
+      Draw one class per row of `probs` `(B, C)` (rows sum to 1 up to rounding) at once, without `torch.multinomial`.
+      Use one uniform per row, `u = torch.rand(B, generator=g, dtype=probs.dtype)`; split `[0, 1)` into slices of lengths
+      `probs[b, 0], probs[b, 1], ...` and return the class whose slice holds `u[b]` (`C - 1` if rounding leaves `u[b]` past the end).
+
+      ```python
+      probs = torch.tensor([[0.2, 0.5, 0.3]]); u = [0.65]   # slices [0, .2) [.2, .7) [.7, 1)
+      # -> tensor([1])                                       # (B,) int64
+      ```
+      No loops. Follow-up: batched top-k sampling from logits, without a full sort.
+    cards:
+      - id: a
+        prompt: |
+          Implement `sample_categorical(probs, g)`: draw one class per row of `probs`, using one uniform number per row.
+          - `probs` (B, C) float, maybe non-contiguous: each row sums to 1 up to rounding, zeros allowed
+          - `g` (torch.Generator): draw exactly once `u = torch.rand(B, generator=g, dtype=probs.dtype)`
+          - returns (B,) int64: split `[0, 1)` into consecutive slices of lengths `probs[b, 0], probs[b, 1], ...`; the class whose slice holds `u[b]`, `C - 1` if `u[b]` >= the row total
+          - no Python loops, no `torch.multinomial`
+
+          <details><summary>Hint 1</summary>Slice edges are running totals: compare `u` with all edges of its row at once.</details>
+          <details><summary>Hint 2</summary>The answer is the number of edges `cdf[b, i] <= u[b]`.</details>
+          <details><summary>Hint 3</summary>`(probs.cumsum(1) <= u[:, None]).sum(1)`, then `clamp(max=C - 1)`.</details>
+        setup: |
+          import torch
+        starter: |
+          def sample_categorical(probs, g):
+              raise NotImplementedError
+        solution: |
+          def sample_categorical(probs, g):
+              B, C = probs.shape
+              u = torch.rand(B, generator=g, dtype=probs.dtype)        # (B,)
+              cdf = probs.cumsum(1)                                     # (B, C): right edge of each slice
+              idx = (cdf <= u[:, None]).sum(1)                          # (B,) slices entirely left of u
+              return idx.clamp(max=C - 1)                               # rounding: total < u -> last class
+
+          # Trick (inverse CDF): class i owns [cdf[i-1], cdf[i]); counting edges <= u gives i. Zero-prob slices are empty.
+          # O(B·C); torch.searchsorted(cdf, u[:, None], right=True) does it in O(B log C).
+          # NumPy: (probs.cumsum(1) <= rng.random(B)[:, None]).sum(1).clip(max=C - 1).
+          # Mistakes: no clamp (index C); argmax(cdf > u) returns 0 when nothing is True.
+          # Follow-up: sampling without replacement via Gumbel-top-k: topk(log p - log(-log u)).
+        check: |
+          import dis
+          from cardtest import against, rand_cases
+
+          def _no_loops(fn):
+              codes = [fn.__code__]
+              while codes:
+                  c = codes.pop()
+                  ops = {i.opname for i in dis.get_instructions(c)}
+                  assert "FOR_ITER" not in ops and "JUMP_BACKWARD" not in ops, f"{fn.__name__} must not use Python loops"
+                  codes += [k for k in c.co_consts if hasattr(k, "co_code")]
+
+          def _call(probs, seed):
+              saved = torch.multinomial, torch.Tensor.multinomial
+              def _boom(*a, **k):
+                  raise AssertionError("don't use torch.multinomial")
+              torch.multinomial = torch.Tensor.multinomial = _boom
+              try:
+                  return sample_categorical(probs, torch.Generator().manual_seed(seed))
+              finally:
+                  torch.multinomial, torch.Tensor.multinomial = saved
+          _call.__name__ = "sample_categorical"
+
+          def _ref(probs, seed):
+              B, C = probs.shape
+              u = torch.rand(B, generator=torch.Generator().manual_seed(seed), dtype=probs.dtype)
+              out = []
+              for b in range(B):
+                  cdf = probs[b].cumsum(0)
+                  i = 0
+                  while i < C - 1 and cdf[i] <= u[b]:
+                      i += 1
+                  out.append(i)
+              return torch.tensor(out, dtype=torch.int64)
+
+          def _same(got, exp):
+              return torch.is_tensor(got) and got.shape == exp.shape and got.dtype == exp.dtype and torch.equal(got, exp)
+
+          def _show(probs, seed):
+              v = probs.tolist() if probs.numel() <= 9 else f"tensor of shape {tuple(probs.shape)}"
+              return f"(probs={v} [{tuple(probs.shape)}, {probs.dtype}], g seeded {seed})"
+
+          _no_loops(sample_categorical)
+          T = torch.tensor
+          _edge = [
+              (T([[0.2, 0.5, 0.3]]), 0),
+              (T([[1.0]]), 1),
+              (T([[0.0, 1.0, 0.0], [0.5, 0.0, 0.5], [0.0, 0.0, 1.0]]), 2),
+              (T([[0.2, 0.3, 0.4999]]).expand(8, 3), 3019),                   # u[2] > 0.9999 = row total
+              (T([[0.1, 0.4], [0.2, 0.3], [0.7, 0.3]]).t(), 3),               # (2, 3) non-contiguous
+              (T([[0.25, 0.25, 0.5], [0.9, 0.05, 0.05]], dtype=torch.float64), 4),
+          ]
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              B, C = r.randint(1, 6), r.randint(1, 6)
+              w = torch.rand(B, C, generator=g) ** 3
+              w = w * (torch.rand(B, C, generator=g) > 0.3)                  # some zero-probability classes
+              w[:, r.randrange(C)] += 0.1
+              p = w / w.sum(1, keepdim=True)
+              if r.random() < 0.3:
+                  p = p.to(torch.float64)
+              return (p, r.randint(0, 10**6))
+
+          against(_call, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show)
+
+          p = T([0.1, 0.0, 0.6, 0.3])
+          ids = _call(p.expand(20000, 4), 7)
+          freq = torch.bincount(ids, minlength=4)[:4].double() / 20000
+          mfreq = torch.bincount(torch.multinomial(p, 20000, replacement=True,
+                                 generator=torch.Generator().manual_seed(7)), minlength=4).double() / 20000
+          assert freq[1] == 0 and (freq - p.double()).abs().max() < 0.015, \
+              f"frequencies over 20000 draws = {freq.tolist()}, probs = {p.tolist()} (torch.multinomial gives {mfreq.tolist()})"
+      - id: b
+        prompt: |
+          Follow-up: implement top-k sampling, `top_k_sample(logits, k, g)`: keep each row's `k` largest logits, softmax them, and sample one token per row.
+          - `logits` (B, V) float, finite (maybe ±1000, ties possible); `k` (int, `1 <= k <= V`); `g` (torch.Generator)
+          - returns `(ids, probs)`: `probs` (B, V), dtype of `logits`: softmax of the `k` kept logits at their positions, `0.` elsewhere, exactly `k` kept per row (any `k` among ties at the k-th value)
+          - `ids` (B,) int64: `torch.multinomial(probs, 1, generator=g).squeeze(1)`
+          - no Python loops, no `sort` / `argsort`, no built-in `softmax`
+
+          <details><summary>Hint 1</summary>You need only the `k` largest of each row and their positions.</details>
+          <details><summary>Hint 2</summary>Comparing with the k-th value keeps every tie (more than `k`); write the `k` values back with `scatter`.</details>
+          <details><summary>Hint 3</summary>`v, ix = logits.topk(k)`; `e = (v - v[:, :1]).exp()`; `zeros_like(logits).scatter(1, ix, e / e.sum(1, keepdim=True))`.</details>
+        setup: |
+          import torch
+          import torch.nn.functional as F
+        starter: |
+          def top_k_sample(logits, k, g):
+              raise NotImplementedError
+        solution: |
+          def top_k_sample(logits, k, g):
+              v, ix = logits.topk(k, dim=1)                             # (B, k) values (descending), (B, k) positions
+              e = (v - v[:, :1]).exp()                                  # (B, k): subtract the row max -> no overflow
+              p_top = e / e.sum(1, keepdim=True)                        # (B, k) softmax over the kept logits
+              probs = torch.zeros_like(logits).scatter(1, ix, p_top)    # (B, V): exactly k nonzeros per row
+              ids = torch.multinomial(probs, 1, generator=g).squeeze(1) # (B,)
+              return ids, probs
+
+          # Trick: topk + scatter writes exactly k entries; masking with logits >= kth keeps every tie.
+          # topk is ~O(V) per row vs O(V log V) for a full sort (V = 50k); the softmax runs over (B, k) only.
+          # NumPy: np.argpartition(-logits, k - 1, 1)[:, :k] + np.take_along_axis / np.put_along_axis.
+          # Mistakes: no max subtraction (exp(1000) = inf -> nan); non-top entries 0 instead of -inf before a softmax over V.
+          # Follow-up: temperature + top-p; a per-row k.
+        check: |
+          import dis
+          import math
+          from cardtest import against, rand_cases
+
+          def _no_loops(fn):
+              codes = [fn.__code__]
+              while codes:
+                  c = codes.pop()
+                  ops = {i.opname for i in dis.get_instructions(c)}
+                  assert "FOR_ITER" not in ops and "JUMP_BACKWARD" not in ops, f"{fn.__name__} must not use Python loops"
+                  codes += [k for k in c.co_consts if hasattr(k, "co_code")]
+
+          _BANNED = [(torch, "sort"), (torch, "argsort"), (torch.Tensor, "sort"), (torch.Tensor, "argsort"),
+                     (torch, "softmax"), (torch, "log_softmax"), (F, "softmax"), (F, "log_softmax"),
+                     (torch.Tensor, "softmax"), (torch.Tensor, "log_softmax"), (torch.special, "softmax")]
+
+          def _call(logits, k, seed):
+              saved = [(o, a, getattr(o, a)) for o, a in _BANNED]
+              def _boom(name):
+                  def f(*a, **kw):
+                      raise AssertionError(f"don't use {name}")
+                  return f
+              for o, a, _ in saved:
+                  setattr(o, a, _boom(a))
+              try:
+                  res = top_k_sample(logits, k, torch.Generator().manual_seed(seed))
+              finally:
+                  for o, a, v in saved:
+                      setattr(o, a, v)
+              assert isinstance(res, tuple) and len(res) == 2, f"must return a tuple (ids, probs), got {type(res).__name__}"
+              ids, probs = res
+              B, V = logits.shape
+              assert torch.is_tensor(probs) and probs.shape == (B, V) and probs.dtype == logits.dtype, \
+                  f"probs: expected shape {(B, V)} {logits.dtype}, got {getattr(probs, 'shape', probs)} {getattr(probs, 'dtype', '')}"
+              assert torch.is_tensor(ids) and ids.shape == (B,) and ids.dtype == torch.int64, \
+                  f"ids: expected shape {(B,)} int64, got {getattr(ids, 'shape', ids)} {getattr(ids, 'dtype', '')}"
+              want = torch.multinomial(probs, 1, generator=torch.Generator().manual_seed(seed)).squeeze(1)
+              assert torch.equal(ids, want), f"ids = {ids.tolist()}, but multinomial(probs, 1, generator=g) gives {want.tolist()}"
+              return probs
+          _call.__name__ = "top_k_sample"
+
+          def _ref(logits, k, seed):                                        # loop reference, ties -> any k of them
+              B, V = logits.shape
+              out = torch.zeros(B, V, dtype=torch.float64)
+              for b in range(B):
+                  row = logits[b].tolist()
+                  top = sorted(range(V), key=lambda j: -row[j])[:k]
+                  m = row[top[0]]
+                  z = sum(math.exp(row[j] - m) for j in top)
+                  for j in top:
+                      out[b, j] = math.exp(row[j] - m) / z
+              out.logits = logits                                           # kept for the tie rule in _same
+              return out
+
+          def _same(got, ref):
+              logits = ref.logits
+              got64 = got.double()
+              if torch.allclose(got64, ref, rtol=1e-4, atol=1e-6):
+                  return True
+              # ties at the k-th value: same multiset of kept probabilities, exactly k kept, all from the top
+              k = int((ref > 0).sum(1).max())
+              kth = logits.topk(k, dim=1).values[:, -1:]
+              kept = got64 > 0
+              return (bool((kept.sum(1) <= k).all()) and bool((logits[kept.nonzero(as_tuple=True)] >= kth.expand_as(logits)[kept]).all())
+                      and torch.allclose(got64.sort(1).values, ref.sort(1).values, rtol=1e-4, atol=1e-6))
+
+          def _show(logits, k, seed):
+              v = logits.tolist() if logits.numel() <= 10 else f"tensor of shape {tuple(logits.shape)}"
+              return f"(logits={v} [{tuple(logits.shape)}, {logits.dtype}], k={k}, g seeded {seed})"
+
+          _no_loops(top_k_sample)
+          T = torch.tensor
+          _edge = [
+              (T([[0.5, 3.0, -1.0, 2.0, 0.0]]), 2, 0),
+              (T([[0.5, 3.0, -1.0, 2.0, 0.0]]), 1, 1),
+              (T([[0.5, 3.0, -1.0, 2.0, 0.0], [1.0, 0.0, 4.0, -2.0, 5.0]]), 5, 2),
+              (T([[1.0, 1.0, 1.0, 0.0]]), 2, 3),
+              (T([[2.0, 1.0, 1.0, 1.0, -3.0], [0.0, 0.0, 0.0, 0.0, 0.0]]), 3, 4),
+              (T([[1000.0, 999.0, -1000.0, 1001.0], [-1000.0, -999.0, -1001.0, -998.0]]), 2, 5),
+              (T([[1000.0, 999.0, -1000.0, 1001.0]], dtype=torch.float64), 3, 6),
+              (torch.arange(12.).reshape(3, 4).t() * 100, 2, 7),
+          ]
+
+          def _gen(r):
+              g = torch.Generator().manual_seed(r.randint(0, 10**6))
+              B, V = r.randint(1, 5), r.randint(1, 8)
+              x = torch.randn(B, V, generator=g) * r.choice([1, 10, 1000])
+              if r.random() < 0.3:
+                  x = x.to(torch.float64)
+              return (x, r.randint(1, V), r.randint(0, 10**6))
+
+          against(_call, _ref, _edge + rand_cases(_gen, 150), same=_same, show=_show)
